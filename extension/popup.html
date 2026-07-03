@@ -1,0 +1,184 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>ap-browser-connect</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: Canvas;
+        --fg: CanvasText;
+        --muted: GrayText;
+        --accent: #5aa788;
+        --border: color-mix(in srgb, CanvasText 12%, transparent);
+      }
+      body {
+        font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+          sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+        margin: 0;
+        padding: 16px;
+        min-width: 280px;
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+      }
+      h1 svg {
+        width: 14px;
+        height: 14px;
+        vertical-align: middle;
+      }
+      label {
+        display: block;
+        font-size: 11px;
+        color: var(--muted);
+        margin-bottom: 4px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      input[type="text"] {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 6px 8px;
+        background: transparent;
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        font: inherit;
+        margin-bottom: 12px;
+      }
+      input[type="text"]:focus {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .id {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        color: var(--muted);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        min-width: 0;
+        user-select: all;
+      }
+      button {
+        padding: 4px 10px;
+        background: var(--accent);
+        color: white;
+        border: none;
+        border-radius: 6px;
+        font: inherit;
+        cursor: pointer;
+      }
+      button:hover {
+        filter: brightness(1.1);
+      }
+      .status {
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px dashed var(--border);
+        font-size: 11px;
+        color: var(--muted);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .status-line {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .status-line strong {
+        color: var(--fg);
+        font-weight: 500;
+      }
+      .status .dot {
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .dot.connected {
+        background: #4ade80;
+      }
+      .dot.disconnected {
+        background: #f87171;
+      }
+      .dot.idle {
+        background: var(--muted);
+      }
+      .copy-btn {
+        padding: 2px 6px;
+        font-size: 10px;
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid var(--border);
+      }
+    </style>
+  </head>
+  <body>
+    <h1>
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <defs>
+          <linearGradient id="ap-bg" x1="0" y1="0" x2="16" y2="16" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#313b42" />
+            <stop offset="1" stop-color="#242b30" />
+          </linearGradient>
+        </defs>
+        <rect width="16" height="16" rx="3" fill="url(#ap-bg)" />
+        <g transform="translate(2.88 3.00) scale(0.020)">
+          <path
+            d="M 237.4 310 L 258.2 310 Q 274.6 310 283.5 323.8 L 296.3 343.8 Q 326 390 271.1 390 L 130.9 390 Q 76 390 105.7 343.8 L 230.8 149.3 Q 256 110 281.2 149.3 L 436 390"
+            fill="none"
+            stroke="#5aa788"
+            stroke-width="70"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </g>
+      </svg>
+      AP Browser Connect
+    </h1>
+
+    <label for="label">Profile Label</label>
+    <input
+      type="text"
+      id="label"
+      placeholder="e.g. Work, Personal, Side-account…"
+      maxlength="32"
+    />
+
+    <label>Instance ID</label>
+    <div class="row">
+      <span class="id" id="instanceId" title="">—</span>
+      <button class="copy-btn" id="copyBtn">Copy</button>
+    </div>
+
+    <div class="status">
+      <div class="status-line">
+        <span class="dot disconnected" id="hostDot"></span>
+        <span>host: <strong id="hostState">…</strong></span>
+      </div>
+      <div class="status-line">
+        <span class="dot idle" id="opsDot"></span>
+        <span>active ops: <strong id="opsCount">0</strong></span>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

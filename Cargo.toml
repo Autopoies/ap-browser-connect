@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = ["core", "cli", "host", "bridge"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+repository = "https://github.com/autopoies/ap-browser-connect"
+homepage = "https://github.com/autopoies/ap-browser-connect"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.5", features = ["derive", "color"] }
+anyhow = "1.0"
+# Cross-platform IPC transport. One crate covers Unix socket + Windows named pipe.
+interprocess = "2"
+# Cross-platform home/config/cache dirs (HOME on Unix, USERPROFILE/registry on Windows).
+dirs = "6"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+codegen-units = 1

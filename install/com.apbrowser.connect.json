@@ -1,0 +1,9 @@
+{
+  "name": "com.apbrowser.connect",
+  "description": "ap-browser-connect native messaging host",
+  "path": "/usr/local/bin/ap-browser-host",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://REPLACE_WITH_EXTENSION_ID/"
+  ]
+}

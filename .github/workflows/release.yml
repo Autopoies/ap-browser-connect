@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+            experimental: true
+    continue-on-error: ${{ matrix.experimental == true }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release
+        run: cargo build --workspace --release --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          VERSION=${GITHUB_REF_NAME}
+          STAGE=ap-browser-${VERSION}-${{ matrix.target }}
+          mkdir -p ${STAGE}/bin ${STAGE}/extension ${STAGE}/install
+          cp target/${{ matrix.target }}/release/ap-browser ${STAGE}/bin/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/ap-browser-host ${STAGE}/bin/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/ap-browser-bridge ${STAGE}/bin/ 2>/dev/null || true
+          cp -R extension ${STAGE}/
+          cp install/com.apbrowser.connect.json ${STAGE}/install/
+          cp install/install.sh ${STAGE}/install/
+          cp README.md LICENSE ${STAGE}/
+          tar czf ${STAGE}.tar.gz ${STAGE}
+          shasum -a 256 ${STAGE}.tar.gz > ${STAGE}.tar.gz.sha256
+
+      - name: Package (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $VERSION = $env:GITHUB_REF_NAME
+          $STAGE = "ap-browser-$VERSION-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path "$STAGE/bin","$STAGE/extension","$STAGE/install"
+          Copy-Item "target/${{ matrix.target }}/release/ap-browser.exe" "$STAGE/bin/" -ErrorAction SilentlyContinue
+          Copy-Item "target/${{ matrix.target }}/release/ap-browser-host.exe" "$STAGE/bin/" -ErrorAction SilentlyContinue
+          Copy-Item "target/${{ matrix.target }}/release/ap-browser-bridge.exe" "$STAGE/bin/" -ErrorAction SilentlyContinue
+          Copy-Item -Recurse "extension" "$STAGE/"
+          Copy-Item "install/com.apbrowser.connect.json" "$STAGE/install/"
+          Copy-Item "install/install.ps1" "$STAGE/install/"
+          Copy-Item "README.md" "$STAGE/"
+          Copy-Item "LICENSE" "$STAGE/"
+          Compress-Archive -Path "$STAGE/*" -DestinationPath "$STAGE.zip"
+          $hash = (Get-FileHash "$STAGE.zip" -Algorithm SHA256).Hash
+          "$hash  $STAGE.zip" | Out-File -Encoding ascii "$STAGE.zip.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            *.tar.gz
+            *.tar.gz.sha256
+            *.zip
+            *.zip.sha256
+
+  release:
+    name: Publish GitHub Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create extension zip
+        run: |
+          cd extension && zip -r ../ap-browser-extension-${GITHUB_REF_NAME}.zip . && cd ..
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.tar.gz.sha256
+            artifacts/*.zip
+            artifacts/*.zip.sha256
+            ap-browser-extension-*.zip

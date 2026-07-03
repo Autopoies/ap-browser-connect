@@ -1,0 +1,16 @@
+[package]
+name = "ap-browser-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ap-browser-bridge"
+path = "src/main.rs"
+
+[dependencies]
+ap-browser-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+interprocess.workspace = true

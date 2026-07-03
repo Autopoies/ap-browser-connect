@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    name: Build & Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            experimental: false
+          - os: macos-latest
+            rust_target: aarch64-apple-darwin
+            experimental: false
+          - os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            experimental: true
+    continue-on-error: ${{ matrix.experimental }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+        continue-on-error: ${{ matrix.experimental }}
+      - name: test
+        run: cargo test --workspace
+        continue-on-error: ${{ matrix.experimental }}
+      - name: build release
+        run: cargo build --workspace --release
+        continue-on-error: ${{ matrix.experimental }}

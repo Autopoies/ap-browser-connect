@@ -1,0 +1,19 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# Cargo lock is kept for binary crates (workspace has bins)
+# Keep: Cargo.lock
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Generated images / screenshots (committed ones are explicit under docs/assets)
+*.tmp.png
+
+# ap-browser runtime (never part of repo)
+.ap-browser/

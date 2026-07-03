@@ -1,0 +1,19 @@
+[package]
+name = "ap-browser-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ap-browser-host"
+path = "src/main.rs"
+
+[dependencies]
+ap-browser-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+interprocess.workspace = true
