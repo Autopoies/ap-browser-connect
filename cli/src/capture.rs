@@ -12,8 +12,6 @@ const VIDEO_DOMAINS: &[&str] = &[
     "coursera.org", "nicovideo.jp", "youku.com", "iqiyi.com", "t.co",
 ];
 
-const FETCH_SIZE_THRESHOLD: u64 = 5_000_000;
-
 fn default_extensions() -> Vec<(String, String)> {
     vec![
         (".pdf".into(), "pdf".into()),
@@ -166,11 +164,6 @@ fn has_flag(args: &[String], flag: &str) -> bool {
 
 fn cdp_eval(tab: Option<i64>, profile: Option<&str>, expression: &str) -> Result<Value> {
     let resp = cdp(tab, profile, "Runtime.evaluate", json!({"expression": expression, "returnByValue": true, "awaitPromise": true}))?;
-    Ok(resp.get("data").and_then(|d| d.get("result")).and_then(|r| r.get("result")).and_then(|r| r.get("value")).cloned().unwrap_or(Value::Null))
-}
-
-fn cdp_eval_sync(tab: Option<i64>, profile: Option<&str>, expression: &str) -> Result<Value> {
-    let resp = cdp(tab, profile, "Runtime.evaluate", json!({"expression": expression, "returnByValue": true}))?;
     Ok(resp.get("data").and_then(|d| d.get("result")).and_then(|r| r.get("result")).and_then(|r| r.get("value")).cloned().unwrap_or(Value::Null))
 }
 
@@ -662,33 +655,6 @@ fn head_content_length(url: &str, tab: Option<i64>, profile: Option<&str>) -> Op
     val.as_u64()
 }
 
-fn fetch_base64_download(url: &str, out: &str, tab: Option<i64>, profile: Option<&str>) -> Result<()> {
-    let _ = ensure_debugger(tab, profile);
-    let expr = format!(
-        r#"fetch({url}).then(r => r.blob()).then(b => new Promise(res => {{
-            const fr = new FileReader();
-            fr.onload = () => res(fr.result);
-            fr.readAsDataURL(b);
-        }}))"#,
-        url = json!(url)
-    );
-    let data_url = cdp_eval(tab, profile, &expr)?
-        .as_str()
-        .ok_or_else(|| anyhow!("fetch returned non-string"))?
-        .to_string();
-    let (mime, b64) = parse_data_url(&data_url)?;
-    let bytes = base64_decode(&b64)?;
-    let filename = if out.is_empty() {
-        let ext = mime_ext(&mime);
-        format!("download{}", ext)
-    } else {
-        out.to_string()
-    };
-    std::fs::write(&filename, &bytes)?;
-    print_result(json!({"ok": true, "data": {"method": "fetch", "url": url, "file": filename, "size_bytes": bytes.len()}}), &[]);
-    Ok(())
-}
-
 fn browser_download(url: &str, out: &str, tab: Option<i64>) -> Result<()> {
     let mut params = json!({"url": url});
     let filename = if !out.is_empty() {
@@ -749,15 +715,6 @@ fn ensure_debugger(tab: Option<i64>, profile: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn parse_data_url(data_url: &str) -> Result<(String, String)> {
-    let rest = data_url.strip_prefix("data:").unwrap_or(data_url);
-    let comma = rest.find(',').ok_or_else(|| anyhow!("invalid data URL"))?;
-    let meta = &rest[..comma];
-    let b64 = &rest[comma + 1..];
-    let mime = if meta.contains(";") { meta.split(';').next().unwrap_or("application/octet-stream") } else { meta };
-    Ok((mime.to_string(), b64.to_string()))
-}
-
 fn base64_decode(s: &str) -> Result<Vec<u8>> {
     const TBL: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut tbl = [255u8; 256];
@@ -776,22 +733,6 @@ fn base64_decode(s: &str) -> Result<Vec<u8>> {
         if chunk[3] != b'=' { out.push(n as u8); }
     }
     Ok(out)
-}
-
-fn mime_ext(mime: &str) -> String {
-    match mime {
-        "image/png" => ".png".into(),
-        "image/jpeg" => ".jpg".into(),
-        "image/gif" => ".gif".into(),
-        "image/svg+xml" => ".svg".into(),
-        "application/pdf" => ".pdf".into(),
-        "text/html" => ".html".into(),
-        "application/json" => ".json".into(),
-        "video/mp4" => ".mp4".into(),
-        "audio/mpeg" => ".mp3".into(),
-        "application/zip" => ".zip".into(),
-        _ => ".bin".into(),
-    }
 }
 
 // ── PDF ────────────────────────────────────────────────────────────────────

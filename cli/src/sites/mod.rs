@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 // ── Reserved names that can never be site folders ─────────────────────────
 pub const RESERVED: &[&str] = &[
@@ -21,23 +21,17 @@ pub const RESERVED: &[&str] = &[
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SiteMeta {
-    pub site: String,
-    pub domain: Option<String>,
-    pub login_url: Option<String>,
     pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Adapter {
     pub site: String,
-    pub name: String,
     pub description: Option<String>,
-    pub domain: Option<String>,
     #[serde(default)]
     pub args: HashMap<String, ArgDef>,
     pub input: Option<InputDef>,
     pub output: Option<OutputDef>,
-    pub columns: Option<Vec<String>>,
     pub steps: Vec<HashMap<String, Value>>,
 }
 
@@ -48,23 +42,15 @@ pub struct ArgDef {
     #[serde(default)]
     pub required: bool,
     pub default: Option<Value>,
-    pub desc: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct InputDef {
-    pub field: Option<String>, // None = raw line mode
+    pub field: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct OutputDef {
-    #[serde(rename = "type", default = "default_object")]
-    pub out_type: String,
-    #[serde(default)]
-    pub fields: Vec<String>,
-}
-
-fn default_object() -> String { "object".into() }
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct OutputDef {}
 
 // ── Registry ───────────────────────────────────────────────────────────────
 
@@ -77,7 +63,6 @@ pub struct Registry {
 pub struct SiteEntry {
     pub meta: Option<SiteMeta>,
     pub adapters: HashMap<String, Adapter>,
-    pub dir: PathBuf,
 }
 
 impl Registry {
@@ -95,9 +80,8 @@ impl Registry {
                     eprintln!("[warn] site folder '{}' is a reserved name, skipping", site_name);
                     continue;
                 }
-                let dir = entry.path();
-                let (meta, adapters) = load_site_dir(&dir, &site_name);
-                sites.insert(site_name, SiteEntry { meta, adapters, dir });
+                let (meta, adapters) = load_site_dir(&entry.path(), &site_name);
+                sites.insert(site_name, SiteEntry { meta, adapters });
             }
         }
         Registry { sites }
@@ -413,18 +397,6 @@ fn expand_template(s: &str, args: &HashMap<String, Value>, url_context: bool) ->
             if let Some(end) = s[i + 2..].find("}}") {
                 let expr = &s[i + 2..i + 2 + end];
                 let val = resolve_template_expr(expr, args)?;
-                let replaced = match &val {
-                    Value::String(s) => {
-                        if url_context { format!("encodeURIComponent({:?})", s) }
-                        else { s.clone() }
-                    }
-                    other => {
-                        if url_context { other.to_string() }
-                        else { other.to_string() }
-                    }
-                };
-                // For URL context, we can't call encodeURIComponent from Rust.
-                // Instead, manually percent-encode.
                 let replaced = if url_context {
                     match &val {
                         Value::String(s) => percent_encode(s),

@@ -34,7 +34,7 @@ pub fn lint_all(registry: &Registry) -> HashMap<String, HashMap<String, LintResu
     out
 }
 
-pub fn lint_adapter(a: &Adapter, site_folder: &str, meta: Option<&SiteMeta>) -> LintResult {
+pub fn lint_adapter(a: &Adapter, site_folder: &str, _meta: Option<&SiteMeta>) -> LintResult {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
