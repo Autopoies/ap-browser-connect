@@ -4,65 +4,68 @@
 
 Autopoies Browser Connect is a vendor-neutral Chrome control surface that lets any AI agent drive your *already-logged-in* browser. Instead of spinning up sterile headless instances that require re-authentication, it bridges your agent directly to your daily-driver Chrome via a native host and MV3 extension. It is the missing link for agents that need to read your feeds, fill forms behind login walls, or interact with platforms where you are already authenticated.
 
-## Why Autopoies Browser Connect?
+---
 
-| Feature | Autopoies Browser Connect | Playwright / Puppeteer | browser-use |
-|---------|---------------------------|------------------------|-------------|
-| **State** | Uses your real, logged-in Chrome | Headless, requires re-login | Headless, requires re-login |
-| **Interface** | CLI (`ap-browser`) | Code (JS/Python) | Code (Python) |
-| **Agent fit** | Any agent (Claude Code, Cursor, etc.) | Requires custom script | Requires custom script |
+# 🤖 Agent Quickstart
 
-## Quick Start
+Paste this into Claude Code, Cursor, Codex, or any coding agent:
 
-### 1. Install the CLI
+```
+Install ap-browser from https://github.com/autopoies/ap-browser-connect (curl install script under install/install.sh, or cargo install ap-browser), load the extension/ directory unpacked at chrome://extensions, then read skill/SKILL.md in the repo to learn the 22 CLI commands. Verify with `ap-browser ping`.
+```
 
-Choose your preferred installation method:
+That's it. Your agent now drives your logged-in Chrome.
+
+# 👋 Human Quickstart
+
+**1. Install the CLI:**
 
 ```bash
-# L0: Quick install script (macOS/Linux)
+# L0: Quick install (macOS / Linux)
 curl -fsSL https://raw.githubusercontent.com/autopoies/ap-browser-connect/main/install/install.sh | sh
 
-# L2: Download pre-compiled binaries from GitHub Releases
-# Visit: https://github.com/autopoies/ap-browser-connect/releases
-
-# L3: Build from source via Cargo
+# L3: Or build from source
 cargo install ap-browser
 ```
 
-### 2. Load the Extension
+**2. Load the extension:**
 
-1. Open Chrome and navigate to `chrome://extensions/`
-2. Enable **Developer mode** (toggle in the top right)
-3. Click **Load unpacked** and select the `extension/` directory from this repository.
-   *(Note: The extension is plain JS MV3 and is not on the Chrome Web Store in v1).*
+1. Open `chrome://extensions/`
+2. Enable **Developer mode** (top-right toggle)
+3. Click **Load unpacked** → select the `extension/` directory from this repo
 
-### 3. Verify Connection
+*(Not on the Chrome Web Store in v1 — load-unpacked only.)*
 
-```bash
-ap-browser ping
-```
-
-### 4. Try a Command
+**3. Verify and use:**
 
 ```bash
-ap-browser goto https://news.ycombinator.com && ap-browser text
+ap-browser ping                                          # connection check
+ap-browser goto https://news.ycombinator.com             # navigate
+ap-browser text                                          # read the page
 ```
+
+# Why Autopoies Browser Connect?
+
+| | Autopoies Browser Connect | Codex Chrome Extension | Playwright / Puppeteer | browser-use |
+|---|---|---|---|---|
+| **Login state** | Your real, logged-in Chrome | Your real Chrome | Headless, re-login required | Headless, re-login required |
+| **Vendor lock-in** | None — any agent via CLI | OpenAI-only | None, code-only | None, Python-only |
+| **Interface** | CLI (`ap-browser`) | Closed UI | JS / Python API | Python API |
+| **Works with** | Claude Code, Cursor, Codex, shell | Codex only | Custom scripts | Custom scripts |
 
 ## What Agents Can Do
 
-Agents can use the `ap-browser` CLI to interact with your browser. Just provide them with the `skill/SKILL.md` file.
-
 ```bash
-# Claude Code: Read a logged-in feed
+# Claude Code — read a logged-in feed
 claude "Summarize the top 5 posts on my Twitter timeline using ap-browser"
 
-# Cursor: Debug a local web app
-"Use ap-browser to click the 'Login' button and capture the console errors."
+# Cursor — debug a local web app
+"Use ap-browser to click 'Login' and capture the console errors."
 
-# Codex: Scrape behind a login wall
+# Codex — scrape behind a login wall
 codex "Go to my internal dashboard with ap-browser and extract the revenue table."
 
-# Plain Shell: Scripting your browser
+# Plain shell — script your browser
 ap-browser goto https://github.com && ap-browser screenshot --out github.png
 ```
 
@@ -119,8 +122,17 @@ The v1 release is load-unpacked only. Web Store distribution is planned for a fu
 
 ## Contributing
 
-We follow GitHub Flow. PRs are welcome! Please read `skill/SKILL.md` to understand how agents interact with the CLI before proposing changes to the command structure.
+We follow GitHub Flow. PRs welcome — please read `skill/SKILL.md` before proposing changes to the command surface. For adapter contributions (per-site YAML commands), see [ap-browser-connect-adapters](https://github.com/autopoies/ap-browser-connect-adapters).
 
 ## License
 
 Apache-2.0
+
+---
+
+**Give your agent a browser it can actually use.**
+
+[![GitHub Stars](https://img.shields.io/github/stars/autopoies/ap-browser-connect.svg?style=social)](https://github.com/autopoies/ap-browser-connect)
+[![Twitter Follow](https://img.shields.io/twitter/follow/autopoies.svg?style=social)](https://x.com/autopoies)
+
+*Community: Discord / GitHub Discussions — coming soon.*
