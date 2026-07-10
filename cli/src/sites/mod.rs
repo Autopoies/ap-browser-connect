@@ -244,6 +244,7 @@ pub fn dispatch_site(
     let read_stdin = raw_args.iter().any(|a| a == "--read-stdin");
     let tab_override = extract_flag(raw_args, "--tab").and_then(|s| s.parse::<i64>().ok());
     let profile_override = extract_flag(raw_args, "profile").or_else(|| extract_flag(raw_args, "--profile"));
+    let filter_registry = crate::filters::Registry::load();
 
     if read_stdin && adapter.input.is_none() {
         bail!("adapter '{}::{}' has no `input` declaration; cannot receive piped input", site, cmd);
@@ -265,13 +266,25 @@ pub fn dispatch_site(
                 }
                 None => { iter_args.insert("_input".into(), line_data.clone()); }
             }
-            let resp = send_adapter_batch(adapter, &iter_args, tab_override, profile_override.as_deref())?;
-            print_response(&resp, want_ndjson, human);
+            let resp = send_adapter_batch(
+                adapter,
+                &iter_args,
+                tab_override,
+                profile_override.as_deref(),
+                &filter_registry,
+            )?;
+            print_response(resp, want_ndjson, human);
         }
         Ok(())
     } else {
-        let resp = send_adapter_batch(adapter, &parsed, tab_override, profile_override.as_deref())?;
-        print_response(&resp, want_ndjson, human);
+        let resp = send_adapter_batch(
+            adapter,
+            &parsed,
+            tab_override,
+            profile_override.as_deref(),
+            &filter_registry,
+        )?;
+        print_response(resp, want_ndjson, human);
         Ok(())
     }
 }
@@ -301,6 +314,7 @@ fn send_adapter_batch(
     args: &HashMap<String, Value>,
     tab: Option<i64>,
     profile: Option<&str>,
+    filter_registry: &crate::filters::Registry,
 ) -> Result<Value> {
     let steps = expand_steps(&adapter.steps, args)?;
     let timeout = estimate_batch_timeout(&steps);
@@ -309,6 +323,7 @@ fn send_adapter_batch(
     if let Some(t) = tab {
         params["tab_id"] = json!(t);
     }
+    filter_registry.attach_to(&mut params);
     let socket = crate::socket_client::resolve_socket(profile)?;
     let request = json!({"jsonrpc":"2.0","method":"batch","params":params});
     let bytes = crate::cli_frame::encode(&request)?;
@@ -333,17 +348,33 @@ fn extract_adapter_output(resp: Value) -> Value {
         if let Some(last) = results.last() {
             if last.get("ok").and_then(|v| v.as_bool()) == Some(true) {
                 if let Some(eval_result) = last.get("data").and_then(|d| d.get("result")) {
-                    return json!({"ok": true, "data": eval_result});
+                    return preserve_response_meta(
+                        &resp,
+                        json!({"ok": true, "data": eval_result}),
+                    );
                 }
                 if let Some(step_data) = last.get("data") {
-                    return json!({"ok": true, "data": step_data});
+                    return preserve_response_meta(
+                        &resp,
+                        json!({"ok": true, "data": step_data}),
+                    );
                 }
             } else {
-                return json!({"ok": false, "error": last.get("error").cloned().unwrap_or(json!({}))});
+                return preserve_response_meta(
+                    &resp,
+                    json!({"ok": false, "error": last.get("error").cloned().unwrap_or(json!({}))}),
+                );
             }
         }
     }
     resp
+}
+
+fn preserve_response_meta(source: &Value, mut output: Value) -> Value {
+    if let (Some(meta), Some(object)) = (source.get("meta"), output.as_object_mut()) {
+        object.insert("meta".into(), meta.clone());
+    }
+    output
 }
 
 // ── Template expansion ─────────────────────────────────────────────────────
@@ -591,13 +622,17 @@ fn coerce_value(ty: &str, s: &str) -> Result<Value> {
 
 // ── Output ─────────────────────────────────────────────────────────────────
 
-fn print_response(resp: &Value, ndjson: bool, human: bool) {
+fn print_response(mut resp: Value, ndjson: bool, human: bool) {
+    super::tag_untrusted(&mut resp);
     if human {
-        super::print_human(resp);
+        emit_security_metadata(&resp);
+        super::print_human(&resp);
         return;
     }
     if ndjson {
-        // Extract data and emit one object per line
+        // Security diagnostics use stderr so adapter business records on stdout
+        // keep the exact declared NDJSON shape.
+        emit_security_metadata(&resp);
         if let Some(data) = resp.get("data") {
             if let Some(arr) = data.as_array() {
                 for item in arr {
@@ -607,10 +642,22 @@ fn print_response(resp: &Value, ndjson: bool, human: bool) {
                 println!("{}", serde_json::to_string(data).unwrap_or_default());
             }
         } else {
-            println!("{}", serde_json::to_string(resp).unwrap_or_default());
+            println!("{}", serde_json::to_string(&resp).unwrap_or_default());
         }
     } else {
-        println!("{}", serde_json::to_string(resp).unwrap_or_default());
+        println!("{}", serde_json::to_string(&resp).unwrap_or_default());
+    }
+}
+
+fn emit_security_metadata(resp: &Value) {
+    if let Some(warning) = resp.get("_security_warning").and_then(Value::as_str) {
+        eprintln!("[security] {warning}");
+    }
+    if let Some(filters) = resp.get("meta").and_then(|meta| meta.get("filters")) {
+        eprintln!(
+            "[filters] {}",
+            serde_json::to_string(filters).unwrap_or_else(|_| "{}".into())
+        );
     }
 }
 
@@ -657,7 +704,8 @@ pub fn expand_steps_for_verify(steps: &[HashMap<String, Value>], args: &HashMap<
 }
 
 pub fn send_single_step(step: &Value) -> Result<Value> {
-    let params = json!({"steps": [step], "stop_on_error": true});
+    let mut params = json!({"steps": [step], "stop_on_error": true});
+    crate::filters::Registry::load().attach_to(&mut params);
     let socket = crate::socket_client::resolve_socket(None)?;
     let request = json!({"jsonrpc":"2.0","method":"batch","params":params});
     let bytes = crate::cli_frame::encode(&request)?;
@@ -679,4 +727,68 @@ pub fn send_single_step(step: &Value) -> Result<Value> {
         }
     }
     Ok(resp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adapter_extraction_preserves_filter_metadata_and_business_shape() {
+        let response = json!({
+            "ok": true,
+            "data": {
+                "results": [{
+                    "ok": true,
+                    "data": {"result": [{"title": "Course", "score": 95}]},
+                    "meta": {"filters": {"matched_policy_ids": ["coursera/content-integrity"]}}
+                }]
+            },
+            "meta": {
+                "filters": {
+                    "matched_policy_ids": ["coursera/content-integrity"],
+                    "removed_nodes": 0,
+                    "redacted_blocks": 1,
+                    "denied_interactions": 0
+                }
+            }
+        });
+
+        let mut extracted = extract_adapter_output(response);
+        super::super::tag_untrusted(&mut extracted);
+
+        assert_eq!(
+            extracted["data"],
+            json!([{"title": "Course", "score": 95}])
+        );
+        assert_eq!(
+            extracted["meta"]["filters"]["matched_policy_ids"],
+            json!(["coursera/content-integrity"])
+        );
+        assert_eq!(
+            extracted["_security_warning"],
+            super::super::INJECTION_WARNING
+        );
+        assert!(extracted["data"][0].get("_security_warning").is_none());
+        assert!(extracted["data"][0].get("meta").is_none());
+    }
+
+    #[test]
+    fn adapter_error_extraction_preserves_filter_metadata() {
+        let response = json!({
+            "ok": false,
+            "data": {"results": [{
+                "ok": false,
+                "error": {"code": "FILTER_DENIED", "message": "denied"}
+            }]},
+            "meta": {"filters": {
+                "matched_policy_ids": ["coursera/content-integrity"],
+                "denied_interactions": 1
+            }}
+        });
+
+        let extracted = extract_adapter_output(response);
+        assert_eq!(extracted["error"]["code"], "FILTER_DENIED");
+        assert_eq!(extracted["meta"]["filters"]["denied_interactions"], 1);
+    }
 }

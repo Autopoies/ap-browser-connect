@@ -1,6 +1,21 @@
 // AP Browser Connect — Service Worker
 // Drives user's Chrome via JSON-RPC over chrome.runtime.connectNative.
 
+import {
+  buildDomReadExpression,
+  buildInteractionExpression,
+  domDropRules,
+  hasFilterDiagnostics,
+  interactionDenyRules,
+  interactionOutcome,
+  matchingPolicies,
+  mergeFilterMetadata,
+  redactResult,
+  resolveBatchStepTab,
+  resolveFilterOperationTab,
+  shouldFilterOuterResponse,
+} from "./filter-enforcement.mjs";
+
 // ── Autopoies brand favicon swap (inlined, no module import) ──
 const AP_ICON_SVG = `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="bg" x1="0" y1="0" x2="16" y2="16" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#313B42"/><stop offset="1" stop-color="#242B30"/></linearGradient></defs><rect width="16" height="16" rx="3" fill="url(#bg)"/><g transform="translate(2.88 3.00) scale(0.020)"><path d="M 237.4 310 L 258.2 310 Q 274.6 310 283.5 323.8 L 296.3 343.8 Q 326 390 271.1 390 L 130.9 390 Q 76 390 105.7 343.8 L 230.8 149.3 Q 256 110 281.2 149.3 L 436 390" fill="none" stroke="#5AA788" stroke-width="70" stroke-linecap="round" stroke-linejoin="round"/></g></svg>`;
 const AP_ICON_URL = `data:image/svg+xml;base64,${btoa(String.fromCharCode(...new TextEncoder().encode(AP_ICON_SVG)))}`;
@@ -181,10 +196,9 @@ async function handleNativeMessage(msg) {
     const result = await dispatch(method, params, operatedTab);
     nativePort.postMessage({ jsonrpc: "2.0", id, result });
   } catch (e) {
-    nativePort.postMessage({
-      jsonrpc: "2.0", id,
-      error: { code: e.code || "INTERNAL", message: e.message || String(e) },
-    });
+    const error = { code: e.code || "INTERNAL", message: e.message || String(e) };
+    if (e.filterMeta) error.data = { filters: e.filterMeta };
+    nativePort.postMessage({ jsonrpc: "2.0", id, error });
   } finally {
     if (operatedTab) {
       if (!method.startsWith(NO_RESTORE_PREFIX)) {
@@ -197,6 +211,19 @@ async function handleNativeMessage(msg) {
 
 // ─── Method handlers ─────────────────────────────────────────────────────
 async function dispatch(method, params, operatedTab) {
+  if (!shouldFilterOuterResponse(method)) {
+    return dispatchUnfiltered(method, params, operatedTab);
+  }
+  const activePolicies = await activeFilterPolicies(method, params, operatedTab);
+  const response = await dispatchUnfiltered(method, params, operatedTab);
+  if (activePolicies.length === 0 || !response?.data) return response;
+
+  const filtered = redactResult(response.data, activePolicies);
+  response.data = filtered.value;
+  return attachFilterMetadata(response, filtered.metadata);
+}
+
+async function dispatchUnfiltered(method, params, operatedTab) {
   switch (method) {
     case "ping":
       return { ok: true, data: { pong: true }, meta: await buildMeta(null) };
@@ -286,15 +313,23 @@ async function dispatch(method, params, operatedTab) {
       const tab = await resolveTab(params);
       await ensureDebugger(tab.id);
       const selector = params.selector || "body";
+      const policies = await activeFilterPolicies("text", params, tab);
+      const dropRules = domDropRules(policies);
+      const expression = dropRules.length > 0
+        ? buildDomReadExpression(selector, "text", dropRules)
+        : `String(document.querySelector(${JSON.stringify(selector)})?.innerText ?? "")`;
       const { result } = await chrome.debugger.sendCommand(
         { tabId: tab.id },
         "Runtime.evaluate",
         {
-          expression: `String(document.querySelector(${JSON.stringify(selector)})?.innerText ?? "")`,
+          expression,
           returnByValue: true,
         },
       );
-      const full = result?.value || "";
+      const filteredRead = dropRules.length > 0
+        ? (result?.value || { value: "", metadata: null })
+        : { value: result?.value || "", metadata: null };
+      const full = filteredRead.value || "";
       const cap = params.full ? full.length : (params.range ? null : 50000);
       let text = full;
       let range = [0, full.length];
@@ -309,7 +344,7 @@ async function dispatch(method, params, operatedTab) {
         range = [s, s + text.length];
         truncated = (s + text.length) < full.length;
       }
-      return {
+      return attachFilterMetadata({
         ok: true,
         data: {
           text,
@@ -319,7 +354,7 @@ async function dispatch(method, params, operatedTab) {
           range,
         },
         meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
-      };
+      }, filteredRead.metadata);
     }
 
     case "screenshot": {
@@ -342,31 +377,55 @@ async function dispatch(method, params, operatedTab) {
     case "click": {
       const tab = await resolveTab(params);
       await ensureDebugger(tab.id);
-      const expr = `((el) => { if (!el) return false; el.scrollIntoView({block:'center'}); el.click(); return true; })(document.querySelector(${JSON.stringify(params.selector)}))`;
+      const policies = await activeFilterPolicies("click", params, tab);
+      const denyRules = interactionDenyRules(policies);
+      const expr = denyRules.length > 0
+        ? buildInteractionExpression("click", params.selector, undefined, denyRules)
+        : `((el) => { if (!el) return false; el.scrollIntoView({block:'center'}); el.click(); return true; })(document.querySelector(${JSON.stringify(params.selector)}))`;
       const { result } = await chrome.debugger.sendCommand(
         { tabId: tab.id },
         "Runtime.evaluate",
         { expression: expr, returnByValue: true },
       );
-      if (!result?.value) {
+      const interaction = result?.value;
+      const outcome = interactionOutcome(interaction, denyRules.length > 0);
+      if (outcome === "denied") {
+        throw filterDeniedError(interaction.metadata);
+      }
+      if (outcome !== "ok") {
         throw Object.assign(new Error(`selector not found: ${params.selector}`), { code: "SELECTOR_NO_MATCH" });
       }
-      return { ok: true, data: { clicked: true }, meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }) };
+      return attachFilterMetadata(
+        { ok: true, data: { clicked: true }, meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }) },
+        denyRules.length > 0 ? interaction?.metadata : null,
+      );
     }
 
     case "fill": {
       const tab = await resolveTab(params);
       await ensureDebugger(tab.id);
-      const expr = `((el, v) => { if (!el) return false; el.focus(); el.value = v; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return true; })(document.querySelector(${JSON.stringify(params.selector)}), ${JSON.stringify(params.value)})`;
+      const policies = await activeFilterPolicies("fill", params, tab);
+      const denyRules = interactionDenyRules(policies);
+      const expr = denyRules.length > 0
+        ? buildInteractionExpression("fill", params.selector, params.value, denyRules)
+        : `((el, v) => { if (!el) return false; el.focus(); el.value = v; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return true; })(document.querySelector(${JSON.stringify(params.selector)}), ${JSON.stringify(params.value)})`;
       const { result } = await chrome.debugger.sendCommand(
         { tabId: tab.id },
         "Runtime.evaluate",
         { expression: expr, returnByValue: true },
       );
-      if (!result?.value) {
+      const interaction = result?.value;
+      const outcome = interactionOutcome(interaction, denyRules.length > 0);
+      if (outcome === "denied") {
+        throw filterDeniedError(interaction.metadata);
+      }
+      if (outcome !== "ok") {
         throw Object.assign(new Error(`selector not found: ${params.selector}`), { code: "SELECTOR_NO_MATCH" });
       }
-      return { ok: true, data: { filled: true }, meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }) };
+      return attachFilterMetadata(
+        { ok: true, data: { filled: true }, meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }) },
+        denyRules.length > 0 ? interaction?.metadata : null,
+      );
     }
 
     case "tabs.new": {
@@ -419,13 +478,21 @@ async function dispatch(method, params, operatedTab) {
       const tab = await resolveTab(params);
       await ensureDebugger(tab.id);
       const selector = params.selector || "html";
+      const policies = await activeFilterPolicies("html", params, tab);
+      const dropRules = domDropRules(policies);
+      const expression = dropRules.length > 0
+        ? buildDomReadExpression(selector, "html", dropRules)
+        : `String(document.querySelector(${JSON.stringify(selector)})?.outerHTML ?? "")`;
       const { result } = await chrome.debugger.sendCommand(
         { tabId: tab.id },
         "Runtime.evaluate",
-        { expression: `String(document.querySelector(${JSON.stringify(selector)})?.outerHTML ?? "")`, returnByValue: true },
+        { expression, returnByValue: true },
       );
-      const full = result?.value || "";
-      return truncateOutput(full, params, tab, "html");
+      const filteredRead = dropRules.length > 0
+        ? (result?.value || { value: "", metadata: null })
+        : { value: result?.value || "", metadata: null };
+      const response = await truncateOutput(filteredRead.value || "", params, tab, "html");
+      return attachFilterMetadata(response, filteredRead.metadata);
     }
 
     case "press": {
@@ -593,9 +660,11 @@ async function dispatch(method, params, operatedTab) {
       const steps = params.steps || [];
       const results = [];
       let lastTab = null;
+      let batchFilterMetadata = null;
       for (const step of steps) {
         const stepMethod = step.method || step.cmd;
-        const stepParams = step.params || {};
+        const stepParams = { ...(step.params || {}) };
+        if (Array.isArray(params._filters)) stepParams._filters = params._filters;
         if (step.url) stepParams.url = step.url;
         if (step.selector) stepParams.selector = step.selector;
         if (step.value) stepParams.value = step.value;
@@ -605,24 +674,38 @@ async function dispatch(method, params, operatedTab) {
         try {
           const isMeta = stepMethod === "ping" || stepMethod === "info";
           if (!isMeta) {
-            try { lastTab = await resolveTab(stepParams); } catch (_) {}
+            lastTab = null;
+            lastTab = await resolveBatchStepTab(stepMethod, stepParams, resolveTab);
             if (lastTab) {
               cancelPendingRestore(lastTab.id);
               await ensureDebugger(lastTab.id);
               try { await swapFaviconToSparkle(lastTab.id); } catch (_) {}
             }
           }
-          const r = await dispatch(stepMethod, stepParams, operatedTab);
-          results.push({ ok: true, data: r.data });
+          const r = await dispatch(stepMethod, stepParams, lastTab || operatedTab);
+          const stepResult = { ok: true, data: r.data };
+          if (r.meta?.filters) {
+            stepResult.meta = { filters: r.meta.filters };
+            batchFilterMetadata = mergeFilterMetadata(batchFilterMetadata, r.meta.filters);
+          }
+          results.push(stepResult);
         } catch (e) {
-          results.push({ ok: false, error: { code: e.code || "INTERNAL", message: e.message || String(e) } });
+          const stepResult = {
+            ok: false,
+            error: { code: e.code || "INTERNAL", message: e.message || String(e) },
+          };
+          if (e.filterMeta) {
+            stepResult.meta = { filters: e.filterMeta };
+            batchFilterMetadata = mergeFilterMetadata(batchFilterMetadata, e.filterMeta);
+          }
+          results.push(stepResult);
           if (params.stop_on_error !== false) break;
         }
       }
       const meta = lastTab
         ? await buildMeta({ window_id: lastTab.windowId, tab_id: lastTab.id })
         : await buildMeta(null);
-      return { ok: true, data: { results }, meta };
+      return attachFilterMetadata({ ok: true, data: { results }, meta }, batchFilterMetadata);
     }
 
     case "dev.console.list": {
@@ -877,6 +960,35 @@ async function dispatch(method, params, operatedTab) {
         code: "UNKNOWN_METHOD",
       });
   }
+}
+
+async function activeFilterPolicies(method, params, operatedTab) {
+  const policies = params?._filters;
+  if (!Array.isArray(policies) || policies.length === 0) return [];
+  const methodEligible = policies.some((policy) => {
+    const methods = policy?.match?.methods;
+    return !Array.isArray(methods) || methods.length === 0 || methods.includes(method);
+  });
+  if (!methodEligible) return [];
+
+  const tab = await resolveFilterOperationTab(operatedTab, params, resolveTab);
+  return matchingPolicies(policies, tab?.url, method);
+}
+
+function attachFilterMetadata(response, metadata) {
+  if (!hasFilterDiagnostics(metadata)) return response;
+  response.meta ||= {};
+  response.meta.filters = mergeFilterMetadata(response.meta.filters, metadata);
+  return response;
+}
+
+function filterDeniedError(metadata) {
+  const policyIds = metadata?.matched_policy_ids || [];
+  const suffix = policyIds.length > 0 ? `: ${policyIds.join(", ")}` : "";
+  return Object.assign(new Error(`interaction denied by site filter${suffix}`), {
+    code: "FILTER_DENIED",
+    filterMeta: metadata,
+  });
 }
 
 // Resolve target tab: explicit tab_id, else active tab of last focused window.

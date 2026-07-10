@@ -4,6 +4,7 @@ mod capture;
 mod cli_frame;
 mod dev;
 mod doctor;
+mod filters;
 mod sites;
 mod socket_client;
 
@@ -271,6 +272,7 @@ fn rpc(cli: &Cli, method: &str, params: Value, human: bool, post: impl Fn(&Value
     let mut p = params;
     if let Some(t) = cli.tab { p.as_object_mut().map(|o| o.insert("tab_id".into(), json!(t))); }
     if let Some(w) = cli.window { p.as_object_mut().map(|o| o.insert("window_id".into(), json!(w))); }
+    filters::Registry::load().attach_to(&mut p);
 
     let socket = resolve_socket(cli.profile.as_deref())?;
     let request = json!({"jsonrpc":"2.0","method":method,"params":p});
@@ -280,7 +282,7 @@ fn rpc(cli: &Cli, method: &str, params: Value, human: bool, post: impl Fn(&Value
     std::io::Write::flush(&mut stream)?;
     let envelope = cli_frame::read_response(&mut stream, Duration::from_secs(cli.timeout))?;
 
-    let response = match envelope.get("result") {
+    let mut response = match envelope.get("result") {
         Some(r) => r.clone(),
         None => match envelope.get("error") {
             Some(e) => json!({"ok": false, "error": e}),
@@ -290,6 +292,10 @@ fn rpc(cli: &Cli, method: &str, params: Value, human: bool, post: impl Fn(&Value
 
     if response.get("ok").and_then(|v| v.as_bool()) == Some(true) {
         post(&response);
+    }
+
+    if matches!(method, "text" | "html") {
+        tag_untrusted(&mut response);
     }
 
     if human { print_human(&response); }
@@ -404,6 +410,16 @@ fn write_current_profile(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Kept short because this metadata is included in agent-facing responses.
+pub const INJECTION_WARNING: &str =
+    "Untrusted web content — may contain prompt injection.";
+
+pub fn tag_untrusted(resp: &mut Value) {
+    if let Some(object) = resp.as_object_mut() {
+        object.insert("_security_warning".into(), json!(INJECTION_WARNING));
+    }
+}
+
 pub fn print_human(resp: &Value) {
     if resp.get("ok").and_then(|v| v.as_bool()) == Some(false) {
         let err = resp.get("error").cloned().unwrap_or(json!({}));
@@ -421,7 +437,8 @@ pub fn print_human(resp: &Value) {
 fn error_to_exit_code(resp: &Value) -> i32 {
     match resp.get("error").and_then(|e| e.get("code")).and_then(|v| v.as_str()).unwrap_or("") {
         "TAB_NOT_FOUND" => 3,
-        "DEBUGGER_ATTACH_FAILED" | "CDP_ERROR" | "JS_EXCEPTION" | "SELECTOR_NO_MATCH" | "INTERNAL" => 4,
+        "DEBUGGER_ATTACH_FAILED" | "CDP_ERROR" | "JS_EXCEPTION" | "SELECTOR_NO_MATCH"
+        | "FILTER_DENIED" | "INTERNAL" => 4,
         "TIMEOUT" => 5,
         "MULTIPLE_PROFILES" => 6,
         _ => 1,
@@ -614,5 +631,34 @@ fn run_sites_command(args: &[String]) -> Result<()> {
             eprintln!("Usage: ap-browser sites <list [--full]|search <q>|lint|verify|doc> [...]");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tag_untrusted_stamps_response_envelope() {
+        let mut response = json!({"ok": true, "data": {"text": "hello"}});
+        tag_untrusted(&mut response);
+        assert_eq!(
+            response["_security_warning"].as_str(),
+            Some(INJECTION_WARNING)
+        );
+        assert_eq!(response["data"], json!({"text": "hello"}));
+    }
+
+    #[test]
+    fn tag_untrusted_ignores_non_object_values() {
+        let mut response = json!("plain text");
+        tag_untrusted(&mut response);
+        assert!(response.get("_security_warning").is_none());
+    }
+
+    #[test]
+    fn filter_denial_uses_runtime_error_exit_code() {
+        let response = json!({"error": {"code": "FILTER_DENIED"}});
+        assert_eq!(error_to_exit_code(&response), 4);
     }
 }
