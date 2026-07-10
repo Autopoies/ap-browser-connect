@@ -29,6 +29,9 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
+const AUTH_FRAME_MAX: usize = 4 * 1024;
+const MESSAGE_FRAME_MAX: usize = 64 * 1024 * 1024;
+
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let instance = flag_value(&args, "--instance")
@@ -112,7 +115,7 @@ fn handle_conn(mut tcp: std::net::TcpStream, cfg: Config) -> Result<()> {
     tcp.set_read_timeout(Some(Duration::from_secs(10)))?;
     tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
 
-    let auth_req: serde_json::Value = read_tcp_frame(&mut tcp)?;
+    let auth_req: serde_json::Value = read_auth_frame(&mut tcp)?;
     let got_token = auth_req
         .get("token")
         .and_then(|v| v.as_str())
@@ -153,7 +156,7 @@ fn read_frame_value<R: Read>(r: &mut R) -> Result<serde_json::Value> {
     let mut header = [0u8; 4];
     r.read_exact(&mut header).context("read header")?;
     let len = u32::from_le_bytes(header) as usize;
-    if len > 64 * 1024 * 1024 {
+    if len > MESSAGE_FRAME_MAX {
         bail!("frame too large: {len}");
     }
     let mut payload = vec![0u8; len];
@@ -169,15 +172,29 @@ fn write_frame<W: Write>(w: &mut W, v: &serde_json::Value) -> Result<()> {
     Ok(())
 }
 
-fn read_tcp_frame(stream: &mut std::net::TcpStream) -> Result<serde_json::Value> {
+fn read_auth_frame<R: Read>(stream: &mut R) -> Result<serde_json::Value> {
+    read_tcp_frame_with_limit(stream, AUTH_FRAME_MAX, "auth")
+}
+
+fn read_tcp_frame<R: Read>(stream: &mut R) -> Result<serde_json::Value> {
+    read_tcp_frame_with_limit(stream, MESSAGE_FRAME_MAX, "message")
+}
+
+fn read_tcp_frame_with_limit<R: Read>(
+    stream: &mut R,
+    limit: usize,
+    kind: &str,
+) -> Result<serde_json::Value> {
     let mut header = [0u8; 4];
-    stream.read_exact(&mut header).context("read auth header")?;
+    stream.read_exact(&mut header)
+        .with_context(|| format!("read {kind} header"))?;
     let len = u32::from_le_bytes(header) as usize;
-    if len > 64 * 1024 * 1024 {
-        bail!("auth frame too large: {len}");
+    if len > limit {
+        bail!("{kind} frame too large: {len}");
     }
     let mut payload = vec![0u8; len];
-    stream.read_exact(&mut payload).context("read auth payload")?;
+    stream.read_exact(&mut payload)
+        .with_context(|| format!("read {kind} payload"))?;
     Ok(serde_json::from_slice(&payload)?)
 }
 
@@ -250,4 +267,31 @@ fn dirs_home() -> PathBuf {
         .map(PathBuf::from)
         .or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))
         .unwrap_or_else(|| std::env::temp_dir())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn oversized_auth_frame_is_rejected_before_payload_read() {
+        let mut input = Cursor::new(((AUTH_FRAME_MAX + 1) as u32).to_le_bytes());
+        let error = read_auth_frame(&mut input).unwrap_err().to_string();
+        assert!(error.contains("auth frame too large"));
+    }
+
+    #[test]
+    fn normal_frames_keep_the_large_authenticated_limit() {
+        let mut bytes = Vec::new();
+        let mut payload = b"{}".to_vec();
+        payload.resize(AUTH_FRAME_MAX + 1, b' ');
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+
+        assert_eq!(
+            read_tcp_frame(&mut Cursor::new(bytes)).unwrap(),
+            serde_json::json!({})
+        );
+    }
 }

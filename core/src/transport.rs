@@ -25,9 +25,22 @@ pub use interprocess::local_socket::Listener;
 pub use interprocess::local_socket::Stream;
 
 pub fn bind(name: &str) -> io::Result<Listener> {
-    ListenerOptions::new()
+    let listener = ListenerOptions::new()
         .name(make_name(name))
-        .create_sync()
+        .create_sync()?;
+    #[cfg(unix)]
+    if let Err(error) = owner_only(name) {
+        drop(listener);
+        let _ = std::fs::remove_file(name);
+        return Err(error);
+    }
+    Ok(listener)
+}
+
+#[cfg(unix)]
+fn owner_only(path: &str) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 
 pub fn connect(name: &str) -> io::Result<Stream> {
@@ -183,4 +196,32 @@ pub fn connect_remote(addr: &str, token: &str) -> io::Result<std::net::TcpStream
     }
     s.set_read_timeout(Some(Duration::from_secs(120)))?;
     Ok(s)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn bound_socket_is_owner_only() {
+        let path = std::path::Path::new("/tmp").join(format!(
+            "ap-browser-permission-test-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let name = path.to_string_lossy().into_owned();
+        let listener = bind(&name).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        drop(listener);
+        let _ = std::fs::remove_file(path);
+    }
 }

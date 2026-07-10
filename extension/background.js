@@ -15,6 +15,12 @@ import {
   resolveFilterOperationTab,
   shouldFilterOuterResponse,
 } from "./filter-enforcement.mjs";
+import {
+  clearTabRuntimeState,
+  ensureAttachedOnce,
+  isCurrentPort,
+  runtimeEvaluateValue,
+} from "./runtime-helpers.mjs";
 
 // ── Autopoies brand favicon swap (inlined, no module import) ──
 const AP_ICON_SVG = `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="bg" x1="0" y1="0" x2="16" y2="16" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#313B42"/><stop offset="1" stop-color="#242B30"/></linearGradient></defs><rect width="16" height="16" rx="3" fill="url(#bg)"/><g transform="translate(2.88 3.00) scale(0.020)"><path d="M 237.4 310 L 258.2 310 Q 274.6 310 283.5 323.8 L 296.3 343.8 Q 326 390 271.1 390 L 130.9 390 Q 76 390 105.7 343.8 L 230.8 149.3 Q 256 110 281.2 149.3 L 436 390" fill="none" stroke="#5AA788" stroke-width="70" stroke-linecap="round" stroke-linejoin="round"/></g></svg>`;
@@ -52,6 +58,7 @@ const KEEPALIVE_PERIOD_MIN = 0.4; // 24 seconds
 
 // ─── State ──────────────────────────────────────────────────────────────
 let nativePort = null;
+let nativeReconnectTimer = null;
 let labelCache = "";
 
 // ─── instance_id bootstrap ───────────────────────────────────────────────
@@ -105,21 +112,27 @@ async function buildHelloWithTabs(instance_id, label) {
 }
 
 async function connectNativePort() {
+  if (nativePort) return nativePort;
   const { instance_id, label } = await ensureInstanceId();
-  if (nativePort) {
-    try {
-      nativePort.disconnect();
-    } catch (_) {}
-    nativePort = null;
+  if (nativePort) return nativePort;
+  if (nativeReconnectTimer) {
+    clearTimeout(nativeReconnectTimer);
+    nativeReconnectTimer = null;
   }
   try {
     const port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
     nativePort = port;
     port.onMessage.addListener(handleNativeMessage);
     port.onDisconnect.addListener(() => {
+      if (!isCurrentPort(nativePort, port)) return;
       console.warn("[ap-browser] native port disconnected");
       nativePort = null;
-      setTimeout(connectNativePort, 1000);
+      if (!nativeReconnectTimer) {
+        nativeReconnectTimer = setTimeout(() => {
+          nativeReconnectTimer = null;
+          connectNativePort();
+        }, 1000);
+      }
     });
     // Minimal hello FIRST, no awaits. SW may be torn down before async work completes.
     port.postMessage({
@@ -141,6 +154,7 @@ async function connectNativePort() {
       }
     }).catch((e) => console.warn("[ap-browser] tab info follow-up failed:", e));
     console.log("[ap-browser] native port connected, hello pushed");
+    return port;
   } catch (e) {
     console.error("[ap-browser] connectNative failed:", e);
     nativePort = null;
@@ -318,7 +332,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
       const expression = dropRules.length > 0
         ? buildDomReadExpression(selector, "text", dropRules)
         : `String(document.querySelector(${JSON.stringify(selector)})?.innerText ?? "")`;
-      const { result } = await chrome.debugger.sendCommand(
+      const evaluated = await chrome.debugger.sendCommand(
         { tabId: tab.id },
         "Runtime.evaluate",
         {
@@ -326,9 +340,10 @@ async function dispatchUnfiltered(method, params, operatedTab) {
           returnByValue: true,
         },
       );
+      const value = runtimeEvaluateValue(evaluated);
       const filteredRead = dropRules.length > 0
-        ? (result?.value || { value: "", metadata: null })
-        : { value: result?.value || "", metadata: null };
+        ? (value || { value: "", metadata: null })
+        : { value: value || "", metadata: null };
       const full = filteredRead.value || "";
       const cap = params.full ? full.length : (params.range ? null : 50000);
       let text = full;
@@ -382,12 +397,12 @@ async function dispatchUnfiltered(method, params, operatedTab) {
       const expr = denyRules.length > 0
         ? buildInteractionExpression("click", params.selector, undefined, denyRules)
         : `((el) => { if (!el) return false; el.scrollIntoView({block:'center'}); el.click(); return true; })(document.querySelector(${JSON.stringify(params.selector)}))`;
-      const { result } = await chrome.debugger.sendCommand(
+      const evaluated = await chrome.debugger.sendCommand(
         { tabId: tab.id },
         "Runtime.evaluate",
         { expression: expr, returnByValue: true },
       );
-      const interaction = result?.value;
+      const interaction = runtimeEvaluateValue(evaluated);
       const outcome = interactionOutcome(interaction, denyRules.length > 0);
       if (outcome === "denied") {
         throw filterDeniedError(interaction.metadata);
@@ -409,12 +424,12 @@ async function dispatchUnfiltered(method, params, operatedTab) {
       const expr = denyRules.length > 0
         ? buildInteractionExpression("fill", params.selector, params.value, denyRules)
         : `((el, v) => { if (!el) return false; el.focus(); el.value = v; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return true; })(document.querySelector(${JSON.stringify(params.selector)}), ${JSON.stringify(params.value)})`;
-      const { result } = await chrome.debugger.sendCommand(
+      const evaluated = await chrome.debugger.sendCommand(
         { tabId: tab.id },
         "Runtime.evaluate",
         { expression: expr, returnByValue: true },
       );
-      const interaction = result?.value;
+      const interaction = runtimeEvaluateValue(evaluated);
       const outcome = interactionOutcome(interaction, denyRules.length > 0);
       if (outcome === "denied") {
         throw filterDeniedError(interaction.metadata);
@@ -483,14 +498,15 @@ async function dispatchUnfiltered(method, params, operatedTab) {
       const expression = dropRules.length > 0
         ? buildDomReadExpression(selector, "html", dropRules)
         : `String(document.querySelector(${JSON.stringify(selector)})?.outerHTML ?? "")`;
-      const { result } = await chrome.debugger.sendCommand(
+      const evaluated = await chrome.debugger.sendCommand(
         { tabId: tab.id },
         "Runtime.evaluate",
         { expression, returnByValue: true },
       );
+      const value = runtimeEvaluateValue(evaluated);
       const filteredRead = dropRules.length > 0
-        ? (result?.value || { value: "", metadata: null })
-        : { value: result?.value || "", metadata: null };
+        ? (value || { value: "", metadata: null })
+        : { value: value || "", metadata: null };
       const response = await truncateOutput(filteredRead.value || "", params, tab, "html");
       return attachFilterMetadata(response, filteredRead.metadata);
     }
@@ -571,12 +587,12 @@ async function dispatchUnfiltered(method, params, operatedTab) {
       const start = Date.now();
       while (Date.now() - start < timeout) {
         await ensureDebugger(tab.id);
-        const { result } = await chrome.debugger.sendCommand(
+        const evaluated = await chrome.debugger.sendCommand(
           { tabId: tab.id },
           "Runtime.evaluate",
           { expression: `!!document.querySelector(${JSON.stringify(selector)})`, returnByValue: true },
         );
-        if (result?.value === true) {
+        if (runtimeEvaluateValue(evaluated) === true) {
           return { ok: true, data: { matched: true, waited_ms: Date.now() - start }, meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }) };
         }
         await new Promise((r) => setTimeout(r, 200));
@@ -594,19 +610,19 @@ async function dispatchUnfiltered(method, params, operatedTab) {
       for (let i = 0; i < count; i++) {
         let moved = false;
         if (target) {
-          const r = await chrome.debugger.sendCommand(
+          const evaluated = await chrome.debugger.sendCommand(
             { tabId: tab.id },
             "Runtime.evaluate",
             { expression: `(() => { const el = document.querySelector(${JSON.stringify(target)}); if (el) el.scrollIntoView({behavior:'auto', block:'end'}); return !!el; })()`, returnByValue: true },
           );
-          moved = r?.result?.value === true;
+          moved = runtimeEvaluateValue(evaluated) === true;
         } else {
           const before = await chrome.debugger.sendCommand(
             { tabId: tab.id },
             "Runtime.evaluate",
             { expression: "JSON.stringify({y: window.scrollY, h: document.body.scrollHeight})", returnByValue: true },
           );
-          const beforeState = JSON.parse(before?.result?.value || "{}");
+          const beforeState = JSON.parse(runtimeEvaluateValue(before) || "{}");
           await chrome.debugger.sendCommand(
             { tabId: tab.id },
             "Input.dispatchMouseEvent",
@@ -618,7 +634,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
             "Runtime.evaluate",
             { expression: "JSON.stringify({y: window.scrollY, h: document.body.scrollHeight})", returnByValue: true },
           );
-          const afterState = JSON.parse(after?.result?.value || "{}");
+          const afterState = JSON.parse(runtimeEvaluateValue(after) || "{}");
           moved = afterState.y > beforeState.y || afterState.h > beforeState.h;
         }
         scrolled.push(moved);
@@ -1005,6 +1021,7 @@ async function resolveTab(params) {
 
 // Attach debugger if not already attached.
 const attachedTabs = new Set();
+const attachingTabs = new Map();
 const lockedTabs = new Set();
 const pendingRestoreTimers = new Map();
 
@@ -1100,40 +1117,51 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
       });
       break;
     default:
-      if (method === "Page.frameNavigated") {
-        try { chrome.debugger.sendCommand({ tabId }, "Network.enable"); } catch (_) {}
-      }
+      break;
     }
 });
 
 async function ensureDebugger(tabId) {
-  const wasAttached = attachedTabs.has(tabId);
-  if (!wasAttached) {
+  await ensureAttachedOnce(tabId, { attachedTabs, attachingTabs }, async () => {
     try {
       await chrome.debugger.attach({ tabId }, "1.3");
-      attachedTabs.add(tabId);
     } catch (e) {
-      if (e.message?.includes("Already attached")) {
-        attachedTabs.add(tabId);
-      } else if (e.message?.includes("Another debugger")) {
+      if (e.message?.includes("Another debugger")) {
         throw Object.assign(new Error(`debugger rejected for tab ${tabId}`), { code: "DEBUGGER_ATTACH_FAILED" });
-      } else {
+      }
+      if (!e.message?.includes("Already attached")) {
         throw e;
       }
     }
-  }
-  try {
-    await chrome.debugger.sendCommand({ tabId }, "Runtime.enable");
-    await chrome.debugger.sendCommand({ tabId }, "Log.enable");
-    await chrome.debugger.sendCommand({ tabId }, "Network.enable");
-    await chrome.debugger.sendCommand({ tabId }, "Page.enable");
-  } catch (_) {}
+    await Promise.allSettled(
+      ["Runtime.enable", "Log.enable", "Network.enable", "Page.enable"].map(
+        (method) => chrome.debugger.sendCommand({ tabId }, method),
+      ),
+    );
+  });
 }
+
+function clearTabState(tabId) {
+  clearTabRuntimeState(tabId, {
+    attachedTabs,
+    attachingTabs,
+    lockedTabs,
+    pendingRestoreTimers,
+    consoleBuffers,
+    networkBuffers,
+  });
+}
+
+chrome.debugger.onDetach.addListener((source) => {
+  if (source.tabId != null) clearTabState(source.tabId);
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => clearTabState(tabId));
 
 async function detachDebugger(tabId) {
   if (!attachedTabs.has(tabId)) return;
   try { await chrome.debugger.detach({ tabId }); } catch (_) {}
-  attachedTabs.delete(tabId);
+  clearTabState(tabId);
 }
 
 async function unlockOtherTabs(keepTabId) {

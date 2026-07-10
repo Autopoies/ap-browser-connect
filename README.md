@@ -11,21 +11,20 @@ Autopoies Browser Connect is a vendor-neutral Chrome control surface that lets a
 Paste this into Claude Code, Cursor, Codex, or any coding agent:
 
 ```
-Install ap-browser from https://github.com/autopoies/ap-browser-connect (curl install script under install/install.sh, or cargo install ap-browser), load the extension/ directory unpacked at chrome://extensions, then read skill/SKILL.md in the repo to learn the 22 CLI commands. Verify with `ap-browser ping`.
+Install the ap-browser CLI and native host from https://github.com/autopoies/ap-browser-connect/releases, load the extension/ directory unpacked at chrome://extensions, then run `curl -fsSL https://raw.githubusercontent.com/autopoies/ap-browser-connect/main/install/install.sh | bash` to register its assigned ID. Read skill/SKILL.md for the commands and verify with `ap-browser ping`.
 ```
 
 That's it. Your agent now drives your logged-in Chrome.
 
 # 👋 Human Quickstart
 
-**1. Install the CLI:**
+**1. Install the release binaries:**
 
 ```bash
-# L0: Quick install (macOS / Linux)
-curl -fsSL https://raw.githubusercontent.com/autopoies/ap-browser-connect/main/install/install.sh | sh
-
-# L3: Or build from source
-cargo install ap-browser
+# Download the matching tarball from:
+# https://github.com/autopoies/ap-browser-connect/releases/latest
+tar xzf ap-browser-*-<target>.tar.gz
+sudo cp ap-browser-*-<target>/bin/ap-browser* /usr/local/bin/
 ```
 
 **2. Load the extension:**
@@ -36,7 +35,17 @@ cargo install ap-browser
 
 *(Not on the Chrome Web Store in v1 — load-unpacked only.)*
 
-**3. Verify and use:**
+**3. Register the native host:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/autopoies/ap-browser-connect/main/install/install.sh | bash
+```
+
+For source development, run `cargo install --path cli`, load this checkout's
+`extension/`, then run `bash install/install.sh`; it builds the host when no
+release host is installed.
+
+**4. Verify and use:**
 
 ```bash
 ap-browser ping                                          # connection check

@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::io::IsTerminal;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ── Reserved names that can never be site folders ─────────────────────────
 pub const RESERVED: &[&str] = &[
@@ -67,11 +67,14 @@ pub struct SiteEntry {
 
 impl Registry {
     pub fn load() -> Self {
-        let root = dirs::home_dir()
-            .unwrap_or_else(|| std::env::temp_dir())
-            .join(".ap-browser")
-            .join("sites");
+        Self::load_from_home(dirs::home_dir())
+    }
+
+    fn load_from_home(home: Option<PathBuf>) -> Self {
         let mut sites = HashMap::new();
+        let Some(root) = home.map(|path| path.join(".ap-browser").join("sites")) else {
+            return Registry { sites };
+        };
         if root.is_dir() {
             for entry in std::fs::read_dir(&root).into_iter().flatten().flatten() {
                 if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
@@ -396,18 +399,24 @@ fn expand_steps(steps: &[HashMap<String, Value>], args: &HashMap<String, Value>)
 }
 
 fn expand_value(value: &Value, method: &str, args: &HashMap<String, Value>) -> Result<Value> {
-    // Determine context: URL methods (goto) use encodeURIComponent; JS methods (eval) use JSON.stringify
+    // URL templates encode values; eval templates escape JavaScript string fragments.
     let is_url_context = method == "goto";
+    let is_js_context = method == "eval";
     match value {
         Value::String(s) => {
-            let expanded = expand_template(s, args, is_url_context)?;
+            let expanded = expand_template(s, args, is_url_context, is_js_context)?;
             Ok(Value::String(expanded))
         }
         Value::Object(map) => {
             let mut out = serde_json::Map::new();
             for (k, v) in map {
                 let ev = match v {
-                    Value::String(s) => Value::String(expand_template(s, args, is_url_context)?),
+                    Value::String(s) => Value::String(expand_template(
+                        s,
+                        args,
+                        is_url_context,
+                        is_js_context,
+                    )?),
                     other => other.clone(),
                 };
                 out.insert(k.clone(), ev);
@@ -418,7 +427,12 @@ fn expand_value(value: &Value, method: &str, args: &HashMap<String, Value>) -> R
     }
 }
 
-fn expand_template(s: &str, args: &HashMap<String, Value>, url_context: bool) -> Result<String> {
+fn expand_template(
+    s: &str,
+    args: &HashMap<String, Value>,
+    url_context: bool,
+    js_context: bool,
+) -> Result<String> {
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
     let bytes = s.as_bytes();
@@ -433,6 +447,11 @@ fn expand_template(s: &str, args: &HashMap<String, Value>, url_context: bool) ->
                         Value::String(s) => percent_encode(s),
                         other => percent_encode(&other.to_string()),
                     }
+                } else if js_context {
+                    match &val {
+                        Value::String(s) => escape_js_string_fragment(s),
+                        other => other.to_string(),
+                    }
                 } else {
                     match &val {
                         Value::String(s) => s.clone(),
@@ -444,10 +463,34 @@ fn expand_template(s: &str, args: &HashMap<String, Value>, url_context: bool) ->
                 continue;
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        let ch = s[i..].chars().next().expect("i is before string end");
+        out.push(ch);
+        i += ch.len_utf8();
     }
     Ok(out)
+}
+
+fn escape_js_string_fragment(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{0008}' => out.push_str("\\b"),
+            '\u{000C}' => out.push_str("\\f"),
+            '`' => out.push_str("\\`"),
+            '$' if chars.peek() == Some(&'{') => out.push_str("\\$"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn resolve_template_expr(expr: &str, args: &HashMap<String, Value>) -> Result<Value> {
@@ -790,5 +833,41 @@ mod tests {
         let extracted = extract_adapter_output(response);
         assert_eq!(extracted["error"]["code"], "FILTER_DENIED");
         assert_eq!(extracted["meta"]["filters"]["denied_interactions"], 1);
+    }
+
+    #[test]
+    fn missing_home_loads_no_sites() {
+        assert!(Registry::load_from_home(None).sites.is_empty());
+    }
+
+    #[test]
+    fn eval_template_preserves_unicode_and_escapes_javascript_string_fragments() {
+        let args = HashMap::from([(
+            "value".to_string(),
+            json!("'\"\\\n` ${x}\u{2028}\u{2029}中文"),
+        )]);
+
+        assert_eq!(
+            expand_template("前缀 '{{args.value}}' 后缀", &args, false, true).unwrap(),
+            "前缀 '\\'\\\"\\\\\\n\\` \\${x}\\u2028\\u2029中文' 后缀"
+        );
+    }
+
+    #[test]
+    fn non_eval_template_keeps_plain_values() {
+        let args = HashMap::from([("selector".to_string(), json!(r#"[title="中文"]"#))]);
+        assert_eq!(
+            expand_template("{{args.selector}}", &args, false, false).unwrap(),
+            r#"[title="中文"]"#
+        );
+    }
+
+    #[test]
+    fn numeric_template_substitution_keeps_javascript_expression_shape() {
+        let args = HashMap::from([("limit".to_string(), json!(25))]);
+        assert_eq!(
+            expand_template("items.slice(0, {{args.limit}})", &args, false, true).unwrap(),
+            "items.slice(0, 25)"
+        );
     }
 }

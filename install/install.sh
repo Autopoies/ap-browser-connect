@@ -2,9 +2,9 @@
 # ap-browser-connect installer (macOS / Linux)
 #
 # What it does:
-#   1. Builds ap-browser-host (release) and symlinks to /usr/local/bin
-#   2. Detects Chrome user-data-dir, derives extension ID, writes the
-#      native messaging manifest with the correct allowed_origins
+#   1. Reuses /usr/local/bin/ap-browser-host, or builds it from a source checkout
+#   2. Scans all Chrome profiles and writes every distinct extension ID
+#      to the native messaging manifest's allowed_origins
 #   3. Drops the manifest in ~/Library/Application Support/Google/Chrome/NativeMessagingHosts/
 #      (macOS) or ~/.config/google-chrome/NativeMessagingHosts/ (Linux)
 #
@@ -12,25 +12,29 @@
 #   ./install/install.sh                # install
 #   ./install/install.sh --uninstall    # remove
 #
-# After install, load the extension unpacked at chrome://extensions.
+# Load the extension unpacked at chrome://extensions before running this script.
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]:-}"
+REPO_ROOT=""
+if [[ -n "$SCRIPT_PATH" && "$SCRIPT_PATH" != /dev/fd/* && -f "$SCRIPT_PATH" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+  REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
 HOST_NAME="com.apbrowser.connect"
 HOST_BIN_NAME="ap-browser-host"
-HOST_BIN_INSTALL="/usr/local/bin/${HOST_BIN_NAME}"
+HOST_BIN_INSTALL="${AP_BROWSER_HOST_BIN_INSTALL:-/usr/local/bin/${HOST_BIN_NAME}}"
 
 # OS detection
 case "$(uname -s)" in
   Darwin)
-    NM_DIR="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"
-    CHROME_USER_DATA="$HOME/Library/Application Support/Google/Chrome"
+    NM_DIR="${AP_BROWSER_NM_DIR:-$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts}"
+    CHROME_USER_DATA="${AP_BROWSER_CHROME_USER_DATA:-$HOME/Library/Application Support/Google/Chrome}"
     ;;
   Linux)
-    NM_DIR="$HOME/.config/google-chrome/NativeMessagingHosts"
-    CHROME_USER_DATA="$HOME/.config/google-chrome"
+    NM_DIR="${AP_BROWSER_NM_DIR:-$HOME/.config/google-chrome/NativeMessagingHosts}"
+    CHROME_USER_DATA="${AP_BROWSER_CHROME_USER_DATA:-$HOME/.config/google-chrome}"
     ;;
   *)
     echo "Unsupported OS: $(uname -s)." >&2
@@ -52,70 +56,99 @@ uninstall() {
 
 [[ "${1:-}" == "--uninstall" ]] && uninstall
 
-# ─── 1. Build host binary ─────────────────────────────────────────────────
-echo "→ Building ap-browser-host (release)…"
-(cd "$REPO_ROOT" && cargo build --release -p ap-browser-host)
-HOST_BIN="${REPO_ROOT}/target/release/${HOST_BIN_NAME}"
-if [[ ! -x "$HOST_BIN" ]]; then
-  echo "Build failed: $HOST_BIN not found" >&2
+# ─── 1. Ensure host binary exists ─────────────────────────────────────────
+if [[ -x "$HOST_BIN_INSTALL" ]]; then
+  echo "→ Reusing installed host binary: ${HOST_BIN_INSTALL}"
+elif [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/Cargo.toml" && -f "$REPO_ROOT/host/Cargo.toml" ]]; then
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "cargo is required to build ap-browser-host from this source checkout." >&2
+    exit 1
+  fi
+  echo "→ Building ap-browser-host (release)…"
+  (cd "$REPO_ROOT" && cargo build --release -p ap-browser-host)
+  HOST_BIN="${REPO_ROOT}/target/release/${HOST_BIN_NAME}"
+  if [[ ! -x "$HOST_BIN" ]]; then
+    echo "Build failed: $HOST_BIN not found" >&2
+    exit 1
+  fi
+
+  echo "→ Symlinking host binary to ${HOST_BIN_INSTALL}"
+  sudo mkdir -p "$(dirname "$HOST_BIN_INSTALL")" 2>/dev/null || true
+  sudo ln -sf "$HOST_BIN" "$HOST_BIN_INSTALL" 2>/dev/null || ln -sf "$HOST_BIN" "$HOST_BIN_INSTALL"
+else
+  echo "Host binary not found at ${HOST_BIN_INSTALL}." >&2
+  echo "Install the release binaries first, or run this script from an ap-browser-connect source checkout." >&2
   exit 1
 fi
 
-echo "→ Symlinking host binary to ${HOST_BIN_INSTALL}"
-sudo mkdir -p "$(dirname "$HOST_BIN_INSTALL")" 2>/dev/null || true
-sudo ln -sf "$HOST_BIN" "$HOST_BIN_INSTALL" 2>/dev/null || ln -sf "$HOST_BIN" "$HOST_BIN_INSTALL"
+# ─── 2. Find extension IDs across all Chrome profiles ─────────────────────
+# Load-unpacked IDs depend on the load path, so different profiles can have
+# different IDs. A profile is any user-data subdirectory with Preferences.
 
-# ─── 2. Find extension ID ────────────────────────────────────────────────
-# The extension ID is computed from the public key OR assigned at load-unpacked
-# time as a hash of the load path. For load-unpacked dev install, the ID is
-# stable per machine once loaded.
-#
-# Strategy:
-#   - Scan Preferences files in $CHROME_USER_DATA/{Default,Profile *}
-#   - Find the entry for an extension whose name == "ap-browser-connect"
-#   - Use that extension's manifest.key for a deterministic ID, or fall back
-#     to the runtime-assigned ID stored in Preferences.
+echo "→ Looking for extension IDs across all Chrome profiles…"
 
-echo "→ Looking for extension ID in Chrome Preferences…"
+# Match the current manifest name and the legacy slug.
+extract_ids() {
+  local prefs="$1"
+  if command -v jq >/dev/null; then
+    jq -r '
+      .extensions.settings // {}
+      | to_entries[]
+      | select(.value.manifest.name == "AP Browser Connect"
+            or .value.manifest.name == "ap-browser-connect")
+      | .key' "$prefs" 2>/dev/null || true
+  else
+    python3 - "$prefs" <<'PY' 2>/dev/null || true
+import json
+import sys
 
-EXT_ID=""
+with open(sys.argv[1]) as f:
+    settings = json.load(f).get("extensions", {}).get("settings", {})
+for extension_id, value in settings.items():
+    if value.get("manifest", {}).get("name") in {"AP Browser Connect", "ap-browser-connect"}:
+        print(extension_id)
+PY
+  fi
+}
+
+# macOS ships Bash 3.2, so avoid associative arrays.
+ext_seen() {
+  local needle="$1" existing
+  for existing in ${EXT_IDS[@]+"${EXT_IDS[@]}"}; do
+    [[ "$existing" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+EXT_IDS=()
 if [[ -d "$CHROME_USER_DATA" ]]; then
-  for PREFS in "$CHROME_USER_DATA/Default/Preferences" "$CHROME_USER_DATA/Profile 1/Preferences" "$CHROME_USER_DATA/Profile 2/Preferences"; do
-    [[ -f "$PREFS" ]] || continue
-    # jq if available, else python
-    if command -v jq >/dev/null; then
-      EXT_ID=$(jq -r '
-        .extensions.settings // {}
-        | to_entries[]
-        | select(.value.manifest.name == "ap-browser-connect")
-        | .key' "$PREFS" 2>/dev/null | head -1 || true)
-    else
-      EXT_ID=$(python3 -c "
-import json,sys
-with open('$PREFS') as f: d=json.load(f)
-ext=d.get('extensions',{}).get('settings',{})
-for k,v in ext.items():
-    if v.get('manifest',{}).get('name')=='ap-browser-connect':
-        print(k); break
-" 2>/dev/null || true)
-    fi
-    [[ -n "$EXT_ID" ]] && break
+  shopt -s nullglob
+  for PREFS in "$CHROME_USER_DATA"/*/Preferences; do
+    while IFS= read -r extension_id; do
+      [[ -n "$extension_id" ]] || continue
+      ext_seen "$extension_id" || EXT_IDS+=("$extension_id")
+    done < <(extract_ids "$PREFS")
   done
 fi
 
-if [[ -z "$EXT_ID" ]]; then
+if [[ ${#EXT_IDS[@]} -eq 0 ]]; then
   cat >&2 <<EOF
-⚠ Could not auto-detect extension ID.
-   Load the extension unpacked at chrome://extensions first, then re-run this installer.
-   Or edit ${NM_MANIFEST} manually and replace REPLACE_WITH_EXTENSION_ID with the
-   32-char ID shown on chrome://extensions after enabling Developer Mode.
+✗ Could not auto-detect any AP Browser Connect extension ID.
+   Load the extension unpacked at chrome://extensions in each profile you want
+   to drive, then re-run this installer. No manifest was written.
 EOF
-  EXT_ID="REPLACE_WITH_EXTENSION_ID"
+  exit 1
 fi
 
-echo "  Extension ID: $EXT_ID"
+echo "  Found ${#EXT_IDS[@]} extension ID(s):"
+for extension_id in "${EXT_IDS[@]}"; do
+  echo "    - $extension_id"
+done
 
 # ─── 3. Write manifest ────────────────────────────────────────────────────
+ORIGINS=$(printf '    "chrome-extension://%s/",\n' "${EXT_IDS[@]}")
+ORIGINS="${ORIGINS%,}"
+
 echo "→ Writing native messaging manifest to ${NM_MANIFEST}"
 mkdir -p "$NM_DIR"
 cat > "$NM_MANIFEST" <<EOF
@@ -125,15 +158,15 @@ cat > "$NM_MANIFEST" <<EOF
   "path": "${HOST_BIN_INSTALL}",
   "type": "stdio",
   "allowed_origins": [
-    "chrome-extension://${EXT_ID}/"
+${ORIGINS}
   ]
 }
 EOF
 
 echo
 echo "✓ Done. Next:"
-echo "  1. Load the extension unpacked at: ${REPO_ROOT}/extension"
-echo "  2. Open the extension popup to set a label"
-echo "  3. Verify with: ap-browser ping"
+echo "  1. Open the extension popup in each profile to set a label"
+echo "  2. Verify with: ap-browser profiles"
+echo "     then:         ap-browser use <id-or-label> && ap-browser ping"
 echo
-echo "If the extension ID changes (e.g. new load path), re-run this script."
+echo "If a profile's extension ID changes (e.g. new load path), re-run this script."

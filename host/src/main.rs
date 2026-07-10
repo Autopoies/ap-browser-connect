@@ -244,7 +244,7 @@ fn handle_cli_connection(host: Arc<Host>, mut stream: transport::Stream) -> Resu
                 "ok": false,
                 "error": {
                     "code": "TIMEOUT",
-                    "message": format!("request timed out after {RESPONSE_TIMEOUT_SECS}s")
+                    "message": format!("request timed out after {timeout_secs}s")
                 }
             });
             let _ = stream.write_all(&encode(&err)?);

@@ -272,6 +272,7 @@ fn rpc(cli: &Cli, method: &str, params: Value, human: bool, post: impl Fn(&Value
     let mut p = params;
     if let Some(t) = cli.tab { p.as_object_mut().map(|o| o.insert("tab_id".into(), json!(t))); }
     if let Some(w) = cli.window { p.as_object_mut().map(|o| o.insert("window_id".into(), json!(w))); }
+    apply_timeout_hint(&mut p, cli.timeout);
     filters::Registry::load().attach_to(&mut p);
 
     let socket = resolve_socket(cli.profile.as_deref())?;
@@ -305,6 +306,12 @@ fn rpc(cli: &Cli, method: &str, params: Value, human: bool, post: impl Fn(&Value
         std::process::exit(error_to_exit_code(&response));
     }
     Ok(())
+}
+
+fn apply_timeout_hint(params: &mut Value, timeout_secs: u64) {
+    if let Some(object) = params.as_object_mut() {
+        object.insert("_timeout_hint_secs".into(), json!(timeout_secs));
+    }
 }
 
 fn save_screenshot(resp: &Value, out: &str) {
@@ -660,5 +667,12 @@ mod tests {
     fn filter_denial_uses_runtime_error_exit_code() {
         let response = json!({"error": {"code": "FILTER_DENIED"}});
         assert_eq!(error_to_exit_code(&response), 4);
+    }
+
+    #[test]
+    fn rpc_params_include_cli_timeout_hint() {
+        let mut params = json!({});
+        apply_timeout_hint(&mut params, 90);
+        assert_eq!(params["_timeout_hint_secs"], 90);
     }
 }
