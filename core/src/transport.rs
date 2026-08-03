@@ -24,10 +24,10 @@ use interprocess::local_socket::{GenericFilePath, ListenerOptions, Name};
 pub use interprocess::local_socket::Listener;
 pub use interprocess::local_socket::Stream;
 
+const REMOTE_RESPONSE_TIMEOUT_SECS: u64 = 3_615;
+
 pub fn bind(name: &str) -> io::Result<Listener> {
-    let listener = ListenerOptions::new()
-        .name(make_name(name))
-        .create_sync()?;
+    let listener = ListenerOptions::new().name(make_name(name)).create_sync()?;
     #[cfg(unix)]
     if let Err(error) = owner_only(name) {
         drop(listener);
@@ -160,9 +160,7 @@ pub fn remote_endpoint() -> Option<(String, String)> {
     let s = std::env::var("AP_BROWSER_REMOTE").ok()?;
     let s = s.strip_prefix("tcp://")?;
     let (addr, token) = s.split_once('?').unwrap_or((s, ""));
-    let token = token
-        .strip_prefix("token=")
-        .unwrap_or("");
+    let token = token.strip_prefix("token=").unwrap_or("");
     Some((addr.to_string(), token.to_string()))
 }
 
@@ -174,7 +172,8 @@ pub fn connect_remote(addr: &str, token: &str) -> io::Result<std::net::TcpStream
     let mut s = std::net::TcpStream::connect(addr)?;
     s.set_read_timeout(Some(Duration::from_secs(10)))?;
     let auth = serde_json::json!({"token": token});
-    let payload = serde_json::to_vec(&auth).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let payload =
+        serde_json::to_vec(&auth).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     s.write_all(&(payload.len() as u32).to_le_bytes())?;
     s.write_all(&payload)?;
     s.flush()?;
@@ -182,19 +181,22 @@ pub fn connect_remote(addr: &str, token: &str) -> io::Result<std::net::TcpStream
     s.read_exact(&mut header)?;
     let len = u32::from_le_bytes(header) as usize;
     if len > 64 * 1024 * 1024 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "frame too large"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame too large",
+        ));
     }
     let mut buf = vec![0u8; len];
     s.read_exact(&mut buf)?;
-    let resp: serde_json::Value = serde_json::from_slice(&buf)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let resp: serde_json::Value =
+        serde_json::from_slice(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!("bridge auth failed: {:?}", resp.get("error")),
         ));
     }
-    s.set_read_timeout(Some(Duration::from_secs(120)))?;
+    s.set_read_timeout(Some(Duration::from_secs(REMOTE_RESPONSE_TIMEOUT_SECS)))?;
     Ok(s)
 }
 
@@ -223,5 +225,32 @@ mod tests {
 
         drop(listener);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn remote_socket_allows_long_host_response_timeout() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut header = [0u8; 4];
+            stream.read_exact(&mut header).unwrap();
+            let mut auth = vec![0u8; u32::from_le_bytes(header) as usize];
+            stream.read_exact(&mut auth).unwrap();
+            let response = serde_json::to_vec(&serde_json::json!({"ok": true})).unwrap();
+            stream
+                .write_all(&(response.len() as u32).to_le_bytes())
+                .unwrap();
+            stream.write_all(&response).unwrap();
+        });
+
+        let stream = connect_remote(&address.to_string(), "token").unwrap();
+
+        assert_eq!(
+            stream.read_timeout().unwrap(),
+            Some(Duration::from_secs(3_615))
+        );
+        server.join().unwrap();
     }
 }

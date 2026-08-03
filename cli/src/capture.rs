@@ -5,11 +5,26 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 const VIDEO_DOMAINS: &[&str] = &[
-    "youtube.com", "youtu.be", "bilibili.com", "b23.tv",
-    "vimeo.com", "twitter.com", "x.com", "tiktok.com",
-    "douyin.com", "instagram.com", "facebook.com", "twitch.tv",
-    "dailymotion.com", "soundcloud.com", "udemy.com",
-    "coursera.org", "nicovideo.jp", "youku.com", "iqiyi.com", "t.co",
+    "youtube.com",
+    "youtu.be",
+    "bilibili.com",
+    "b23.tv",
+    "vimeo.com",
+    "twitter.com",
+    "x.com",
+    "tiktok.com",
+    "douyin.com",
+    "instagram.com",
+    "facebook.com",
+    "twitch.tv",
+    "dailymotion.com",
+    "soundcloud.com",
+    "udemy.com",
+    "coursera.org",
+    "nicovideo.jp",
+    "youku.com",
+    "iqiyi.com",
+    "t.co",
 ];
 
 fn default_extensions() -> Vec<(String, String)> {
@@ -74,7 +89,7 @@ fn default_url_patterns() -> Vec<(String, String)> {
 
 fn config_path() -> std::path::PathBuf {
     dirs::home_dir()
-        .unwrap_or_else(|| std::env::temp_dir())
+        .unwrap_or_else(std::env::temp_dir)
         .join(".ap-browser")
         .join("download-config.yml")
 }
@@ -115,18 +130,25 @@ impl DownloadConfig {
                 }
             }
         }
-        DownloadConfig { extensions, url_patterns }
+        DownloadConfig {
+            extensions,
+            url_patterns,
+        }
     }
 
     fn js_exts_array(&self) -> String {
-        let pairs: Vec<String> = self.extensions.iter()
+        let pairs: Vec<String> = self
+            .extensions
+            .iter()
             .map(|(e, t)| format!("['{e}','{t}']"))
             .collect();
         format!("[{}]", pairs.join(","))
     }
 
     fn js_patterns_array(&self) -> String {
-        let pairs: Vec<String> = self.url_patterns.iter()
+        let pairs: Vec<String> = self
+            .url_patterns
+            .iter()
             .map(|(p, t)| format!("['{p}','{t}']"))
             .collect();
         format!("[{}]", pairs.join(","))
@@ -147,11 +169,15 @@ pub fn dispatch(cmd: &str, args: &[String]) -> Result<()> {
 // ── Helpers (shared with dev.rs pattern) ───────────────────────────────────
 
 fn extract_tab(args: &[String]) -> Option<i64> {
-    args.windows(2).find(|w| w[0] == "--tab").and_then(|w| w[1].parse().ok())
+    args.windows(2)
+        .find(|w| w[0] == "--tab")
+        .and_then(|w| w[1].parse().ok())
 }
 
 fn extract_profile(args: &[String]) -> Option<String> {
-    args.windows(2).find(|w| w[0] == "--profile").map(|w| w[1].clone())
+    args.windows(2)
+        .find(|w| w[0] == "--profile")
+        .map(|w| w[1].clone())
 }
 
 fn flag_value(args: &[String], flag: &str) -> Option<String> {
@@ -163,14 +189,27 @@ fn has_flag(args: &[String], flag: &str) -> bool {
 }
 
 fn cdp_eval(tab: Option<i64>, profile: Option<&str>, expression: &str) -> Result<Value> {
-    let resp = cdp(tab, profile, "Runtime.evaluate", json!({"expression": expression, "returnByValue": true, "awaitPromise": true}))?;
-    Ok(resp.get("data").and_then(|d| d.get("result")).and_then(|r| r.get("result")).and_then(|r| r.get("value")).cloned().unwrap_or(Value::Null))
+    let resp = cdp(
+        tab,
+        profile,
+        "Runtime.evaluate",
+        json!({"expression": expression, "returnByValue": true, "awaitPromise": true}),
+    )?;
+    Ok(resp
+        .get("data")
+        .and_then(|d| d.get("result"))
+        .and_then(|r| r.get("result"))
+        .and_then(|r| r.get("value"))
+        .cloned()
+        .unwrap_or(Value::Null))
 }
 
 fn cdp(tab: Option<i64>, profile: Option<&str>, cdp_method: &str, params: Value) -> Result<Value> {
     let mut p = json!({"method": cdp_method, "params": params});
     if let Some(t) = tab {
-        if let Some(o) = p.as_object_mut() { o.insert("tab_id".into(), json!(t)); }
+        if let Some(o) = p.as_object_mut() {
+            o.insert("tab_id".into(), json!(t));
+        }
     }
     let socket = crate::socket_client::resolve_socket(profile)?;
     let request = json!({"jsonrpc":"2.0","method":"cdp","params":p});
@@ -193,7 +232,9 @@ fn cdp(tab: Option<i64>, profile: Option<&str>, cdp_method: &str, params: Value)
 fn rpc(method: &str, params: Value, args: &[String]) -> Result<Value> {
     let mut p = params;
     if let Some(t) = extract_tab(args) {
-        if let Some(o) = p.as_object_mut() { o.insert("tab_id".into(), json!(t)); }
+        if let Some(o) = p.as_object_mut() {
+            o.insert("tab_id".into(), json!(t));
+        }
     }
     let socket = crate::socket_client::resolve_socket(extract_profile(args).as_deref())?;
     let request = json!({"jsonrpc":"2.0","method":method,"params":p});
@@ -214,7 +255,9 @@ fn rpc(method: &str, params: Value, args: &[String]) -> Result<Value> {
 }
 
 fn resolve_active_tab(args: &[String]) -> Result<Option<i64>> {
-    if let Some(t) = extract_tab(args) { return Ok(Some(t)); }
+    if let Some(t) = extract_tab(args) {
+        return Ok(Some(t));
+    }
     let socket = crate::socket_client::resolve_socket(extract_profile(args).as_deref())?;
     let request = json!({"jsonrpc":"2.0","method":"info","params":{}});
     let bytes = crate::cli_frame::encode(&request)?;
@@ -223,7 +266,12 @@ fn resolve_active_tab(args: &[String]) -> Result<Option<i64>> {
     stream.write_all(&bytes)?;
     stream.flush()?;
     let envelope = crate::cli_frame::read_response(&mut stream, Duration::from_secs(10))?;
-    Ok(envelope.get("result").and_then(|r| r.get("data")).and_then(|d| d.get("active_tab")).and_then(|t| t.get("id")).and_then(|v| v.as_i64()))
+    Ok(envelope
+        .get("result")
+        .and_then(|r| r.get("data"))
+        .and_then(|d| d.get("active_tab"))
+        .and_then(|t| t.get("id"))
+        .and_then(|v| v.as_i64()))
 }
 
 fn print_result(resp: Value, args: &[String]) {
@@ -238,12 +286,24 @@ fn print_result(resp: Value, args: &[String]) {
 // ── Download ───────────────────────────────────────────────────────────────
 
 fn is_video_domain(url: &str) -> bool {
-    let host = url.split("://").nth(1).unwrap_or(url).split('/').next().unwrap_or("");
-    VIDEO_DOMAINS.iter().any(|d| host == *d || host.ends_with(&format!(".{d}")))
+    let host = url
+        .split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .unwrap_or("");
+    VIDEO_DOMAINS
+        .iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")))
 }
 
 fn yt_dlp_installed() -> bool {
-    std::process::Command::new("yt-dlp").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+    std::process::Command::new("yt-dlp")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn download_cmd(args: &[String]) -> Result<()> {
@@ -295,7 +355,13 @@ fn download_cmd(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn route_download(url: &str, out: &str, method: &str, tab: Option<i64>, profile: Option<&str>) -> Result<()> {
+fn route_download(
+    url: &str,
+    out: &str,
+    method: &str,
+    tab: Option<i64>,
+    profile: Option<&str>,
+) -> Result<()> {
     let _ = ensure_debugger(tab, profile);
     let size = head_content_length(url, tab, profile);
     match method {
@@ -321,16 +387,26 @@ fn route_download(url: &str, out: &str, method: &str, tab: Option<i64>, profile:
 }
 
 fn curl_download(url: &str, out: &str, tab: Option<i64>, profile: Option<&str>) -> Result<()> {
-    if std::process::Command::new("curl").arg("--version").output().is_err() {
+    if std::process::Command::new("curl")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         bail!("curl not installed");
     }
 
-    let cookie_jar = std::env::temp_dir().join(format!("ap-browser-cookies-{}.txt", std::process::id()));
+    let cookie_jar =
+        std::env::temp_dir().join(format!("ap-browser-cookies-{}.txt", std::process::id()));
     let mut has_cookies = false;
     if let Some(t) = tab {
         let _ = ensure_debugger(Some(t), profile);
         let resp = cdp(Some(t), profile, "Network.getCookies", json!({}))?;
-        if let Some(cookies) = resp.get("data").and_then(|d| d.get("result")).and_then(|r| r.get("cookies")).and_then(|c| c.as_array()) {
+        if let Some(cookies) = resp
+            .get("data")
+            .and_then(|d| d.get("result"))
+            .and_then(|r| r.get("cookies"))
+            .and_then(|c| c.as_array())
+        {
             if !cookies.is_empty() {
                 let mut jar = String::from("# Netscape HTTP Cookie File\n");
                 for cookie in cookies {
@@ -338,11 +414,36 @@ fn curl_download(url: &str, out: &str, tab: Option<i64>, profile: Option<&str>) 
                     let value = cookie.get("value").and_then(|v| v.as_str()).unwrap_or("");
                     let domain = cookie.get("domain").and_then(|v| v.as_str()).unwrap_or("");
                     let path = cookie.get("path").and_then(|v| v.as_str()).unwrap_or("/");
-                    let secure = if cookie.get("secure").and_then(|v| v.as_bool()).unwrap_or(false) { "TRUE" } else { "FALSE" };
-                    let httponly = if cookie.get("httpOnly").and_then(|v| v.as_bool()).unwrap_or(false) { "TRUE" } else { "FALSE" };
-                    let expires = cookie.get("expires").and_then(|v| v.as_f64()).unwrap_or(0.0) as u64;
-                    let domain_flag = if domain.starts_with('.') { "TRUE" } else { "FALSE" };
-                    jar.push_str(&format!("{domain}\t{domain_flag}\t{path}\t{secure}\t{expires}\t{name}\t{value}\n"));
+                    let secure = if cookie
+                        .get("secure")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        "TRUE"
+                    } else {
+                        "FALSE"
+                    };
+                    let httponly = if cookie
+                        .get("httpOnly")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        "TRUE"
+                    } else {
+                        "FALSE"
+                    };
+                    let expires = cookie
+                        .get("expires")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0) as u64;
+                    let domain_flag = if domain.starts_with('.') {
+                        "TRUE"
+                    } else {
+                        "FALSE"
+                    };
+                    jar.push_str(&format!(
+                        "{domain}\t{domain_flag}\t{path}\t{secure}\t{expires}\t{name}\t{value}\n"
+                    ));
                     let _ = httponly;
                 }
                 std::fs::write(&cookie_jar, jar)?;
@@ -351,7 +452,10 @@ fn curl_download(url: &str, out: &str, tab: Option<i64>, profile: Option<&str>) 
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ = std::fs::set_permissions(&cookie_jar, std::fs::Permissions::from_mode(0o600));
+                    let _ = std::fs::set_permissions(
+                        &cookie_jar,
+                        std::fs::Permissions::from_mode(0o600),
+                    );
                 }
                 has_cookies = true;
             }
@@ -359,13 +463,21 @@ fn curl_download(url: &str, out: &str, tab: Option<i64>, profile: Option<&str>) 
     }
 
     let filename = if out.is_empty() {
-        url.split('/').last().and_then(|s| s.split('?').next()).unwrap_or("download").to_string()
+        url.split('/')
+            .next_back()
+            .and_then(|s| s.split('?').next())
+            .unwrap_or("download")
+            .to_string()
     } else {
         out.to_string()
     };
 
     let mut cmd = std::process::Command::new("curl");
-    cmd.arg("-L").arg("-s").arg("--fail").arg("-o").arg(&filename);
+    cmd.arg("-L")
+        .arg("-s")
+        .arg("--fail")
+        .arg("-o")
+        .arg(&filename);
     if has_cookies {
         cmd.arg("-b").arg(&cookie_jar);
     }
@@ -383,14 +495,45 @@ fn curl_download(url: &str, out: &str, tab: Option<i64>, profile: Option<&str>) 
     let metadata = std::fs::metadata(&filename)?;
     if metadata.len() < 100 {
         let _ = std::fs::remove_file(&filename);
-        bail!("curl downloaded suspiciously small file ({} bytes)", metadata.len());
+        bail!(
+            "curl downloaded suspiciously small file ({} bytes)",
+            metadata.len()
+        );
     }
 
-    print_result(json!({"ok": true, "data": {"method": "curl", "url": url, "file": filename, "size_bytes": metadata.len()}}), &[]);
+    // Guard: auth-walled URLs (Canvas LTI, SAML SSO, etc.) serve an HTML
+    // login/error page with HTTP 200 when cookies don't satisfy the gate.
+    // Bail loudly so route_download cascades to browser_download (which
+    // carries Chrome's session cookies). Caller can suppress by passing
+    // --out file.html or --method browser explicitly.
+    if !expects_html(url, out) {
+        let mut probe = [0u8; 512];
+        let read = std::fs::File::open(&filename)
+            .and_then(|mut f| std::io::Read::read(&mut f, &mut probe))
+            .unwrap_or(0);
+        if read > 0 && looks_like_html(&probe[..read]) {
+            let _ = std::fs::remove_file(&filename);
+            bail!(
+                "curl returned an HTML page instead of the requested file (likely auth-gated URL).\n\
+                 hint: retry with  --method browser   (uses Chrome's authenticated session)\n\
+                 or pass  --out <file>.html  if you genuinely want the HTML body."
+            );
+        }
+    }
+
+    print_result(
+        json!({"ok": true, "data": {"method": "curl", "url": url, "file": filename, "size_bytes": metadata.len()}}),
+        &[],
+    );
     Ok(())
 }
 
-fn fetch_chunked_download(url: &str, out: &str, tab: Option<i64>, profile: Option<&str>) -> Result<()> {
+fn fetch_chunked_download(
+    url: &str,
+    out: &str,
+    tab: Option<i64>,
+    profile: Option<&str>,
+) -> Result<()> {
     let _ = ensure_debugger(tab, profile);
 
     let fetch_expr = format!(
@@ -410,12 +553,16 @@ fn fetch_chunked_download(url: &str, out: &str, tab: Option<i64>, profile: Optio
         url = json!(url)
     );
     let fetch_result = cdp_eval(tab, profile, &fetch_expr)?;
-    let fetch_info: Value = serde_json::from_str(fetch_result.as_str().unwrap_or("{}")).unwrap_or(json!({}));
+    let fetch_info: Value =
+        serde_json::from_str(fetch_result.as_str().unwrap_or("{}")).unwrap_or(json!({}));
     if fetch_info.get("error").is_some() {
         bail!("fetch failed: {:?}", fetch_info.get("error"));
     }
 
-    let total_b64 = fetch_info.get("b64_len").and_then(|v| v.as_u64()).unwrap_or(0);
+    let total_b64 = fetch_info
+        .get("b64_len")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
     if total_b64 == 0 {
         bail!("fetch returned empty data");
     }
@@ -432,12 +579,30 @@ fn fetch_chunked_download(url: &str, out: &str, tab: Option<i64>, profile: Optio
         offset = end;
     }
 
-    let _ = cdp_eval(tab, profile, "delete window.__dlB64; delete window.__dlMime; 'cleaned'");
+    let _ = cdp_eval(
+        tab,
+        profile,
+        "delete window.__dlB64; delete window.__dlMime; 'cleaned'",
+    );
 
     let bytes = base64_decode(&full_b64)?;
-    let filename = if out.is_empty() { "download.bin".to_string() } else { out.to_string() };
+    if !expects_html(url, out) && looks_like_html(&bytes) {
+        bail!(
+            "fetch returned an HTML page instead of the requested file (likely auth-gated or CORS-blocked URL).\n\
+             hint: retry with  --method browser   (uses Chrome's authenticated session)\n\
+             or pass  --out <file>.html  if you genuinely want the HTML body."
+        );
+    }
+    let filename = if out.is_empty() {
+        "download.bin".to_string()
+    } else {
+        out.to_string()
+    };
     std::fs::write(&filename, &bytes)?;
-    print_result(json!({"ok": true, "data": {"method": "fetch-chunked", "url": url, "file": filename, "size_bytes": bytes.len()}}), &[]);
+    print_result(
+        json!({"ok": true, "data": {"method": "fetch-chunked", "url": url, "file": filename, "size_bytes": bytes.len()}}),
+        &[],
+    );
     Ok(())
 }
 
@@ -493,7 +658,10 @@ fn download_list_cmd(args: &[String]) -> Result<()> {
         let url_resp = cdp_eval(tab, profile.as_deref(), "location.href")?;
         url_resp.as_str().unwrap_or("").to_string()
     };
-    print_result(json!({"ok": true, "data": {"items": items, "page_url": page_url}}), args);
+    print_result(
+        json!({"ok": true, "data": {"items": items, "page_url": page_url}}),
+        args,
+    );
 
     if !items.is_empty() {
         let tmp = std::env::temp_dir().join("ap-browser-download-list.json");
@@ -504,8 +672,9 @@ fn download_list_cmd(args: &[String]) -> Result<()> {
 
 fn download_pick_cmd(selector: &str, args: &[String]) -> Result<()> {
     let tmp = std::env::temp_dir().join("ap-browser-download-list.json");
-    let items_raw = std::fs::read_to_string(&tmp)
-        .with_context(|| "no --list results to pick from; run `ap-browser download --list` first")?;
+    let items_raw = std::fs::read_to_string(&tmp).with_context(|| {
+        "no --list results to pick from; run `ap-browser download --list` first"
+    })?;
     let items: Vec<Value> = serde_json::from_str(&items_raw)?;
     let out = flag_value(args, "--out").unwrap_or_default();
     let method = flag_value(args, "--method").unwrap_or("auto".into());
@@ -513,34 +682,63 @@ fn download_pick_cmd(selector: &str, args: &[String]) -> Result<()> {
     let picked = if let Ok(idx) = selector.parse::<usize>() {
         items.get(idx).cloned()
     } else {
-        let by_type = items.iter().filter(|i| i.get("type").and_then(|v| v.as_str()) == Some(selector)).collect::<Vec<_>>();
+        let by_type = items
+            .iter()
+            .filter(|i| i.get("type").and_then(|v| v.as_str()) == Some(selector))
+            .collect::<Vec<_>>();
         if by_type.len() == 1 {
             Some(by_type[0].clone())
         } else if by_type.len() > 1 {
-            bail!("ambiguous: {} items match type '{}'. Use --list + --pick <id>.", by_type.len(), selector);
+            bail!(
+                "ambiguous: {} items match type '{}'. Use --list + --pick <id>.",
+                by_type.len(),
+                selector
+            );
         } else {
-            let by_label = items.iter().filter(|i| {
-                let label = i.get("label").and_then(|v| v.as_str()).unwrap_or("");
-                label.to_lowercase().contains(&selector.to_lowercase())
-            }).collect::<Vec<_>>();
+            let by_label = items
+                .iter()
+                .filter(|i| {
+                    let label = i.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                    label.to_lowercase().contains(&selector.to_lowercase())
+                })
+                .collect::<Vec<_>>();
             if by_label.len() == 1 {
                 Some(by_label[0].clone())
             } else if by_label.len() > 1 {
-                bail!("ambiguous: {} items match label '{}'. Use --list + --pick <id>.", by_label.len(), selector);
+                bail!(
+                    "ambiguous: {} items match label '{}'. Use --list + --pick <id>.",
+                    by_label.len(),
+                    selector
+                );
             } else {
                 None
             }
         }
     };
 
-    let item = picked.ok_or_else(|| anyhow!("no item matching '{selector}' found. Run --list to see available items."))?;
+    let item = picked.ok_or_else(|| {
+        anyhow!("no item matching '{selector}' found. Run --list to see available items.")
+    })?;
     let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("");
-    let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let item_type = item
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
     let label = item.get("label").and_then(|v| v.as_str()).unwrap_or("");
     let final_out = if out.is_empty() {
-        let ext = if item_type != "unknown" { format!(".{item_type}") } else { String::new() };
-        let base = if label.is_empty() { "download".to_string() } else {
-            label.chars().take(50).filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_').collect()
+        let ext = if item_type != "unknown" {
+            format!(".{item_type}")
+        } else {
+            String::new()
+        };
+        let base = if label.is_empty() {
+            "download".to_string()
+        } else {
+            label
+                .chars()
+                .take(50)
+                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                .collect()
         };
         format!("{base}{ext}")
     } else {
@@ -548,7 +746,12 @@ fn download_pick_cmd(selector: &str, args: &[String]) -> Result<()> {
     };
     let tab = resolve_active_tab(args)?;
     let profile = extract_profile(args);
-    eprintln!("[picking: id={} label={:?} url={}]", item.get("id").unwrap_or(&json!(0)), label, url);
+    eprintln!(
+        "[picking: id={} label={:?} url={}]",
+        item.get("id").unwrap_or(&json!(0)),
+        label,
+        url
+    );
     route_download(url, &final_out, &method, tab, profile.as_deref())?;
     Ok(())
 }
@@ -592,20 +795,39 @@ fn download_auto_cmd(args: &[String]) -> Result<()> {
     if items.is_empty() {
         bail!("no downloadable items found on this page");
     }
-    let min_prio = items.iter().filter_map(|i| i.get("priority").and_then(|v| v.as_u64())).min().unwrap_or(99);
-    let top: Vec<&Value> = items.iter().filter(|i| i.get("priority").and_then(|v| v.as_u64()) == Some(min_prio)).collect();
+    let min_prio = items
+        .iter()
+        .filter_map(|i| i.get("priority").and_then(|v| v.as_u64()))
+        .min()
+        .unwrap_or(99);
+    let top: Vec<&Value> = items
+        .iter()
+        .filter(|i| i.get("priority").and_then(|v| v.as_u64()) == Some(min_prio))
+        .collect();
     if top.len() > 1 {
         eprintln!("ambiguous: {} candidates found at top priority:", top.len());
         for (i, item) in top.iter().enumerate() {
-            eprintln!("  [{}] {} → {}", i, item.get("label").and_then(|v| v.as_str()).unwrap_or(""), item.get("url").and_then(|v| v.as_str()).unwrap_or(""));
+            eprintln!(
+                "  [{}] {} → {}",
+                i,
+                item.get("label").and_then(|v| v.as_str()).unwrap_or(""),
+                item.get("url").and_then(|v| v.as_str()).unwrap_or("")
+            );
         }
         bail!("use --list + --pick <id> to select");
     }
     let item = top[0];
     let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("");
-    let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+    let item_type = item
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
     let out = flag_value(args, "--out").unwrap_or_else(|| {
-        if item_type != "unknown" { format!("download.{item_type}") } else { "download".into() }
+        if item_type != "unknown" {
+            format!("download.{item_type}")
+        } else {
+            "download".into()
+        }
     });
     let method = flag_value(args, "--method").unwrap_or("auto".into());
     eprintln!("[auto-picked: {}]", url);
@@ -622,10 +844,15 @@ fn yt_dlp_download(url: &str, args: &[String], out: &str) -> Result<()> {
         cmd.arg("--cookies-from-browser").arg(&cookies_from);
     }
 
-    let out_template = if out.is_empty() { "%(title)s.%(ext)s".to_string() } else { out.to_string() };
+    let out_template = if out.is_empty() {
+        "%(title)s.%(ext)s".to_string()
+    } else {
+        out.to_string()
+    };
     cmd.arg("--output").arg(&out_template);
 
-    let format = flag_value(args, "--format").unwrap_or("bestvideo[height<=1080]+bestaudio/best[height<=1080]".into());
+    let format = flag_value(args, "--format")
+        .unwrap_or("bestvideo[height<=1080]+bestaudio/best[height<=1080]".into());
     cmd.arg("--format").arg(&format);
 
     if has_flag(args, "--audio-only") {
@@ -641,7 +868,10 @@ fn yt_dlp_download(url: &str, args: &[String], out: &str) -> Result<()> {
     if !status.success() {
         bail!("yt-dlp exited with code {:?}", status.code());
     }
-    print_result(json!({"ok": true, "data": {"method": "yt-dlp", "url": url, "output": out_template}}), args);
+    print_result(
+        json!({"ok": true, "data": {"method": "yt-dlp", "url": url, "output": out_template}}),
+        args,
+    );
     Ok(())
 }
 
@@ -658,9 +888,17 @@ fn head_content_length(url: &str, tab: Option<i64>, profile: Option<&str>) -> Op
 fn browser_download(url: &str, out: &str, tab: Option<i64>) -> Result<()> {
     let mut params = json!({"url": url});
     let filename = if !out.is_empty() {
-        std::path::Path::new(out).file_name().and_then(|f| f.to_str()).unwrap_or("download").to_string()
+        std::path::Path::new(out)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("download")
+            .to_string()
     } else {
-        url.split('/').last().and_then(|s| s.split('?').next()).unwrap_or("download").to_string()
+        url.split('/')
+            .next_back()
+            .and_then(|s| s.split('?').next())
+            .unwrap_or("download")
+            .to_string()
     };
     params["filename"] = json!(filename);
     if let Some(t) = tab {
@@ -693,17 +931,19 @@ fn browser_download(url: &str, out: &str, tab: Option<i64>) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
     print_result(resp, &[]);
-    eprintln!("[warn] download may still be in progress; check ~/Downloads/{}", filename);
+    eprintln!(
+        "[warn] download may still be in progress; check ~/Downloads/{}",
+        filename
+    );
     Ok(())
 }
 
 fn dirs_download() -> std::path::PathBuf {
-    dirs::download_dir()
-        .unwrap_or_else(|| {
-            dirs::home_dir()
-                .unwrap_or_else(|| std::env::temp_dir())
-                .join("Downloads")
-        })
+    dirs::download_dir().unwrap_or_else(|| {
+        dirs::home_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Downloads")
+    })
 }
 
 fn ensure_debugger(tab: Option<i64>, profile: Option<&str>) -> Result<()> {
@@ -711,26 +951,65 @@ fn ensure_debugger(tab: Option<i64>, profile: Option<&str>) -> Result<()> {
         Some(t) => t,
         None => return Ok(()),
     };
-    let _ = cdp(Some(t), profile, "Runtime.evaluate", json!({"expression": "1"}));
+    let _ = cdp(
+        Some(t),
+        profile,
+        "Runtime.evaluate",
+        json!({"expression": "1"}),
+    );
     Ok(())
+}
+
+/// ponytail: detect auth-wall HTML bodies masquerading as binary downloads.
+/// Reads up to 512 bytes; false negatives are fine — the route_download
+/// cascade just continues to browser_download (which carries Chrome cookies).
+fn looks_like_html(buf: &[u8]) -> bool {
+    if buf.is_empty() {
+        return false;
+    }
+    let n = buf.len().min(512);
+    let s = String::from_utf8_lossy(&buf[..n]).to_lowercase();
+    let trimmed = s.trim_start_matches(['\u{feff}', ' ', '\t', '\n', '\r']);
+    trimmed.starts_with("<!doctype html")
+        || trimmed.starts_with("<html")
+        || trimmed.starts_with("<head")
+        || trimmed.starts_with("<title")
+}
+
+fn expects_html(url: &str, out: &str) -> bool {
+    let out_lo = out.to_lowercase();
+    let url_lo = url.to_lowercase();
+    let u = url_lo.split('?').next().unwrap_or("");
+    out_lo.ends_with(".html")
+        || out_lo.ends_with(".htm")
+        || u.ends_with(".html")
+        || u.ends_with(".htm")
 }
 
 fn base64_decode(s: &str) -> Result<Vec<u8>> {
     const TBL: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut tbl = [255u8; 256];
-    for (i, &c) in TBL.iter().enumerate() { tbl[c as usize] = i as u8; }
+    for (i, &c) in TBL.iter().enumerate() {
+        tbl[c as usize] = i as u8;
+    }
     tbl[b'=' as usize] = 0;
     let s: Vec<u8> = s.bytes().filter(|&b| !b.is_ascii_whitespace()).collect();
     let mut out = Vec::with_capacity(s.len() * 3 / 4);
     for chunk in s.chunks(4) {
-        if chunk.len() < 4 { break; }
+        if chunk.len() < 4 {
+            break;
+        }
         let n = (tbl[chunk[0] as usize] as u32) << 18
             | (tbl[chunk[1] as usize] as u32) << 12
             | (tbl[chunk[2] as usize] as u32) << 6
             | (tbl[chunk[3] as usize] as u32);
         out.push((n >> 16) as u8);
-        if chunk[2] != b'=' { out.push((n >> 8) as u8); }
-        if chunk[3] != b'=' { out.push(n as u8); }
+        if chunk[2] != b'=' {
+            out.push((n >> 8) as u8);
+        }
+        if chunk[3] != b'=' {
+            out.push(n as u8);
+        }
     }
     Ok(out)
 }
@@ -742,17 +1021,39 @@ fn pdf_cmd(args: &[String]) -> Result<()> {
     let landscape = has_flag(args, "--landscape");
     let format = flag_value(args, "--format").unwrap_or("A4".into());
     let p = std::path::Path::new(&out);
-    let filename = p.file_name().and_then(|f| f.to_str()).unwrap_or("page.pdf").to_string();
-    let download_path = p.parent().map(|d| {
-        if d.as_os_str().is_empty() { std::env::current_dir().unwrap_or_default().to_string_lossy().to_string() }
-        else { d.to_string_lossy().to_string() }
-    }).unwrap_or_else(|| std::env::current_dir().unwrap_or_default().to_string_lossy().to_string());
-    let resp = rpc("capture.pdf", json!({
-        "filename": filename,
-        "landscape": landscape,
-        "format": format,
-        "download_path": download_path,
-    }), args)?;
+    let filename = p
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("page.pdf")
+        .to_string();
+    let download_path = p
+        .parent()
+        .map(|d| {
+            if d.as_os_str().is_empty() {
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            } else {
+                d.to_string_lossy().to_string()
+            }
+        })
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        });
+    let resp = rpc(
+        "capture.pdf",
+        json!({
+            "filename": filename,
+            "landscape": landscape,
+            "format": format,
+            "download_path": download_path,
+        }),
+        args,
+    )?;
     print_result(resp, args);
     Ok(())
 }
@@ -762,15 +1063,37 @@ fn pdf_cmd(args: &[String]) -> Result<()> {
 fn mhtml_cmd(args: &[String]) -> Result<()> {
     let out = flag_value(args, "--out").unwrap_or("page.mhtml".into());
     let p = std::path::Path::new(&out);
-    let filename = p.file_name().and_then(|f| f.to_str()).unwrap_or("page.mhtml").to_string();
-    let download_path = p.parent().map(|d| {
-        if d.as_os_str().is_empty() { std::env::current_dir().unwrap_or_default().to_string_lossy().to_string() }
-        else { d.to_string_lossy().to_string() }
-    }).unwrap_or_else(|| std::env::current_dir().unwrap_or_default().to_string_lossy().to_string());
-    let resp = rpc("capture.mhtml", json!({
-        "filename": filename,
-        "download_path": download_path,
-    }), args)?;
+    let filename = p
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or("page.mhtml")
+        .to_string();
+    let download_path = p
+        .parent()
+        .map(|d| {
+            if d.as_os_str().is_empty() {
+                std::env::current_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            } else {
+                d.to_string_lossy().to_string()
+            }
+        })
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        });
+    let resp = rpc(
+        "capture.mhtml",
+        json!({
+            "filename": filename,
+            "download_path": download_path,
+        }),
+        args,
+    )?;
     print_result(resp, args);
     Ok(())
 }
@@ -780,33 +1103,41 @@ fn mhtml_cmd(args: &[String]) -> Result<()> {
 fn har_cmd(args: &[String]) -> Result<()> {
     let out = flag_value(args, "--out").unwrap_or("page.har".into());
     let resp = rpc("dev.network.list", json!({}), args)?;
-    let requests = resp.get("data").and_then(|d| d.get("requests")).and_then(|r| r.as_array()).cloned().unwrap_or_default();
+    let requests = resp
+        .get("data")
+        .and_then(|d| d.get("requests"))
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
     if requests.is_empty() {
         eprintln!("warning: no network requests captured; navigate with debugger attached first");
     }
-    let entries: Vec<Value> = requests.iter().map(|r| {
-        let ts_ms = r.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
-        let iso = chrono_iso(ts_ms);
-        let duration = r.get("duration_ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        json!({
-            "request": {
-                "method": r.get("method").cloned().unwrap_or(json!("GET")),
-                "url": r.get("url").cloned().unwrap_or(json!("")),
-                "headers": headers_to_array(r.get("request_headers")),
-            },
-            "response": {
-                "status": r.get("status").cloned().unwrap_or(json!(0)),
-                "statusText": r.get("status_text").cloned().unwrap_or(json!("")),
-                "headers": headers_to_array(r.get("response_headers")),
-                "content": {
-                    "size": r.get("response_size").cloned().unwrap_or(json!(0)),
-                    "mimeType": r.get("mime_type").cloned().unwrap_or(json!("")),
+    let entries: Vec<Value> = requests
+        .iter()
+        .map(|r| {
+            let ts_ms = r.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+            let iso = chrono_iso(ts_ms);
+            let duration = r.get("duration_ms").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            json!({
+                "request": {
+                    "method": r.get("method").cloned().unwrap_or(json!("GET")),
+                    "url": r.get("url").cloned().unwrap_or(json!("")),
+                    "headers": headers_to_array(r.get("request_headers")),
                 },
-            },
-            "startedDateTime": iso,
-            "time": duration,
+                "response": {
+                    "status": r.get("status").cloned().unwrap_or(json!(0)),
+                    "statusText": r.get("status_text").cloned().unwrap_or(json!("")),
+                    "headers": headers_to_array(r.get("response_headers")),
+                    "content": {
+                        "size": r.get("response_size").cloned().unwrap_or(json!(0)),
+                        "mimeType": r.get("mime_type").cloned().unwrap_or(json!("")),
+                    },
+                },
+                "startedDateTime": iso,
+                "time": duration,
+            })
         })
-    }).collect();
+        .collect();
     let har = json!({
         "log": {
             "version": "1.2",
@@ -815,13 +1146,20 @@ fn har_cmd(args: &[String]) -> Result<()> {
         }
     });
     std::fs::write(&out, serde_json::to_string_pretty(&har)?)?;
-    print_result(json!({"ok": true, "data": {"file": out, "entries": entries.len()}}), args);
+    print_result(
+        json!({"ok": true, "data": {"file": out, "entries": entries.len()}}),
+        args,
+    );
     Ok(())
 }
 
 fn headers_to_array(headers: Option<&Value>) -> Value {
     match headers {
-        Some(Value::Object(map)) => Value::Array(map.iter().map(|(k, v)| json!({"name": k, "value": v})).collect()),
+        Some(Value::Object(map)) => Value::Array(
+            map.iter()
+                .map(|(k, v)| json!({"name": k, "value": v}))
+                .collect(),
+        ),
         _ => json!([]),
     }
 }
@@ -829,10 +1167,7 @@ fn headers_to_array(headers: Option<&Value>) -> Value {
 fn chrono_iso(ts_ms: i64) -> String {
     let secs = ts_ms / 1000;
     let millis = ts_ms % 1000;
-    format!("{}{:03}Z", 
-        chrono_like(secs),
-        millis
-    )
+    format!("{}{:03}Z", chrono_like(secs), millis)
 }
 
 fn chrono_like(secs: i64) -> String {
@@ -851,15 +1186,23 @@ fn days_to_ymd(days: i64) -> (i64, i64, i64) {
     loop {
         let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
         let yd = if leap { 366 } else { 365 };
-        if d < yd { break; }
+        if d < yd {
+            break;
+        }
         d -= yd;
         y += 1;
     }
     let months = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let mut mo = 1i64;
     for &md in &months {
-        let md = if mo == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) { 29 } else { md };
-        if d < md { break; }
+        let md = if mo == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) {
+            29
+        } else {
+            md
+        };
+        if d < md {
+            break;
+        }
         d -= md;
         mo += 1;
     }
@@ -873,7 +1216,8 @@ fn media_cmd(args: &[String]) -> Result<()> {
     let profile = extract_profile(args);
     let media_type = flag_value(args, "--type").unwrap_or("all".into());
     let _ = ensure_debugger(tab, profile.as_deref());
-    let expr = format!(r#"(() => {{
+    let expr = format!(
+        r#"(() => {{
         const out = [];
         const last = (url) => url ? url.split('/').pop().split('?')[0] : null;
         if ({want_img}) document.querySelectorAll('img').forEach(el => {{
@@ -915,7 +1259,12 @@ fn media_cmd(args: &[String]) -> Result<()> {
 
 // ── Element screenshot (called from main.rs screenshot command) ────────────
 
-pub fn element_screenshot(selector: &str, out: &str, tab: Option<i64>, profile: Option<&str>) -> Result<()> {
+pub fn element_screenshot(
+    selector: &str,
+    out: &str,
+    tab: Option<i64>,
+    profile: Option<&str>,
+) -> Result<()> {
     let _ = ensure_debugger(tab, profile);
     let expr = format!(
         r#"((el) => {{ if (!el) return null; el.scrollIntoView({{block:'center'}}); const r = el.getBoundingClientRect(); return {{x: r.x, y: r.y, width: r.width, height: r.height}}; }})(document.querySelector({}))"#,
@@ -932,10 +1281,71 @@ pub fn element_screenshot(selector: &str, out: &str, tab: Option<i64>, profile: 
         "height": rect.get("height").cloned().unwrap_or(json!(0)),
         "scale": 1,
     });
-    let resp = cdp(tab, profile, "Page.captureScreenshot", json!({"clip": clip, "format": "png"}))?;
-    let data_b64 = resp.get("data").and_then(|d| d.get("result")).and_then(|r| r.get("data")).and_then(|v| v.as_str()).unwrap_or("");
-    if data_b64.is_empty() { bail!("screenshot returned empty data"); }
+    let resp = cdp(
+        tab,
+        profile,
+        "Page.captureScreenshot",
+        json!({"clip": clip, "format": "png"}),
+    )?;
+    let data_b64 = resp
+        .get("data")
+        .and_then(|d| d.get("result"))
+        .and_then(|r| r.get("data"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if data_b64.is_empty() {
+        bail!("screenshot returned empty data");
+    }
     let bytes = base64_decode(data_b64)?;
     std::fs::write(out, &bytes)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn looks_like_html_catches_auth_wall_signatures() {
+        assert!(looks_like_html(
+            b"<!DOCTYPE html><html><title>Login</title>"
+        ));
+        assert!(looks_like_html(b"<html><head>"));
+        assert!(looks_like_html(b"  \n\t <head><title>"));
+        assert!(looks_like_html(b"\xef\xbb\xbf<!doctype html>"));
+        // Real Canvas auth-redirect body shape (compact, lowercase)
+        assert!(looks_like_html(
+            b"<!doctype html><html><head><title>Redirecting</title>"
+        ));
+    }
+
+    #[test]
+    fn looks_like_html_ignores_binary_and_text() {
+        assert!(!looks_like_html(b"%PDF-1.7\n\x00\x01\x02\x03"));
+        assert!(!looks_like_html(&{
+            let mut v = Vec::new();
+            v.extend_from_slice(b"PK\x03\x04");
+            v.extend(vec![0u8; 200]);
+            v
+        }));
+        assert!(!looks_like_html(b""));
+        assert!(!looks_like_html(b"just plain text, not a web page"));
+    }
+
+    #[test]
+    fn expects_html_respects_explicit_html_out() {
+        assert!(expects_html(
+            "https://canvas.edu/files/123/download",
+            "page.html"
+        ));
+        assert!(expects_html(
+            "https://canvas.edu/files/123/download",
+            "page.HTM"
+        ));
+        assert!(expects_html("https://site.org/index.html", ""));
+        assert!(!expects_html(
+            "https://canvas.edu/files/123/download?verifier=abc",
+            "report.pdf"
+        ));
+    }
 }

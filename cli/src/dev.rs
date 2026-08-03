@@ -41,17 +41,23 @@ pub fn dispatch(args: &[String]) -> Result<()> {
 // ── Shared helpers ─────────────────────────────────────────────────────────
 
 fn extract_tab(args: &[String]) -> Option<i64> {
-    args.windows(2).find(|w| w[0] == "--tab").and_then(|w| w[1].parse().ok())
+    args.windows(2)
+        .find(|w| w[0] == "--tab")
+        .and_then(|w| w[1].parse().ok())
 }
 
 fn extract_profile(args: &[String]) -> Option<String> {
-    args.windows(2).find(|w| w[0] == "--profile").map(|w| w[1].clone())
+    args.windows(2)
+        .find(|w| w[0] == "--profile")
+        .map(|w| w[1].clone())
 }
 
 fn rpc(method: &str, params: Value, args: &[String]) -> Result<Value> {
     let mut p = params;
     if let Some(t) = extract_tab(args) {
-        if let Some(o) = p.as_object_mut() { o.insert("tab_id".into(), json!(t)); }
+        if let Some(o) = p.as_object_mut() {
+            o.insert("tab_id".into(), json!(t));
+        }
     }
     let socket = crate::socket_client::resolve_socket(extract_profile(args).as_deref())?;
     let request = json!({"jsonrpc":"2.0","method":method,"params":p});
@@ -74,7 +80,9 @@ fn rpc(method: &str, params: Value, args: &[String]) -> Result<Value> {
 fn cdp(tab: Option<i64>, profile: Option<&str>, cdp_method: &str, params: Value) -> Result<Value> {
     let mut p = json!({"method": cdp_method, "params": params});
     if let Some(t) = tab {
-        if let Some(o) = p.as_object_mut() { o.insert("tab_id".into(), json!(t)); }
+        if let Some(o) = p.as_object_mut() {
+            o.insert("tab_id".into(), json!(t));
+        }
     }
     let socket = crate::socket_client::resolve_socket(profile)?;
     let request = json!({"jsonrpc":"2.0","method":"cdp","params":p});
@@ -95,12 +103,25 @@ fn cdp(tab: Option<i64>, profile: Option<&str>, cdp_method: &str, params: Value)
 }
 
 fn cdp_eval(tab: Option<i64>, profile: Option<&str>, expression: &str) -> Result<Value> {
-    let resp = cdp(tab, profile, "Runtime.evaluate", json!({"expression": expression, "returnByValue": true, "awaitPromise": true}))?;
-    Ok(resp.get("data").and_then(|d| d.get("result")).and_then(|r| r.get("result")).and_then(|r| r.get("value")).cloned().unwrap_or(Value::Null))
+    let resp = cdp(
+        tab,
+        profile,
+        "Runtime.evaluate",
+        json!({"expression": expression, "returnByValue": true, "awaitPromise": true}),
+    )?;
+    Ok(resp
+        .get("data")
+        .and_then(|d| d.get("result"))
+        .and_then(|r| r.get("result"))
+        .and_then(|r| r.get("value"))
+        .cloned()
+        .unwrap_or(Value::Null))
 }
 
 fn resolve_active_tab_or(args: &[String]) -> Result<Option<i64>> {
-    if let Some(t) = extract_tab(args) { return Ok(Some(t)); }
+    if let Some(t) = extract_tab(args) {
+        return Ok(Some(t));
+    }
     let socket = crate::socket_client::resolve_socket(extract_profile(args).as_deref())?;
     let request = json!({"jsonrpc":"2.0","method":"info","params":{}});
     let bytes = crate::cli_frame::encode(&request)?;
@@ -109,7 +130,10 @@ fn resolve_active_tab_or(args: &[String]) -> Result<Option<i64>> {
     stream.write_all(&bytes)?;
     stream.flush()?;
     let envelope = crate::cli_frame::read_response(&mut stream, Duration::from_secs(10))?;
-    let at = envelope.get("result").and_then(|r| r.get("data")).and_then(|d| d.get("active_tab"));
+    let at = envelope
+        .get("result")
+        .and_then(|r| r.get("data"))
+        .and_then(|d| d.get("active_tab"));
     Ok(at.and_then(|t| t.get("id")).and_then(|v| v.as_i64()))
 }
 
@@ -122,12 +146,19 @@ fn ensure_debugger_attached(tab: Option<i64>, profile: Option<&str>) -> Result<O
         },
     };
     // Trigger attach via a no-op eval — the SW attaches on any operated command.
-    let _ = cdp(Some(tab), profile, "Runtime.evaluate", json!({"expression": "1"}));
+    let _ = cdp(
+        Some(tab),
+        profile,
+        "Runtime.evaluate",
+        json!({"expression": "1"}),
+    );
     Ok(Some(tab))
 }
 
 fn print_or_emit(resp: Value, args: &[String]) {
-    let want_ndjson = args.windows(2).any(|w| w[0] == "--format" && w[1] == "ndjson");
+    let want_ndjson = args
+        .windows(2)
+        .any(|w| w[0] == "--format" && w[1] == "ndjson");
     let human = args.iter().any(|a| a == "--human");
     if human {
         crate::print_human(&resp);
@@ -136,9 +167,18 @@ fn print_or_emit(resp: Value, args: &[String]) {
     if want_ndjson {
         if let Some(data) = resp.get("data") {
             if let Some(arr) = data.as_array() {
-                for item in arr { println!("{}", serde_json::to_string(item).unwrap_or_default()); }
-            } else if let Some(items) = data.get("messages").and_then(|v| v.as_array()).or_else(|| data.get("requests").and_then(|v| v.as_array())).or_else(|| data.get("errors").and_then(|v| v.as_array())) {
-                for item in items { println!("{}", serde_json::to_string(item).unwrap_or_default()); }
+                for item in arr {
+                    println!("{}", serde_json::to_string(item).unwrap_or_default());
+                }
+            } else if let Some(items) = data
+                .get("messages")
+                .and_then(|v| v.as_array())
+                .or_else(|| data.get("requests").and_then(|v| v.as_array()))
+                .or_else(|| data.get("errors").and_then(|v| v.as_array()))
+            {
+                for item in items {
+                    println!("{}", serde_json::to_string(item).unwrap_or_default());
+                }
             } else {
                 println!("{}", serde_json::to_string(data).unwrap_or_default());
             }
@@ -157,8 +197,12 @@ fn console_cmd(args: &[String]) -> Result<()> {
     match sub {
         "list" => {
             let mut params = json!({});
-            if let Some(t) = flag_value(args, "--type") { params["type"] = json!(t); }
-            if let Some(s) = flag_value(args, "--since") { params["since"] = json!(s); }
+            if let Some(t) = flag_value(args, "--type") {
+                params["type"] = json!(t);
+            }
+            if let Some(s) = flag_value(args, "--since") {
+                params["since"] = json!(s);
+            }
             let resp = rpc("dev.console.list", params, args)?;
             print_or_emit(resp, args);
         }
@@ -176,18 +220,26 @@ fn network_cmd(args: &[String]) -> Result<()> {
     match sub {
         "list" => {
             let mut params = json!({});
-            if let Some(f) = flag_value(args, "--filter") { params["filter"] = json!(f); }
-            if let Some(t) = flag_value(args, "--type") { params["type"] = json!(t); }
-            if args.iter().any(|a| a == "--status" ) {
+            if let Some(f) = flag_value(args, "--filter") {
+                params["filter"] = json!(f);
+            }
+            if let Some(t) = flag_value(args, "--type") {
+                params["type"] = json!(t);
+            }
+            if args.iter().any(|a| a == "--status") {
                 if let Some(v) = flag_value(args, "--status") {
-                    if v == "failed" { params["failed"] = json!(true); }
+                    if v == "failed" {
+                        params["failed"] = json!(true);
+                    }
                 }
             }
             let resp = rpc("dev.network.list", params, args)?;
             print_or_emit(resp, args);
         }
         "get" => {
-            let rid = args.get(1).ok_or_else(|| anyhow!("usage: dev network get <request_id>"))?;
+            let rid = args
+                .get(1)
+                .ok_or_else(|| anyhow!("usage: dev network get <request_id>"))?;
             let resp = rpc("dev.network.get", json!({"request_id": rid}), args)?;
             print_or_emit(resp, args);
         }
@@ -209,8 +261,11 @@ fn snapshot_cmd(args: &[String]) -> Result<()> {
     let profile = extract_profile(args);
     ensure_debugger_attached(tab, profile.as_deref())?;
     let verbose = args.iter().any(|a| a == "--verbose");
-    let limit = flag_value(args, "--limit").and_then(|s| s.parse::<usize>().ok()).unwrap_or(200);
-    let expr = format!(r#"(() => {{
+    let limit = flag_value(args, "--limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(200);
+    let expr = format!(
+        r#"(() => {{
   const INTERACTIVE = 'a[href], button, input, select, textarea, [role="button"], [role="link"], [role="checkbox"], [role="tab"], [role="menuitem"], [role="combobox"], [onclick], details > summary';
   const els = document.querySelectorAll(INTERACTIVE);
   const out = [];
@@ -235,7 +290,9 @@ fn snapshot_cmd(args: &[String]) -> Result<()> {
     i++;
   }}
   return JSON.stringify(out);
-}})()"#, limit = limit);
+}})()"#,
+        limit = limit
+    );
     let resp = cdp_eval(tab, profile.as_deref(), &expr)?;
     let raw = resp.as_str().unwrap_or("[]");
     let nodes: Vec<Value> = serde_json::from_str(raw).unwrap_or_default();
@@ -267,35 +324,93 @@ fn snapshot_cmd(args: &[String]) -> Result<()> {
 }
 
 fn dom_cmd(args: &[String]) -> Result<()> {
-    let selector = args.first().filter(|a| !a.starts_with("--"))
-        .ok_or_else(|| anyhow!("usage: dev dom <selector> [--computed] [--listeners] [--box-model]"))?
+    let selector = args
+        .first()
+        .filter(|a| !a.starts_with("--"))
+        .ok_or_else(|| {
+            anyhow!("usage: dev dom <selector> [--computed] [--listeners] [--box-model]")
+        })?
         .clone();
     let tab = resolve_active_tab_or(args)?;
     let profile = extract_profile(args);
     ensure_debugger_attached(tab, profile.as_deref())?;
     // Get document + find node by selector
-    let doc = cdp(tab, profile.as_deref(), "DOM.getDocument", json!({"depth": 0}))?;
-    let root_node_id = doc.get("data").and_then(|d| d.get("result")).and_then(|r| r.get("root")).and_then(|r| r.get("nodeId")).and_then(|v| v.as_i64()).unwrap_or(0);
-    let sel = cdp(tab, profile.as_deref(), "DOM.querySelector", json!({"nodeId": root_node_id, "selector": &selector}))?;
-    let node_id = sel.get("data").and_then(|d| d.get("result")).and_then(|r| r.get("nodeId")).and_then(|v| v.as_i64()).unwrap_or(0);
-    if node_id == 0 { bail!("selector matched nothing: {selector}"); }
+    let doc = cdp(
+        tab,
+        profile.as_deref(),
+        "DOM.getDocument",
+        json!({"depth": 0}),
+    )?;
+    let root_node_id = doc
+        .get("data")
+        .and_then(|d| d.get("result"))
+        .and_then(|r| r.get("root"))
+        .and_then(|r| r.get("nodeId"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let sel = cdp(
+        tab,
+        profile.as_deref(),
+        "DOM.querySelector",
+        json!({"nodeId": root_node_id, "selector": &selector}),
+    )?;
+    let node_id = sel
+        .get("data")
+        .and_then(|d| d.get("result"))
+        .and_then(|r| r.get("nodeId"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    if node_id == 0 {
+        bail!("selector matched nothing: {selector}");
+    }
     let mut out = json!({"selector": selector, "node_id": node_id});
     // Outer HTML
-    let outer = cdp(tab, profile.as_deref(), "DOM.getOuterHTML", json!({"nodeId": node_id}))?;
-    if let Some(html) = outer.get("data").and_then(|d| d.get("result")).and_then(|r| r.as_str()) {
-        let truncated = if html.len() > 500 { format!("{}...(truncated)", &html[..500]) } else { html.to_string() };
+    let outer = cdp(
+        tab,
+        profile.as_deref(),
+        "DOM.getOuterHTML",
+        json!({"nodeId": node_id}),
+    )?;
+    if let Some(html) = outer
+        .get("data")
+        .and_then(|d| d.get("result"))
+        .and_then(|r| r.as_str())
+    {
+        let truncated = if html.len() > 500 {
+            format!("{}...(truncated)", &html[..500])
+        } else {
+            html.to_string()
+        };
         out["outerHTML"] = json!(truncated);
     }
     // Box model
     if args.iter().any(|a| a == "--box-model") {
-        if let Ok(bm) = cdp(tab, profile.as_deref(), "DOM.getBoxModel", json!({"nodeId": node_id})) {
-            out["box_model"] = bm.get("data").and_then(|d| d.get("result")).cloned().unwrap_or(json!({}));
+        if let Ok(bm) = cdp(
+            tab,
+            profile.as_deref(),
+            "DOM.getBoxModel",
+            json!({"nodeId": node_id}),
+        ) {
+            out["box_model"] = bm
+                .get("data")
+                .and_then(|d| d.get("result"))
+                .cloned()
+                .unwrap_or(json!({}));
         }
     }
     // Event listeners
     if args.iter().any(|a| a == "--listeners") {
-        if let Ok(ls) = cdp(tab, profile.as_deref(), "DOMDebugger.getEventListeners", json!({"objectId": node_id})) {
-            out["listeners"] = ls.get("data").and_then(|d| d.get("result")).cloned().unwrap_or(json!([]));
+        if let Ok(ls) = cdp(
+            tab,
+            profile.as_deref(),
+            "DOMDebugger.getEventListeners",
+            json!({"objectId": node_id}),
+        ) {
+            out["listeners"] = ls
+                .get("data")
+                .and_then(|d| d.get("result"))
+                .cloned()
+                .unwrap_or(json!([]));
         }
     }
     // Computed styles
@@ -303,8 +418,18 @@ fn dom_cmd(args: &[String]) -> Result<()> {
         if let Ok(rs) = cdp(tab, profile.as_deref(), "CSS.enable", json!({})) {
             let _ = rs;
         }
-        if let Ok(cs) = cdp(tab, profile.as_deref(), "CSS.getComputedStyleForNode", json!({"nodeId": node_id})) {
-            out["computed"] = cs.get("data").and_then(|d| d.get("result")).and_then(|r| r.get("computedStyle")).cloned().unwrap_or(json!([]));
+        if let Ok(cs) = cdp(
+            tab,
+            profile.as_deref(),
+            "CSS.getComputedStyleForNode",
+            json!({"nodeId": node_id}),
+        ) {
+            out["computed"] = cs
+                .get("data")
+                .and_then(|d| d.get("result"))
+                .and_then(|r| r.get("computedStyle"))
+                .cloned()
+                .unwrap_or(json!([]));
         }
     }
     print_or_emit(json!({"ok": true, "data": out}), args);
@@ -320,22 +445,38 @@ fn heap_cmd(args: &[String]) -> Result<()> {
             eprintln!("unknown heap subcommand: {other}");
             eprintln!("available: stats");
             eprintln!("\nNote: full heap snapshot/diff/query not available — chrome.debugger API does not expose HeapProfiler domain.");
-            eprintln!("Use `dev heap stats` for memory overview, or `dev perf trace` for CPU profiling.");
+            eprintln!(
+                "Use `dev heap stats` for memory overview, or `dev perf trace` for CPU profiling."
+            );
             std::process::exit(1);
         }
     }
 }
 
 fn heap_stats_cmd(args: &[String]) -> Result<()> {
-    let tab = match extract_tab(args) { Some(t) => Some(t), None => resolve_active_tab_or(args)? };
+    let tab = match extract_tab(args) {
+        Some(t) => Some(t),
+        None => resolve_active_tab_or(args)?,
+    };
     let profile = extract_profile(args);
     ensure_debugger_attached(tab, profile.as_deref())?;
     let out_file = flag_value(args, "--out");
     let _ = cdp(tab, profile.as_deref(), "Performance.enable", json!({}));
     let metrics_resp = cdp(tab, profile.as_deref(), "Performance.getMetrics", json!({}))?;
-    let metrics = metrics_resp.get("data").and_then(|d| d.get("result")).and_then(|r| r.get("metrics")).and_then(|m| m.as_array()).cloned().unwrap_or_default();
+    let metrics = metrics_resp
+        .get("data")
+        .and_then(|d| d.get("result"))
+        .and_then(|r| r.get("metrics"))
+        .and_then(|m| m.as_array())
+        .cloned()
+        .unwrap_or_default();
     let get_metric = |name: &str| -> Option<i64> {
-        metrics.iter().find(|m| m.get("name").and_then(|v| v.as_str()) == Some(name)).and_then(|m| m.get("value")).and_then(|v| v.as_f64()).map(|f| f as i64)
+        metrics
+            .iter()
+            .find(|m| m.get("name").and_then(|v| v.as_str()) == Some(name))
+            .and_then(|m| m.get("value"))
+            .and_then(|v| v.as_f64())
+            .map(|f| f as i64)
     };
     let mut out = json!({
         "used_js_heap_bytes": get_metric("JSHeapUsedSize"),
@@ -346,7 +487,7 @@ fn heap_stats_cmd(args: &[String]) -> Result<()> {
         "script_duration_ms": get_metric("ScriptDuration").map(|v| ((v as f64) * 1000.0) as i64),
     });
     if let Some(path) = out_file {
-        std::fs::write(&path, serde_json::to_string_pretty(&out)?)?;
+        std::fs::write(path, serde_json::to_string_pretty(&out)?)?;
         out["file"] = json!(path);
     }
     print_or_emit(json!({"ok": true, "data": out}), args);
@@ -361,8 +502,18 @@ fn perf_cmd(args: &[String]) -> Result<()> {
         "metrics" => {
             let tab = resolve_active_tab_or(args)?;
             ensure_debugger_attached(tab, extract_profile(args).as_deref())?;
-            let resp = cdp(tab, extract_profile(args).as_deref(), "Performance.getMetrics", json!({}))?;
-            let metrics = resp.get("data").and_then(|d| d.get("result")).and_then(|r| r.get("metrics")).cloned().unwrap_or(json!([]));
+            let resp = cdp(
+                tab,
+                extract_profile(args).as_deref(),
+                "Performance.getMetrics",
+                json!({}),
+            )?;
+            let metrics = resp
+                .get("data")
+                .and_then(|d| d.get("result"))
+                .and_then(|r| r.get("metrics"))
+                .cloned()
+                .unwrap_or(json!([]));
             print_or_emit(json!({"ok": true, "data": {"metrics": metrics}}), args);
         }
         "trace" => {
@@ -377,7 +528,9 @@ fn perf_cmd(args: &[String]) -> Result<()> {
             }
             // Use Performance domain + observe long tasks via JS
             let _ = cdp(tab, profile.as_deref(), "Performance.enable", json!({}));
-            let dur_s: u64 = flag_value(args, "--duration").and_then(|s| s.parse().ok()).unwrap_or(3);
+            let dur_s: u64 = flag_value(args, "--duration")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(3);
             std::thread::sleep(Duration::from_secs(dur_s));
             // Collect web vitals via JS
             let vitals_expr = r#"(()=>{
@@ -396,8 +549,16 @@ fn perf_cmd(args: &[String]) -> Result<()> {
             let v_str = v.as_str().unwrap_or("{}");
             let vitals: Value = serde_json::from_str(v_str).unwrap_or(json!({}));
             let metrics_resp = cdp(tab, profile.as_deref(), "Performance.getMetrics", json!({}))?;
-            let metrics = metrics_resp.get("data").and_then(|d| d.get("result")).and_then(|r| r.get("metrics")).cloned().unwrap_or(json!([]));
-            print_or_emit(json!({"ok": true, "data": {"vitals": vitals, "metrics": metrics}}), args);
+            let metrics = metrics_resp
+                .get("data")
+                .and_then(|d| d.get("result"))
+                .and_then(|r| r.get("metrics"))
+                .cloned()
+                .unwrap_or(json!([]));
+            print_or_emit(
+                json!({"ok": true, "data": {"vitals": vitals, "metrics": metrics}}),
+                args,
+            );
         }
         other => bail!("dev perf: unknown subcommand '{other}'. Use: metrics, trace"),
     }
@@ -413,26 +574,41 @@ fn lighthouse_cmd(args: &[String]) -> Result<()> {
             let socket = crate::socket_client::resolve_socket(extract_profile(args).as_deref())?;
             let request = json!({"jsonrpc":"2.0","method":"info","params":{}});
             let bytes = crate::cli_frame::encode(&request)?;
-            let mut stream = crate::socket_client::dial_with_retry(&socket, 3, Duration::from_millis(200))?;
+            let mut stream =
+                crate::socket_client::dial_with_retry(&socket, 3, Duration::from_millis(200))?;
             use std::io::Write;
             stream.write_all(&bytes)?;
             stream.flush()?;
             let env = crate::cli_frame::read_response(&mut stream, Duration::from_secs(10))?;
-            env.get("result").and_then(|r| r.get("data")).and_then(|d| d.get("active_tab")).and_then(|t| t.get("url")).and_then(|u| u.as_str()).map(String::from)
+            env.get("result")
+                .and_then(|r| r.get("data"))
+                .and_then(|d| d.get("active_tab"))
+                .and_then(|t| t.get("url"))
+                .and_then(|u| u.as_str())
+                .map(String::from)
                 .ok_or_else(|| anyhow!("no --url given and no active tab URL available"))?
         }
     };
     let out = std::process::Command::new("npx")
-        .arg("--yes").arg("lighthouse")
-        .arg(&url).arg("--output").arg("json").arg("--only-categories").arg(&categories)
+        .arg("--yes")
+        .arg("lighthouse")
+        .arg(&url)
+        .arg("--output")
+        .arg("json")
+        .arg("--only-categories")
+        .arg(categories)
         .arg("--chrome-flags=--headless=new --no-sandbox")
         .arg("--quiet")
         .output()
         .context("failed to run `npx lighthouse`; install with `npm install -g lighthouse`")?;
     if !out.status.success() {
-        bail!("lighthouse failed: {}", String::from_utf8_lossy(&out.stderr));
+        bail!(
+            "lighthouse failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
-    let lh_json: Value = serde_json::from_slice(&out.stdout).context("lighthouse did not produce JSON output")?;
+    let lh_json: Value =
+        serde_json::from_slice(&out.stdout).context("lighthouse did not produce JSON output")?;
     let categories_top = lh_json.get("categories").cloned().unwrap_or(json!({}));
     let mut cat_scores = serde_json::Map::new();
     if let Some(obj) = categories_top.as_object() {
@@ -443,7 +619,10 @@ fn lighthouse_cmd(args: &[String]) -> Result<()> {
             if let Some(audits) = lh_json.get("audits").and_then(|a| a.as_object()) {
                 if let Some(refs) = audit_refs {
                     for r in refs {
-                        if let (Some(weight), Some(aid)) = (r.get("weight").and_then(|w| w.as_f64()), r.get("id").and_then(|i| i.as_str())) {
+                        if let (Some(weight), Some(aid)) = (
+                            r.get("weight").and_then(|w| w.as_f64()),
+                            r.get("id").and_then(|i| i.as_str()),
+                        ) {
                             if let Some(audit) = audits.get(aid) {
                                 if let Some(s) = audit.get("score").and_then(|s| s.as_f64()) {
                                     total_score += s * weight;
@@ -454,22 +633,32 @@ fn lighthouse_cmd(args: &[String]) -> Result<()> {
                     }
                 }
             }
-            let normalized = if count > 0.0 { total_score / count } else { 0.0 };
-            cat_scores.insert(k.clone(), json!({
-                "title": v.get("title").and_then(|t| t.as_str()).unwrap_or(k),
-                "score": (normalized * 100.0).round() as u64,
-            }));
+            let normalized = if count > 0.0 {
+                total_score / count
+            } else {
+                0.0
+            };
+            cat_scores.insert(
+                k.clone(),
+                json!({
+                    "title": v.get("title").and_then(|t| t.as_str()).unwrap_or(k),
+                    "score": (normalized * 100.0).round() as u64,
+                }),
+            );
         }
     }
-    print_or_emit(json!({
-        "ok": true,
-        "data": {
-            "url": url,
-            "categories_requested": categories,
-            "scores": cat_scores,
-            "raw": lh_json,
-        }
-    }), args);
+    print_or_emit(
+        json!({
+            "ok": true,
+            "data": {
+                "url": url,
+                "categories_requested": categories,
+                "scores": cat_scores,
+                "raw": lh_json,
+            }
+        }),
+        args,
+    );
     Ok(())
 }
 
@@ -569,7 +758,10 @@ fn emulate_cmd(args: &[String]) -> Result<()> {
 // ── T4: hover / drag / fill-form / upload / dialog ─────────────────────────
 
 fn hover_cmd(args: &[String]) -> Result<()> {
-    let selector = args.first().filter(|a| !a.starts_with("--")).ok_or_else(|| anyhow!("usage: dev hover <selector>"))?;
+    let selector = args
+        .first()
+        .filter(|a| !a.starts_with("--"))
+        .ok_or_else(|| anyhow!("usage: dev hover <selector>"))?;
     let tab = resolve_active_tab_or(args)?;
     let profile = extract_profile(args);
     ensure_debugger_attached(tab, profile.as_deref())?;
@@ -578,41 +770,76 @@ fn hover_cmd(args: &[String]) -> Result<()> {
     let rect = cdp_eval(tab, profile.as_deref(), &rect_expr)?;
     let x = rect.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let y = rect.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let _ = cdp(tab, profile.as_deref(), "Input.dispatchMouseEvent", json!({"type": "mouseMoved", "x": x, "y": y}));
-    print_or_emit(json!({"ok": true, "data": {"hovered": selector, "at": { "x": x, "y": y }}}), args);
+    let _ = cdp(
+        tab,
+        profile.as_deref(),
+        "Input.dispatchMouseEvent",
+        json!({"type": "mouseMoved", "x": x, "y": y}),
+    );
+    print_or_emit(
+        json!({"ok": true, "data": {"hovered": selector, "at": { "x": x, "y": y }}}),
+        args,
+    );
     Ok(())
 }
 
 fn drag_cmd(args: &[String]) -> Result<()> {
     let pos: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
-    if pos.len() < 2 { bail!("usage: dev drag <from_selector> <to_selector>"); }
+    if pos.len() < 2 {
+        bail!("usage: dev drag <from_selector> <to_selector>");
+    }
     let from_sel = pos[0];
     let to_sel = pos[1];
     let tab = resolve_active_tab_or(args)?;
     let profile = extract_profile(args);
     ensure_debugger_attached(tab, profile.as_deref())?;
-    let mk_expr = |sel: &str| format!("((el)=>{{if(!el)return null;el.scrollIntoView({{block:'center'}});const r=el.getBoundingClientRect();return{{x:r.x+r.width/2,y:r.y+r.height/2}}}})(document.querySelector({}))", json!(sel));
+    let mk_expr = |sel: &str| {
+        format!("((el)=>{{if(!el)return null;el.scrollIntoView({{block:'center'}});const r=el.getBoundingClientRect();return{{x:r.x+r.width/2,y:r.y+r.height/2}}}})(document.querySelector({}))", json!(sel))
+    };
     let fr = cdp_eval(tab, profile.as_deref(), &mk_expr(from_sel))?;
     let tr = cdp_eval(tab, profile.as_deref(), &mk_expr(to_sel))?;
     let fx = fr.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let fy = fr.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let tx = tr.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let ty = tr.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let _ = cdp(tab, profile.as_deref(), "Input.dispatchMouseEvent", json!({"type": "mousePressed", "x": fx, "y": fy, "button": "left", "clickCount": 1}));
+    let _ = cdp(
+        tab,
+        profile.as_deref(),
+        "Input.dispatchMouseEvent",
+        json!({"type": "mousePressed", "x": fx, "y": fy, "button": "left", "clickCount": 1}),
+    );
     // Interpolate a few move events
     for i in 1..=5 {
         let t = i as f64 / 5.0;
-        let _ = cdp(tab, profile.as_deref(), "Input.dispatchMouseEvent", json!({"type": "mouseMoved", "x": fx + (tx - fx) * t, "y": fy + (ty - fy) * t}));
+        let _ = cdp(
+            tab,
+            profile.as_deref(),
+            "Input.dispatchMouseEvent",
+            json!({"type": "mouseMoved", "x": fx + (tx - fx) * t, "y": fy + (ty - fy) * t}),
+        );
     }
-    let _ = cdp(tab, profile.as_deref(), "Input.dispatchMouseEvent", json!({"type": "mouseReleased", "x": tx, "y": ty, "button": "left", "clickCount": 1}));
-    print_or_emit(json!({"ok": true, "data": {"dragged": {"from": from_sel, "to": to_sel}}}), args);
+    let _ = cdp(
+        tab,
+        profile.as_deref(),
+        "Input.dispatchMouseEvent",
+        json!({"type": "mouseReleased", "x": tx, "y": ty, "button": "left", "clickCount": 1}),
+    );
+    print_or_emit(
+        json!({"ok": true, "data": {"dragged": {"from": from_sel, "to": to_sel}}}),
+        args,
+    );
     Ok(())
 }
 
 fn fill_form_cmd(args: &[String]) -> Result<()> {
-    let json_str = args.first().filter(|a| !a.starts_with("--")).ok_or_else(|| anyhow!("usage: dev fill-form '<json>'"))?;
+    let json_str = args
+        .first()
+        .filter(|a| !a.starts_with("--"))
+        .ok_or_else(|| anyhow!("usage: dev fill-form '<json>'"))?;
     let map: Value = serde_json::from_str(json_str).context("invalid JSON for fill-form")?;
-    let obj = map.as_object().ok_or_else(|| anyhow!("fill-form JSON must be an object of selector to value"))?;
+    let obj = map
+        .as_object()
+        .ok_or_else(|| anyhow!("fill-form JSON must be an object of selector to value"))?;
     let tab = resolve_active_tab_or(args)?;
     let profile = extract_profile(args);
     ensure_debugger_attached(tab, profile.as_deref())?;
@@ -639,20 +866,50 @@ fn fill_form_cmd(args: &[String]) -> Result<()> {
 
 fn upload_cmd(args: &[String]) -> Result<()> {
     let pos: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
-    if pos.len() < 2 { bail!("usage: dev upload <selector> <filepath>"); }
+    if pos.len() < 2 {
+        bail!("usage: dev upload <selector> <filepath>");
+    }
     let selector = pos[0];
-    let filepath = std::fs::canonicalize(pos[1])
-        .with_context(|| format!("file not found: {}", pos[1]))?;
+    let filepath =
+        std::fs::canonicalize(pos[1]).with_context(|| format!("file not found: {}", pos[1]))?;
     let tab = resolve_active_tab_or(args)?;
     let profile = extract_profile(args);
     ensure_debugger_attached(tab, profile.as_deref())?;
     // Resolve selector to backend nodeId
-    let doc = cdp(tab, profile.as_deref(), "DOM.getDocument", json!({"depth": 0}))?;
-    let root_node_id = doc.get("data").and_then(|d| d.get("result")).and_then(|r| r.get("root")).and_then(|r| r.get("nodeId")).and_then(|v| v.as_i64()).unwrap_or(0);
-    let sel = cdp(tab, profile.as_deref(), "DOM.querySelector", json!({"nodeId": root_node_id, "selector": selector}))?;
-    let node_id = sel.get("data").and_then(|d| d.get("result")).and_then(|r| r.get("nodeId")).and_then(|v| v.as_i64()).unwrap_or(0);
-    if node_id == 0 { bail!("selector matched nothing: {selector}"); }
-    let r = cdp(tab, profile.as_deref(), "DOM.setFileInputFiles", json!({"nodeId": node_id, "files": [filepath.to_string_lossy()]}))?;
+    let doc = cdp(
+        tab,
+        profile.as_deref(),
+        "DOM.getDocument",
+        json!({"depth": 0}),
+    )?;
+    let root_node_id = doc
+        .get("data")
+        .and_then(|d| d.get("result"))
+        .and_then(|r| r.get("root"))
+        .and_then(|r| r.get("nodeId"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let sel = cdp(
+        tab,
+        profile.as_deref(),
+        "DOM.querySelector",
+        json!({"nodeId": root_node_id, "selector": selector}),
+    )?;
+    let node_id = sel
+        .get("data")
+        .and_then(|d| d.get("result"))
+        .and_then(|r| r.get("nodeId"))
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    if node_id == 0 {
+        bail!("selector matched nothing: {selector}");
+    }
+    let r = cdp(
+        tab,
+        profile.as_deref(),
+        "DOM.setFileInputFiles",
+        json!({"nodeId": node_id, "files": [filepath.to_string_lossy()]}),
+    )?;
     print_or_emit(r, args);
     Ok(())
 }
@@ -671,13 +928,21 @@ fn dialog_cmd(args: &[String]) -> Result<()> {
     if let Some(text) = args.get(1).filter(|a| !a.starts_with("--")) {
         params["promptText"] = json!(text);
     }
-    let r = cdp(tab, profile.as_deref(), "Page.handleJavaScriptDialog", params)?;
+    let r = cdp(
+        tab,
+        profile.as_deref(),
+        "Page.handleJavaScriptDialog",
+        params,
+    )?;
     print_or_emit(r, args);
     Ok(())
 }
 
 fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
-    args.windows(2).find(|w| w[0] == flag).and_then(|w| w[1].as_str().into()).map(|s: &str| s)
+    args.windows(2)
+        .find(|w| w[0] == flag)
+        .and_then(|w| w[1].as_str().into())
+        .map(|s: &str| s)
 }
 
 fn extension_cmd(args: &[String]) -> Result<()> {
@@ -690,7 +955,9 @@ fn extension_cmd(args: &[String]) -> Result<()> {
             Ok(())
         }
         "get" => {
-            let id = rest.iter().find(|a| !a.starts_with("--"))
+            let id = rest
+                .iter()
+                .find(|a| !a.starts_with("--"))
                 .ok_or_else(|| anyhow!("usage: dev extension get <id>"))?;
             let r = rpc("dev.extension.get", json!({"id": id}), rest)?;
             print_or_emit(r, args);
@@ -707,21 +974,27 @@ fn extension_cmd(args: &[String]) -> Result<()> {
             Ok(())
         }
         "enable" => {
-            let id = rest.iter().find(|a| !a.starts_with("--"))
+            let id = rest
+                .iter()
+                .find(|a| !a.starts_with("--"))
                 .ok_or_else(|| anyhow!("usage: dev extension enable <id>"))?;
             let r = rpc("dev.extension.enable", json!({"id": id}), rest)?;
             print_or_emit(r, args);
             Ok(())
         }
         "disable" => {
-            let id = rest.iter().find(|a| !a.starts_with("--"))
+            let id = rest
+                .iter()
+                .find(|a| !a.starts_with("--"))
                 .ok_or_else(|| anyhow!("usage: dev extension disable <id>"))?;
             let r = rpc("dev.extension.disable", json!({"id": id}), rest)?;
             print_or_emit(r, args);
             Ok(())
         }
         "uninstall" => {
-            let id = rest.iter().find(|a| !a.starts_with("--"))
+            let id = rest
+                .iter()
+                .find(|a| !a.starts_with("--"))
                 .ok_or_else(|| anyhow!("usage: dev extension uninstall <id>"))?;
             let r = rpc("dev.extension.uninstall", json!({"id": id}), rest)?;
             print_or_emit(r, args);
@@ -775,17 +1048,25 @@ fn api_cmd(args: &[String]) -> Result<()> {
     // Build fetch() JS template. new URL(url, location.origin) resolves relative paths against the tab's origin.
     let has_body = body.is_some();
     let body_js = match body {
-        Some(b) => format!("{}", json_escape_as_js_string(&b)),
+        Some(b) => json_escape_as_js_string(b).to_string(),
         None => "undefined".to_string(),
     };
     let headers_js = {
-        let pairs: Vec<String> = headers.iter()
-            .map(|(k, v)| format!("{}: {}", json_escape_as_js_string(k), json_escape_as_js_string(v)))
+        let pairs: Vec<String> = headers
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "{}: {}",
+                    json_escape_as_js_string(k),
+                    json_escape_as_js_string(v)
+                )
+            })
             .collect();
         format!("{{{}}}", pairs.join(", "))
     };
 
-    let js = format!(r#"
+    let js = format!(
+        r#"
 (async () => {{
   const url = new URL({url_expr}, location.origin);
   const opts = {{ method: {method_expr}, headers: {headers_js}, credentials: 'include' }};
@@ -832,9 +1113,14 @@ fn api_cmd(args: &[String]) -> Result<()> {
     let want_json = !human;
     if let Some(err) = result.get("error").and_then(|e| e.as_str()) {
         if err == "fetch_failed" {
-            let msg = result.get("message").and_then(|m| m.as_str()).unwrap_or("unknown");
+            let msg = result
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown");
             eprintln!("✗ fetch failed: {}", msg);
-            if let Some(u) = result.get("url").and_then(|u| u.as_str()) { eprintln!("  url: {}", u); }
+            if let Some(u) = result.get("url").and_then(|u| u.as_str()) {
+                eprintln!("  url: {}", u);
+            }
             std::process::exit(1);
         }
     }
@@ -856,11 +1142,27 @@ fn api_cmd(args: &[String]) -> Result<()> {
         }
         println!("{}", serde_json::to_string(&out)?);
     } else {
-        let st = if status >= 200 && status < 300 { "✓" } else if status >= 400 { "✗" } else { "·" };
-        println!("{} HTTP {} {} ({}ms, {} bytes)", st, status,
-            result.get("statusText").and_then(|s| s.as_str()).unwrap_or(""),
+        let st = if (200..300).contains(&status) {
+            "✓"
+        } else if status >= 400 {
+            "✗"
+        } else {
+            "·"
+        };
+        println!(
+            "{} HTTP {} {} ({}ms, {} bytes)",
+            st,
+            status,
+            result
+                .get("statusText")
+                .and_then(|s| s.as_str())
+                .unwrap_or(""),
             timing,
-            result.get("bodyLength").and_then(|l| l.as_u64()).unwrap_or(0));
+            result
+                .get("bodyLength")
+                .and_then(|l| l.as_u64())
+                .unwrap_or(0)
+        );
         if let Some(h) = result.get("headers").and_then(|h| h.as_object()) {
             for (k, v) in h.iter().take(15) {
                 println!("  {}: {}", k, v.as_str().unwrap_or(""));
@@ -874,16 +1176,22 @@ fn api_cmd(args: &[String]) -> Result<()> {
         }
         if let Some(exp) = expect_status {
             println!();
-            if status_pass { println!("✓ expect-status {}: PASS", exp); }
-            else { println!("✗ expect-status {}: FAIL (got {})", exp, status); }
+            if status_pass {
+                println!("✓ expect-status {}: PASS", exp);
+            } else {
+                println!("✗ expect-status {}: FAIL (got {})", exp, status);
+            }
         }
     }
-    if !status_pass { std::process::exit(1); }
+    if !status_pass {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
 fn json_escape_as_js_string(s: &str) -> String {
-    let json = serde_json::to_string(s).unwrap_or_else(|_| format!("\"{}\"", s.replace('"', "\\\"")));
+    let json =
+        serde_json::to_string(s).unwrap_or_else(|_| format!("\"{}\"", s.replace('"', "\\\"")));
     json
 }
 
@@ -893,16 +1201,24 @@ fn cookies_cmd(args: &[String]) -> Result<()> {
     match sub {
         "list" => {
             let mut params = json!({});
-            if let Some(d) = flag_value(rest, "--domain") { params["domain"] = json!(d); }
-            if let Some(u) = flag_value(rest, "--url") { params["url"] = json!(u); }
-            if let Some(n) = flag_value(rest, "--name") { params["name"] = json!(n); }
+            if let Some(d) = flag_value(rest, "--domain") {
+                params["domain"] = json!(d);
+            }
+            if let Some(u) = flag_value(rest, "--url") {
+                params["url"] = json!(u);
+            }
+            if let Some(n) = flag_value(rest, "--name") {
+                params["name"] = json!(n);
+            }
             let r = rpc("dev.cookies.list", params, rest)?;
             print_or_emit(r, args);
             Ok(())
         }
         "get" => {
-            let url = flag_value(rest, "--url").ok_or_else(|| anyhow!("usage: dev cookies get --url <url> --name <name>"))?;
-            let name = flag_value(rest, "--name").ok_or_else(|| anyhow!("usage: dev cookies get --url <url> --name <name>"))?;
+            let url = flag_value(rest, "--url")
+                .ok_or_else(|| anyhow!("usage: dev cookies get --url <url> --name <name>"))?;
+            let name = flag_value(rest, "--name")
+                .ok_or_else(|| anyhow!("usage: dev cookies get --url <url> --name <name>"))?;
             let r = rpc("dev.cookies.get", json!({"url": url, "name": name}), rest)?;
             print_or_emit(r, args);
             Ok(())
@@ -912,20 +1228,39 @@ fn cookies_cmd(args: &[String]) -> Result<()> {
             let name = flag_value(rest, "--name").ok_or_else(|| anyhow!("--name required"))?;
             let value = flag_value(rest, "--value").ok_or_else(|| anyhow!("--value required"))?;
             let mut params = json!({"url": url, "name": name, "value": value});
-            if let Some(d) = flag_value(rest, "--domain") { params["domain"] = json!(d); }
-            if let Some(p) = flag_value(rest, "--path") { params["path"] = json!(p); }
-            if rest.iter().any(|a| a == "--secure") { params["secure"] = json!(true); }
-            if rest.iter().any(|a| a == "--httpOnly") { params["httpOnly"] = json!(true); }
-            if let Some(s) = flag_value(rest, "--sameSite") { params["sameSite"] = json!(s); }
-            if let Some(e) = flag_value(rest, "--expirationDate").and_then(|s| s.parse::<f64>().ok()) { params["expirationDate"] = json!(e); }
+            if let Some(d) = flag_value(rest, "--domain") {
+                params["domain"] = json!(d);
+            }
+            if let Some(p) = flag_value(rest, "--path") {
+                params["path"] = json!(p);
+            }
+            if rest.iter().any(|a| a == "--secure") {
+                params["secure"] = json!(true);
+            }
+            if rest.iter().any(|a| a == "--httpOnly") {
+                params["httpOnly"] = json!(true);
+            }
+            if let Some(s) = flag_value(rest, "--sameSite") {
+                params["sameSite"] = json!(s);
+            }
+            if let Some(e) =
+                flag_value(rest, "--expirationDate").and_then(|s| s.parse::<f64>().ok())
+            {
+                params["expirationDate"] = json!(e);
+            }
             let r = rpc("dev.cookies.set", params, rest)?;
             print_or_emit(r, args);
             Ok(())
         }
         "delete" => {
-            let url = flag_value(rest, "--url").ok_or_else(|| anyhow!("usage: dev cookies delete --url <url> --name <name>"))?;
+            let url = flag_value(rest, "--url")
+                .ok_or_else(|| anyhow!("usage: dev cookies delete --url <url> --name <name>"))?;
             let name = flag_value(rest, "--name").ok_or_else(|| anyhow!("--name required"))?;
-            let r = rpc("dev.cookies.delete", json!({"url": url, "name": name}), rest)?;
+            let r = rpc(
+                "dev.cookies.delete",
+                json!({"url": url, "name": name}),
+                rest,
+            )?;
             print_or_emit(r, args);
             Ok(())
         }
@@ -949,7 +1284,9 @@ fn storage_cmd(args: &[String]) -> Result<()> {
     let rest = &args[1..];
     match sub {
         "list" | "" => {
-            let store = flag_value(rest, "--type").or_else(|| flag_value(rest, "--store")).unwrap_or("local");
+            let store = flag_value(rest, "--type")
+                .or_else(|| flag_value(rest, "--store"))
+                .unwrap_or("local");
             let js = match store {
                 "local" => r#"(() => {
                     const out = {};
@@ -976,79 +1313,134 @@ fn storage_cmd(args: &[String]) -> Result<()> {
                 })()"#.to_string(),
                 other => return Err(anyhow!("unknown --type: {} (use local|session|indexed)", other)),
             };
-            let tab = match extract_tab(args) { Some(t) => Some(t), None => resolve_active_tab_or(rest)? };
+            let tab = match extract_tab(args) {
+                Some(t) => Some(t),
+                None => resolve_active_tab_or(rest)?,
+            };
             let profile = extract_profile(args).or_else(|| extract_profile(rest));
             let result = cdp_eval(tab, profile.as_deref(), &js)?;
             println!("{}", serde_json::to_string(&result)?);
             Ok(())
         }
         "get" => {
-            let key = rest.iter().find(|a| !a.starts_with("--"))
+            let key = rest
+                .iter()
+                .find(|a| !a.starts_with("--"))
                 .ok_or_else(|| anyhow!("usage: dev storage get <key> [--type local|session]"))?;
-            let store = flag_value(rest, "--type").or_else(|| flag_value(rest, "--store")).unwrap_or("local");
+            let store = flag_value(rest, "--type")
+                .or_else(|| flag_value(rest, "--store"))
+                .unwrap_or("local");
             let js = match store {
-                "local" => format!(r#"(() => {{ const v = localStorage.getItem({}); return {{ key: {}, value: v, exists: v !== null }}; }})()"#,
-                    json_escape_as_js_string(key), json_escape_as_js_string(key)),
-                "session" => format!(r#"(() => {{ const v = sessionStorage.getItem({}); return {{ key: {}, value: v, exists: v !== null }}; }})()"#,
-                    json_escape_as_js_string(key), json_escape_as_js_string(key)),
-                other => return Err(anyhow!("get not supported for store type: {} (use local|session)", other)),
+                "local" => format!(
+                    r#"(() => {{ const v = localStorage.getItem({}); return {{ key: {}, value: v, exists: v !== null }}; }})()"#,
+                    json_escape_as_js_string(key),
+                    json_escape_as_js_string(key)
+                ),
+                "session" => format!(
+                    r#"(() => {{ const v = sessionStorage.getItem({}); return {{ key: {}, value: v, exists: v !== null }}; }})()"#,
+                    json_escape_as_js_string(key),
+                    json_escape_as_js_string(key)
+                ),
+                other => {
+                    return Err(anyhow!(
+                        "get not supported for store type: {} (use local|session)",
+                        other
+                    ))
+                }
             };
-            let tab = match extract_tab(args) { Some(t) => Some(t), None => resolve_active_tab_or(rest)? };
+            let tab = match extract_tab(args) {
+                Some(t) => Some(t),
+                None => resolve_active_tab_or(rest)?,
+            };
             let profile = extract_profile(args).or_else(|| extract_profile(rest));
             let result = cdp_eval(tab, profile.as_deref(), &js)?;
             println!("{}", serde_json::to_string(&result)?);
             Ok(())
         }
         "set" => {
-            let key = rest.iter().find(|a| !a.starts_with("--"))
-                .ok_or_else(|| anyhow!("usage: dev storage set <key> --value <v> [--type local|session]"))?;
+            let key = rest.iter().find(|a| !a.starts_with("--")).ok_or_else(|| {
+                anyhow!("usage: dev storage set <key> --value <v> [--type local|session]")
+            })?;
             let value = flag_value(rest, "--value").ok_or_else(|| anyhow!("--value required"))?;
-            let store = flag_value(rest, "--type").or_else(|| flag_value(rest, "--store")).unwrap_or("local");
+            let store = flag_value(rest, "--type")
+                .or_else(|| flag_value(rest, "--store"))
+                .unwrap_or("local");
             let js = match store {
-                "local" => format!(r#"(() => {{ localStorage.setItem({}, {}); return {{ set: true, key: {} }}; }})()"#,
-                    json_escape_as_js_string(key), json_escape_as_js_string(value), json_escape_as_js_string(key)),
-                "session" => format!(r#"(() => {{ sessionStorage.setItem({}, {}); return {{ set: true, key: {} }}; }})()"#,
-                    json_escape_as_js_string(key), json_escape_as_js_string(value), json_escape_as_js_string(key)),
+                "local" => format!(
+                    r#"(() => {{ localStorage.setItem({}, {}); return {{ set: true, key: {} }}; }})()"#,
+                    json_escape_as_js_string(key),
+                    json_escape_as_js_string(value),
+                    json_escape_as_js_string(key)
+                ),
+                "session" => format!(
+                    r#"(() => {{ sessionStorage.setItem({}, {}); return {{ set: true, key: {} }}; }})()"#,
+                    json_escape_as_js_string(key),
+                    json_escape_as_js_string(value),
+                    json_escape_as_js_string(key)
+                ),
                 other => return Err(anyhow!("set not supported for store type: {}", other)),
             };
-            let tab = match extract_tab(args) { Some(t) => Some(t), None => resolve_active_tab_or(rest)? };
+            let tab = match extract_tab(args) {
+                Some(t) => Some(t),
+                None => resolve_active_tab_or(rest)?,
+            };
             let profile = extract_profile(args).or_else(|| extract_profile(rest));
             let result = cdp_eval(tab, profile.as_deref(), &js)?;
             println!("{}", serde_json::to_string(&result)?);
             Ok(())
         }
         "remove" | "delete" => {
-            let key = rest.iter().find(|a| !a.starts_with("--"))
+            let key = rest
+                .iter()
+                .find(|a| !a.starts_with("--"))
                 .ok_or_else(|| anyhow!("usage: dev storage remove <key> [--type local|session]"))?;
-            let store = flag_value(rest, "--type").or_else(|| flag_value(rest, "--store")).unwrap_or("local");
+            let store = flag_value(rest, "--type")
+                .or_else(|| flag_value(rest, "--store"))
+                .unwrap_or("local");
             let js = match store {
-                "local" => format!(r#"(() => {{ localStorage.removeItem({}); return {{ removed: true, key: {} }}; }})()"#,
-                    json_escape_as_js_string(key), json_escape_as_js_string(key)),
-                "session" => format!(r#"(() => {{ sessionStorage.removeItem({}); return {{ removed: true, key: {} }}; }})()"#,
-                    json_escape_as_js_string(key), json_escape_as_js_string(key)),
+                "local" => format!(
+                    r#"(() => {{ localStorage.removeItem({}); return {{ removed: true, key: {} }}; }})()"#,
+                    json_escape_as_js_string(key),
+                    json_escape_as_js_string(key)
+                ),
+                "session" => format!(
+                    r#"(() => {{ sessionStorage.removeItem({}); return {{ removed: true, key: {} }}; }})()"#,
+                    json_escape_as_js_string(key),
+                    json_escape_as_js_string(key)
+                ),
                 other => return Err(anyhow!("remove not supported for store type: {}", other)),
             };
-            let tab = match extract_tab(args) { Some(t) => Some(t), None => resolve_active_tab_or(rest)? };
+            let tab = match extract_tab(args) {
+                Some(t) => Some(t),
+                None => resolve_active_tab_or(rest)?,
+            };
             let profile = extract_profile(args).or_else(|| extract_profile(rest));
             let result = cdp_eval(tab, profile.as_deref(), &js)?;
             println!("{}", serde_json::to_string(&result)?);
             Ok(())
         }
         "clear" => {
-            let store = flag_value(rest, "--type").or_else(|| flag_value(rest, "--store")).unwrap_or("local");
+            let store = flag_value(rest, "--type")
+                .or_else(|| flag_value(rest, "--store"))
+                .unwrap_or("local");
             let js = match store {
                 "local" => r#"(() => { localStorage.clear(); return { cleared: true, store: 'local' }; })()"#.to_string(),
                 "session" => r#"(() => { sessionStorage.clear(); return { cleared: true, store: 'session' }; })()"#.to_string(),
                 other => return Err(anyhow!("clear not supported for store type: {}", other)),
             };
-            let tab = match extract_tab(args) { Some(t) => Some(t), None => resolve_active_tab_or(rest)? };
+            let tab = match extract_tab(args) {
+                Some(t) => Some(t),
+                None => resolve_active_tab_or(rest)?,
+            };
             let profile = extract_profile(args).or_else(|| extract_profile(rest));
             let result = cdp_eval(tab, profile.as_deref(), &js)?;
             println!("{}", serde_json::to_string(&result)?);
             Ok(())
         }
         other => {
-            eprintln!("unknown storage subcommand: {other}\navailable: list, get, set, remove, clear");
+            eprintln!(
+                "unknown storage subcommand: {other}\navailable: list, get, set, remove, clear"
+            );
             std::process::exit(1);
         }
     }
@@ -1059,7 +1451,10 @@ fn sw_cmd(args: &[String]) -> Result<()> {
     let rest = &args[1..];
     match sub {
         "list" | "" => {
-            let tab = match extract_tab(args) { Some(t) => Some(t), None => resolve_active_tab_or(rest)? };
+            let tab = match extract_tab(args) {
+                Some(t) => Some(t),
+                None => resolve_active_tab_or(rest)?,
+            };
             let profile = extract_profile(args);
             let js = r#"(async () => {
                 if (!('serviceWorker' in navigator)) return { supported: false, registrations: [] };
@@ -1080,7 +1475,10 @@ fn sw_cmd(args: &[String]) -> Result<()> {
             Ok(())
         }
         "inspect" => {
-            let tab = match extract_tab(args) { Some(t) => Some(t), None => resolve_active_tab_or(rest)? };
+            let tab = match extract_tab(args) {
+                Some(t) => Some(t),
+                None => resolve_active_tab_or(rest)?,
+            };
             let profile = extract_profile(args);
             let js = r#"(async () => {
                 const out = { supported: 'serviceWorker' in navigator };
@@ -1125,11 +1523,17 @@ fn sw_cmd(args: &[String]) -> Result<()> {
             Ok(())
         }
         "unregister" => {
-            let scope = rest.iter().find(|a| !a.starts_with("--"))
+            let scope = rest
+                .iter()
+                .find(|a| !a.starts_with("--"))
                 .ok_or_else(|| anyhow!("usage: dev sw unregister <scope-url> [--tab T]"))?;
-            let tab = match extract_tab(args) { Some(t) => Some(t), None => resolve_active_tab_or(rest)? };
+            let tab = match extract_tab(args) {
+                Some(t) => Some(t),
+                None => resolve_active_tab_or(rest)?,
+            };
             let profile = extract_profile(args);
-            let js = format!(r#"(async () => {{
+            let js = format!(
+                r#"(async () => {{
                 const regs = await navigator.serviceWorker.getRegistrations();
                 let match = null;
                 for (const r of regs) {{ if (r.scope === {scope_expr}) match = r; }}
@@ -1137,7 +1541,8 @@ fn sw_cmd(args: &[String]) -> Result<()> {
                 const ok = await match.unregister();
                 return {{ found: true, unregistered: ok, scope: match.scope }};
             }})()"#,
-                scope_expr = json_escape_as_js_string(scope));
+                scope_expr = json_escape_as_js_string(scope)
+            );
             let result = cdp_eval(tab, profile.as_deref(), &js)?;
             println!("{}", serde_json::to_string(&result)?);
             Ok(())

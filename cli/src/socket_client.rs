@@ -48,7 +48,12 @@ pub fn resolve_socket(profile_override: Option<&str>) -> Result<String> {
                 return Ok(id.clone());
             }
         }
-        bail!("no online profile matches `{want}`");
+        bail!(
+            "no online profile matches `{want}`.\n\
+             Online profiles:\n{}\n\
+             Run `ap-browser use <id|label>` to switch.",
+            format_online_profiles(&ids)
+        );
     }
 
     if ids.len() == 1 {
@@ -56,24 +61,27 @@ pub fn resolve_socket(profile_override: Option<&str>) -> Result<String> {
     }
 
     // Multiple instances, no selection: probe each and show the user.
-    let mut lines: Vec<String> = vec![];
-    for id in &ids {
-        match probe_info(id) {
-            Ok(info) => lines.push(format!(
+    bail!(
+        "multiple profiles online, none selected.\n\
+         Run `ap-browser profiles` then `ap-browser use <id>`.\n\
+         Online profiles:\n{}",
+        format_online_profiles(&ids)
+    );
+}
+
+fn format_online_profiles(ids: &[String]) -> String {
+    ids.iter()
+        .map(|id| match probe_info(id) {
+            Ok(info) => format!(
                 "  {}  {}  {}",
                 &info.instance_id.get(..8).unwrap_or(&info.instance_id),
                 info.label.as_deref().unwrap_or("(no label)"),
                 info.active_tab_url.as_deref().unwrap_or("(no tab)")
-            )),
-            Err(_) => lines.push(format!("  {} (probe failed)", id)),
-        }
-    }
-    bail!(
-        "multiple profiles online, none selected.\n\
-         Run `ap-browser profiles` then `ap-browser use <id>`.\n\
-         Available:\n{}",
-        lines.join("\n")
-    );
+            ),
+            Err(_) => format!("  {} (probe failed)", id),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// List currently-registered instance ids.
@@ -109,10 +117,7 @@ pub fn probe_info(id: &str) -> Result<ProfileInfo> {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("no instance_id in info response"))?
             .to_string(),
-        label: data
-            .get("label")
-            .and_then(|v| v.as_str())
-            .map(String::from),
+        label: data.get("label").and_then(|v| v.as_str()).map(String::from),
         active_tab_url: active_tab
             .and_then(|t| t.get("url"))
             .and_then(|v| v.as_str())
@@ -145,7 +150,9 @@ pub fn dial_with_retry(id: &str, attempts: u32, backoff: Duration) -> Result<Box
         bail!(
             "dial remote {} failed after {attempts} attempts: {}",
             addr,
-            last_err.map(|e| e.to_string()).unwrap_or_else(|| "unknown".into())
+            last_err
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "unknown".into())
         );
     }
 
@@ -163,7 +170,9 @@ pub fn dial_with_retry(id: &str, attempts: u32, backoff: Duration) -> Result<Box
     Err(anyhow!(
         "dial {} failed after {attempts} attempts: {}",
         id,
-        last_err.map(|e| e.to_string()).unwrap_or_else(|| "unknown".into())
+        last_err
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "unknown".into())
     ))
 }
 

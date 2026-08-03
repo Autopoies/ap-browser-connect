@@ -8,8 +8,8 @@
 
 use ap_browser_core::{encode, read_frame, transport, FrameError, HelloParams, Request};
 // Bring in interprocess trait methods (incoming/accept) on transport::Listener.
-use interprocess::local_socket::prelude::*;
 use anyhow::{Context, Result};
+use interprocess::local_socket::prelude::*;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -20,6 +20,7 @@ use tracing::{debug, error, info, warn};
 const KEEPALIVE_METHOD: &str = "keepalive";
 const HELLO_METHOD: &str = "hello";
 const RESPONSE_TIMEOUT_SECS: u64 = 30;
+const MAX_RESPONSE_TIMEOUT_SECS: u64 = 3_600;
 
 type Pending = Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>;
 
@@ -46,11 +47,16 @@ impl Host {
     }
 }
 
+fn unregister_host_instance(host: &Host) {
+    if let Ok(Some(id)) = host.instance_id.lock().map(|id| id.clone()) {
+        let _ = transport::unregister_instance(&id);
+    }
+}
+
 fn main() -> Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with_writer(std::io::stderr)
         .try_init();
@@ -95,9 +101,7 @@ fn main() -> Result<()> {
                             break;
                         }
                     }
-                    Err(FrameError::Io(ref e))
-                        if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-                    {
+                    Err(FrameError::Io(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                         info!("stdin closed (Chrome disconnected), exiting");
                         break;
                     }
@@ -107,6 +111,7 @@ fn main() -> Result<()> {
                     }
                 }
             }
+            unregister_host_instance(&host);
             std::process::exit(0);
         });
     }
@@ -125,9 +130,10 @@ fn main() -> Result<()> {
         let _ = std::fs::remove_file(&socket_name);
     }
 
-    let listener = transport::bind(&socket_name)
-        .with_context(|| format!("bind {}", socket_name))?;
-    if let Err(e) = transport::register_instance(host.instance_id.lock().unwrap().as_ref().unwrap()) {
+    let listener =
+        transport::bind(&socket_name).with_context(|| format!("bind {}", socket_name))?;
+    if let Err(e) = transport::register_instance(host.instance_id.lock().unwrap().as_ref().unwrap())
+    {
         warn!("register_instance failed (non-fatal): {e}");
     }
     info!("listening on {}", socket_name);
@@ -146,9 +152,7 @@ fn main() -> Result<()> {
         }
     }
 
-    if let Some(id) = host.instance_id.lock().unwrap().clone() {
-        let _ = transport::unregister_instance(&id);
-    }
+    unregister_host_instance(&host);
     Ok(())
 }
 
@@ -200,22 +204,25 @@ fn handle_sw_message(host: &Arc<Host>, msg: serde_json::Value) -> Result<()> {
     }
 }
 
+fn response_timeout_secs(request: &serde_json::Value) -> u64 {
+    request
+        .get("params")
+        .and_then(|params| params.get("_timeout_hint_secs"))
+        .and_then(serde_json::Value::as_u64)
+        .filter(|seconds| *seconds > 0 && *seconds <= MAX_RESPONSE_TIMEOUT_SECS)
+        .unwrap_or(RESPONSE_TIMEOUT_SECS)
+}
+
 fn handle_cli_connection(host: Arc<Host>, mut stream: transport::Stream) -> Result<()> {
     let req_value = read_frame(&mut stream).context("read cli frame")?;
-    let req: Request =
-        serde_json::from_value(req_value.clone()).context("parse cli request")?;
+    let req: Request = serde_json::from_value(req_value.clone()).context("parse cli request")?;
     debug!("cli request method={}", req.method);
 
     let id = host.next_id.fetch_add(1, Ordering::SeqCst);
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     host.pending.lock().unwrap().insert(id, tx);
 
-    let timeout_secs = req_value
-        .get("params")
-        .and_then(|p| p.get("_timeout_hint_secs"))
-        .and_then(|v| v.as_u64())
-        .filter(|&s| s > 0 && s <= 300)
-        .unwrap_or(RESPONSE_TIMEOUT_SECS);
+    let timeout_secs = response_timeout_secs(&req_value);
 
     let forwarded = {
         let mut v = req_value;
@@ -232,7 +239,9 @@ fn handle_cli_connection(host: Arc<Host>, mut stream: transport::Stream) -> Resu
         .unwrap()
         .clone()
         .context("stdout channel closed")?;
-    stdout_tx.send(encoded).context("forward to SW via stdout")?;
+    stdout_tx
+        .send(encoded)
+        .context("forward to SW via stdout")?;
 
     match rx.recv_timeout(std::time::Duration::from_secs(timeout_secs)) {
         Ok(buf) => {
@@ -263,4 +272,39 @@ fn handle_cli_connection(host: Arc<Host>, mut stream: transport::Stream) -> Resu
 
     host.pending.lock().unwrap().remove(&id);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_long_bounded_response_timeout_hints() {
+        assert_eq!(
+            response_timeout_secs(&serde_json::json!({
+                "params": {"_timeout_hint_secs": 1_800}
+            })),
+            1_800
+        );
+        assert_eq!(
+            response_timeout_secs(&serde_json::json!({
+                "params": {"_timeout_hint_secs": 3_601}
+            })),
+            RESPONSE_TIMEOUT_SECS
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unregisters_socket_before_forced_exit() {
+        let host = Host::new();
+        let id = format!("cleanup-test-{}", std::process::id());
+        *host.instance_id.lock().unwrap() = Some(id.clone());
+        let socket = transport::instance_name(&id);
+        std::fs::File::create(&socket).unwrap();
+
+        unregister_host_instance(&host);
+
+        assert!(!std::path::Path::new(&socket).exists());
+    }
 }

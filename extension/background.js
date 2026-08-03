@@ -2,24 +2,30 @@
 // Drives user's Chrome via JSON-RPC over chrome.runtime.connectNative.
 
 import {
-  buildDomReadExpression,
-  buildInteractionExpression,
-  domDropRules,
-  hasFilterDiagnostics,
-  interactionDenyRules,
-  interactionOutcome,
-  matchingPolicies,
-  mergeFilterMetadata,
-  redactResult,
-  resolveBatchStepTab,
-  resolveFilterOperationTab,
-  shouldFilterOuterResponse,
+	buildDomReadExpression,
+	buildInteractionExpression,
+	domDropRules,
+	hasFilterDiagnostics,
+	interactionDenyRules,
+	interactionOutcome,
+	matchingPolicies,
+	mergeFilterMetadata,
+	redactResult,
+	resolveBatchStepTab,
+	resolveFilterOperationTab,
+	shouldFilterOuterResponse,
 } from "./filter-enforcement.mjs";
 import {
-  clearTabRuntimeState,
-  ensureAttachedOnce,
-  isCurrentPort,
-  runtimeEvaluateValue,
+	buildBatchStepParams,
+	clearTabRuntimeState,
+	ensureAttachedOnce,
+	isCurrentPort,
+	nextReconnectDelay,
+	runtimeEvaluateValue,
+	scheduleExtensionReload,
+	settleWithin,
+	waitForMediaEnd,
+	waitForUrlChange,
 } from "./runtime-helpers.mjs";
 
 // ── Autopoies brand favicon swap (inlined, no module import) ──
@@ -27,29 +33,21 @@ const AP_ICON_SVG = `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"
 const AP_ICON_URL = `data:image/svg+xml;base64,${btoa(String.fromCharCode(...new TextEncoder().encode(AP_ICON_SVG)))}`;
 
 async function swapFaviconToSparkle(tabId) {
-  try {
-    await chrome.debugger.sendCommand(
-      { tabId },
-      "Runtime.evaluate",
-      {
-        expression: `(function(){const I=${JSON.stringify(AP_ICON_URL)};if(!window.__apSwapped){window.__apSwapped=true;window.__apOrigLinks=Array.from(document.querySelectorAll('link[rel*="icon"]')).map(l=>({el:l,rel:l.rel,href:l.href}))}document.querySelectorAll('link[rel*="icon"]').forEach(l=>l.remove());const n=document.createElement('link');n.rel='icon';n.href=I;document.head.appendChild(n);})()`,
-        returnByValue: true,
-      },
-    );
-  } catch (_) {}
+	try {
+		await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+			expression: `(function(){const I=${JSON.stringify(AP_ICON_URL)};if(!window.__apSwapped){window.__apSwapped=true;window.__apOrigLinks=Array.from(document.querySelectorAll('link[rel*="icon"]')).map(l=>({el:l,rel:l.rel,href:l.href}))}document.querySelectorAll('link[rel*="icon"]').forEach(l=>l.remove());const n=document.createElement('link');n.rel='icon';n.href=I;document.head.appendChild(n);})()`,
+			returnByValue: true,
+		});
+	} catch (_) {}
 }
 
 async function restoreFavicon(tabId) {
-  try {
-    await chrome.debugger.sendCommand(
-      { tabId },
-      "Runtime.evaluate",
-      {
-        expression: `(function(){if(!window.__apSwapped)return;document.querySelectorAll('link[rel*="icon"]').forEach(l=>l.remove());if(window.__apOrigLinks){window.__apOrigLinks.forEach(o=>{o.el.rel=o.rel;o.el.href=o.href;document.head.appendChild(o.el)})}delete window.__apSwapped;delete window.__apOrigLinks})()`,
-        returnByValue: true,
-      },
-    );
-  } catch (_) {}
+	try {
+		await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+			expression: `(function(){if(!window.__apSwapped)return;document.querySelectorAll('link[rel*="icon"]').forEach(l=>l.remove());if(window.__apOrigLinks){window.__apOrigLinks.forEach(o=>{o.el.rel=o.rel;o.el.href=o.href;document.head.appendChild(o.el)})}delete window.__apSwapped;delete window.__apOrigLinks})()`,
+			returnByValue: true,
+		});
+	} catch (_) {}
 }
 
 const NATIVE_HOST_NAME = "com.apbrowser.connect";
@@ -59,964 +57,1341 @@ const KEEPALIVE_PERIOD_MIN = 0.4; // 24 seconds
 // ─── State ──────────────────────────────────────────────────────────────
 let nativePort = null;
 let nativeReconnectTimer = null;
+let nativeReconnectDelayMs = 1000;
 let labelCache = "";
+
+function scheduleNativeReconnect() {
+	if (nativeReconnectTimer) return;
+	const delayMs = nativeReconnectDelayMs;
+	nativeReconnectDelayMs = nextReconnectDelay(delayMs);
+	nativeReconnectTimer = setTimeout(() => {
+		nativeReconnectTimer = null;
+		connectNativePort();
+	}, delayMs);
+}
 
 // ─── instance_id bootstrap ───────────────────────────────────────────────
 async function ensureInstanceId() {
-  const { instance_id, label } = await chrome.storage.local.get([
-    "instance_id",
-    "label",
-  ]);
-  if (!instance_id) {
-    const newId = crypto.randomUUID();
-    await chrome.storage.local.set({ instance_id: newId, label: "" });
-    console.log(`[ap-browser] generated instance_id=${newId}`);
-    return { instance_id: newId, label: "" };
-  }
-  labelCache = label || "";
-  return { instance_id, label: labelCache };
+	const { instance_id, label } = await chrome.storage.local.get([
+		"instance_id",
+		"label",
+	]);
+	if (!instance_id) {
+		const newId = crypto.randomUUID();
+		await chrome.storage.local.set({ instance_id: newId, label: "" });
+		console.log(`[ap-browser] generated instance_id=${newId}`);
+		return { instance_id: newId, label: "" };
+	}
+	labelCache = label || "";
+	return { instance_id, label: labelCache };
 }
 
 // ─── Native port lifecycle ───────────────────────────────────────────────
-function buildHelloParams(instance_id, label) {
-  return {
-    instance_id,
-    label,
-    extension_version: chrome.runtime.getManifest().version,
-    chrome_version: navigator.userAgent,
-    active_tab: null,
-    open_tabs: [],
-  };
-}
-
 async function buildHelloWithTabs(instance_id, label) {
-  const [activeTab, allTabs] = await Promise.all([
-    chrome.tabs.query({ active: true, currentWindow: true }).then(
-      (t) => t[0] || null,
-    ),
-    chrome.tabs.query({}),
-  ]);
-  const mapTab = (t) => ({
-    id: t.id,
-    url: t.url,
-    title: t.title,
-  });
-  return {
-    instance_id,
-    label,
-    extension_version: chrome.runtime.getManifest().version,
-    chrome_version: navigator.userAgent,
-    active_tab: activeTab ? mapTab(activeTab) : null,
-    open_tabs: allTabs.map(mapTab),
-  };
+	const [activeTab, allTabs] = await Promise.all([
+		chrome.tabs
+			.query({ active: true, currentWindow: true })
+			.then((t) => t[0] || null),
+		chrome.tabs.query({}),
+	]);
+	const mapTab = (t) => ({
+		id: t.id,
+		url: t.url,
+		title: t.title,
+	});
+	return {
+		instance_id,
+		label,
+		extension_version: chrome.runtime.getManifest().version,
+		chrome_version: navigator.userAgent,
+		active_tab: activeTab ? mapTab(activeTab) : null,
+		open_tabs: allTabs.map(mapTab),
+	};
 }
 
 async function connectNativePort() {
-  if (nativePort) return nativePort;
-  const { instance_id, label } = await ensureInstanceId();
-  if (nativePort) return nativePort;
-  if (nativeReconnectTimer) {
-    clearTimeout(nativeReconnectTimer);
-    nativeReconnectTimer = null;
-  }
-  try {
-    const port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
-    nativePort = port;
-    port.onMessage.addListener(handleNativeMessage);
-    port.onDisconnect.addListener(() => {
-      if (!isCurrentPort(nativePort, port)) return;
-      console.warn("[ap-browser] native port disconnected");
-      nativePort = null;
-      if (!nativeReconnectTimer) {
-        nativeReconnectTimer = setTimeout(() => {
-          nativeReconnectTimer = null;
-          connectNativePort();
-        }, 1000);
-      }
-    });
-    // Minimal hello FIRST, no awaits. SW may be torn down before async work completes.
-    port.postMessage({
-      jsonrpc: "2.0",
-      method: "hello",
-      params: {
-        instance_id,
-        label: labelCache || label || "",
-        extension_version: chrome.runtime.getManifest().version,
-        chrome_version: navigator.userAgent,
-        active_tab: null,
-        open_tabs: [],
-      },
-    });
-    // Follow up with full tab info once async resolves.
-    buildHelloWithTabs(instance_id, labelCache || label).then((hello) => {
-      if (nativePort === port) {
-        port.postMessage({ jsonrpc: "2.0", method: "hello", params: hello });
-      }
-    }).catch((e) => console.warn("[ap-browser] tab info follow-up failed:", e));
-    console.log("[ap-browser] native port connected, hello pushed");
-    return port;
-  } catch (e) {
-    console.error("[ap-browser] connectNative failed:", e);
-    nativePort = null;
-  }
+	if (nativePort) return nativePort;
+	const { instance_id, label } = await ensureInstanceId();
+	if (nativePort) return nativePort;
+	if (nativeReconnectTimer) {
+		clearTimeout(nativeReconnectTimer);
+		nativeReconnectTimer = null;
+	}
+	try {
+		const port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+		nativePort = port;
+		port.onMessage.addListener(handleNativeMessage);
+		port.onDisconnect.addListener(() => {
+			if (!isCurrentPort(nativePort, port)) return;
+			console.warn("[ap-browser] native port disconnected");
+			nativePort = null;
+			scheduleNativeReconnect();
+		});
+		// Minimal hello FIRST, no awaits. SW may be torn down before async work completes.
+		port.postMessage({
+			jsonrpc: "2.0",
+			method: "hello",
+			params: {
+				instance_id,
+				label: labelCache || label || "",
+				extension_version: chrome.runtime.getManifest().version,
+				chrome_version: navigator.userAgent,
+				active_tab: null,
+				open_tabs: [],
+			},
+		});
+		// Follow up with full tab info once async resolves.
+		buildHelloWithTabs(instance_id, labelCache || label)
+			.then((hello) => {
+				if (nativePort === port) {
+					port.postMessage({ jsonrpc: "2.0", method: "hello", params: hello });
+				}
+			})
+			.catch((e) => console.warn("[ap-browser] tab info follow-up failed:", e));
+		setTimeout(() => {
+			if (isCurrentPort(nativePort, port)) nativeReconnectDelayMs = 1000;
+		}, 30_000);
+		console.log("[ap-browser] native port connected, hello pushed");
+		return port;
+	} catch (e) {
+		console.error("[ap-browser] connectNative failed:", e);
+		nativePort = null;
+		scheduleNativeReconnect();
+	}
 }
 
 // ─── Message dispatch (JSON-RPC) ─────────────────────────────────────────
 async function handleNativeMessage(msg) {
-  if (!msg || typeof msg !== "object") return;
-  if (msg.jsonrpc !== "2.0") return;
-  if (!("id" in msg)) return;
+	if (!msg || typeof msg !== "object") return;
+	if (msg.jsonrpc !== "2.0") return;
+	if (!("id" in msg)) return;
 
-  const id = msg.id;
-  const method = msg.method;
-  const params = msg.params || {};
-  const lockedTab = params.tab_id != null;
-  const META_METHODS = new Set(["ping", "info", "keepalive", "hello"]);
-  const NO_TAB_METHODS = new Set(["download.browser"]);
-  const NO_RESTORE_PREFIX = "dev.";
-  let operatedTab = null;
-  try {
-    if (!META_METHODS.has(method) && !NO_TAB_METHODS.has(method)) {
-      // dev.* without explicit tab_id skips attach: avoids throwing on chrome:// active tab
-      const isDevNoTarget = method.startsWith("dev.") && params.tab_id == null;
-      if (!isDevNoTarget) {
-        try { operatedTab = await resolveTab(params); } catch (_) {}
-      }
-    }
-    if (NO_TAB_METHODS.has(method)) {
-      try { operatedTab = await resolveTab(params); } catch (_) {}
-    }
+	const id = msg.id;
+	const method = msg.method;
+	const params = msg.params || {};
+	const lockedTab = params.tab_id != null;
+	const META_METHODS = new Set(["ping", "info", "keepalive", "hello"]);
+	const NO_TAB_METHODS = new Set(["download.browser"]);
+	const NO_RESTORE_PREFIX = "dev.";
+	let operatedTab = null;
+	try {
+		if (!META_METHODS.has(method) && !NO_TAB_METHODS.has(method)) {
+			// dev.* without explicit tab_id skips attach: avoids throwing on chrome:// active tab
+			const isDevNoTarget = method.startsWith("dev.") && params.tab_id == null;
+			if (!isDevNoTarget) {
+				try {
+					operatedTab = await resolveTab(params);
+				} catch (_) {}
+			}
+		}
+		if (NO_TAB_METHODS.has(method)) {
+			try {
+				operatedTab = await resolveTab(params);
+			} catch (_) {}
+		}
 
-    if (operatedTab) {
-      if (!lockedTab) {
-        await unlockAllTabs();
-      } else {
-        await unlockOtherTabs(operatedTab.id);
-        lockedTabs.add(operatedTab.id);
-      }
-      cancelPendingRestore(operatedTab.id);
-      try { await ensureDebugger(operatedTab.id); } catch (e) {
-        // chrome:// pages reject attach; skip silently (debugger cmds will error per-command if needed)
-        if (operatedTab.url && operatedTab.url.startsWith('chrome://')) {
-          operatedTab = null;
-        } else {
-          throw e;
-        }
-      }
-      try { await swapFaviconToSparkle(operatedTab?.id); } catch (_) {}
-      chrome.action.setIcon({ path: "icons/active-128.png" }).catch(() => {});
-    }
+		if (operatedTab) {
+			if (!lockedTab) {
+				await unlockAllTabs();
+			} else {
+				await unlockOtherTabs(operatedTab.id);
+				lockedTabs.add(operatedTab.id);
+			}
+			cancelPendingRestore(operatedTab.id);
+			try {
+				await ensureDebugger(operatedTab.id);
+			} catch (e) {
+				// chrome:// pages reject attach; skip silently (debugger cmds will error per-command if needed)
+				if (operatedTab.url && operatedTab.url.startsWith("chrome://")) {
+					operatedTab = null;
+				} else {
+					throw e;
+				}
+			}
+			try {
+				await swapFaviconToSparkle(operatedTab?.id);
+			} catch (_) {}
+			chrome.action.setIcon({ path: "icons/active-128.png" }).catch(() => {});
+		}
 
-    const result = await dispatch(method, params, operatedTab);
-    nativePort.postMessage({ jsonrpc: "2.0", id, result });
-  } catch (e) {
-    const error = { code: e.code || "INTERNAL", message: e.message || String(e) };
-    if (e.filterMeta) error.data = { filters: e.filterMeta };
-    nativePort.postMessage({ jsonrpc: "2.0", id, error });
-  } finally {
-    if (operatedTab) {
-      if (!method.startsWith(NO_RESTORE_PREFIX)) {
-        scheduleRestore(operatedTab.id, 3000);
-        chrome.action.setIcon({ path: "icons/idle-128.png" }).catch(() => {});
-      }
-    }
-  }
+		const result = await dispatch(method, params, operatedTab);
+		nativePort.postMessage({ jsonrpc: "2.0", id, result });
+	} catch (e) {
+		const error = {
+			code: e.code || "INTERNAL",
+			message: e.message || String(e),
+		};
+		if (e.filterMeta) error.data = { filters: e.filterMeta };
+		nativePort.postMessage({ jsonrpc: "2.0", id, error });
+	} finally {
+		if (operatedTab) {
+			if (!method.startsWith(NO_RESTORE_PREFIX)) {
+				scheduleRestore(operatedTab.id, 3000);
+				chrome.action.setIcon({ path: "icons/idle-128.png" }).catch(() => {});
+			}
+		}
+	}
 }
 
 // ─── Method handlers ─────────────────────────────────────────────────────
 async function dispatch(method, params, operatedTab) {
-  if (!shouldFilterOuterResponse(method)) {
-    return dispatchUnfiltered(method, params, operatedTab);
-  }
-  const activePolicies = await activeFilterPolicies(method, params, operatedTab);
-  const response = await dispatchUnfiltered(method, params, operatedTab);
-  if (activePolicies.length === 0 || !response?.data) return response;
+	if (!shouldFilterOuterResponse(method)) {
+		return dispatchUnfiltered(method, params, operatedTab);
+	}
+	const activePolicies = await activeFilterPolicies(
+		method,
+		params,
+		operatedTab,
+	);
+	const response = await dispatchUnfiltered(method, params, operatedTab);
+	if (activePolicies.length === 0 || !response?.data) return response;
 
-  const filtered = redactResult(response.data, activePolicies);
-  response.data = filtered.value;
-  return attachFilterMetadata(response, filtered.metadata);
+	const filtered = redactResult(response.data, activePolicies);
+	response.data = filtered.value;
+	return attachFilterMetadata(response, filtered.metadata);
 }
 
 async function dispatchUnfiltered(method, params, operatedTab) {
-  switch (method) {
-    case "ping":
-      return { ok: true, data: { pong: true }, meta: await buildMeta(null) };
+	switch (method) {
+		case "ping":
+			return { ok: true, data: { pong: true }, meta: await buildMeta(null) };
 
-    case "info": {
-      const { instance_id, label } = await ensureInstanceId();
-      const hello = await buildHelloWithTabs(instance_id, label);
-      return {
-        ok: true,
-        data: {
-          instance_id: hello.instance_id,
-          label: hello.label,
-          active_tab: hello.active_tab,
-          open_tabs: hello.open_tabs,
-        },
-        meta: await buildMeta(null),
-      };
-    }
+		case "info": {
+			const { instance_id, label } = await ensureInstanceId();
+			const hello = await buildHelloWithTabs(instance_id, label);
+			return {
+				ok: true,
+				data: {
+					instance_id: hello.instance_id,
+					label: hello.label,
+					active_tab: hello.active_tab,
+					open_tabs: hello.open_tabs,
+				},
+				meta: await buildMeta(null),
+			};
+		}
 
-    case "tabs.list": {
-      const query = {};
-      if (params.window_id != null) query.windowId = params.window_id;
-      let tabs = await chrome.tabs.query(query);
-      if (params.filter) {
-        const re = new RegExp(params.filter, "i");
-        tabs = tabs.filter((t) => re.test(t.url || "") || re.test(t.title || ""));
-      }
-      let groups = [];
-      try {
-        const q = {};
-        if (params.window_id != null) q.windowId = params.window_id;
-        groups = await chrome.tabGroups.query(q);
-      } catch (_) {}
-      const groupMap = new Map();
-      for (const g of groups) groupMap.set(`${g.windowId}:${g.id}`, g.title || null);
-      if (params.group) {
-        const want = params.group;
-        tabs = tabs.filter((t) => {
-          const title = groupMap.get(`${t.windowId}:${t.groupId}`);
-          return title === want;
-        });
-      }
-      const data = tabs.map((t) => {
-        const o = { id: t.id, title: t.title, url: t.url };
-        if (t.active) o.active = true;
-        if (t.pinned) o.pinned = true;
-        if (t.groupId && t.groupId !== -1) {
-          o.group = groupMap.get(`${t.windowId}:${t.groupId}`) || null;
-        }
-        return o;
-      });
-      return { ok: true, data: { tabs: data }, meta: await buildMeta(null) };
-    }
+		case "tabs.list": {
+			const query = {};
+			if (params.window_id != null) query.windowId = params.window_id;
+			let tabs = await chrome.tabs.query(query);
+			if (params.filter) {
+				const re = new RegExp(params.filter, "i");
+				tabs = tabs.filter(
+					(t) => re.test(t.url || "") || re.test(t.title || ""),
+				);
+			}
+			let groups = [];
+			try {
+				const q = {};
+				if (params.window_id != null) q.windowId = params.window_id;
+				groups = await chrome.tabGroups.query(q);
+			} catch (_) {}
+			const groupMap = new Map();
+			for (const g of groups)
+				groupMap.set(`${g.windowId}:${g.id}`, g.title || null);
+			if (params.group) {
+				const want = params.group;
+				tabs = tabs.filter((t) => {
+					const title = groupMap.get(`${t.windowId}:${t.groupId}`);
+					return title === want;
+				});
+			}
+			const data = tabs.map((t) => {
+				const o = { id: t.id, title: t.title, url: t.url };
+				if (t.active) o.active = true;
+				if (t.pinned) o.pinned = true;
+				if (t.groupId && t.groupId !== -1) {
+					o.group = groupMap.get(`${t.windowId}:${t.groupId}`) || null;
+				}
+				return o;
+			});
+			return { ok: true, data: { tabs: data }, meta: await buildMeta(null) };
+		}
 
-    case "tabs.activate": {
-      const tab = await chrome.tabs.update(params.tab_id, { active: true });
-      return {
-        ok: true,
-        data: { id: tab.id, url: tab.url, title: tab.title },
-        meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
-      };
-    }
+		case "tabs.activate": {
+			const tab = await chrome.tabs.update(params.tab_id, { active: true });
+			return {
+				ok: true,
+				data: { id: tab.id, url: tab.url, title: tab.title },
+				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+			};
+		}
 
-    case "goto": {
-      const tab = await resolveTab(params);
-      await chrome.tabs.update(tab.id, { url: params.url });
-      try {
-        await new Promise((resolve) => {
-          const listener = (tabId, info) => {
-            if (tabId === tab.id && info.status === "complete") {
-              chrome.tabs.onUpdated.removeListener(listener);
-              resolve();
-            }
-          };
-          chrome.tabs.onUpdated.addListener(listener);
-          setTimeout(() => { chrome.tabs.onUpdated.removeListener(listener); resolve(); }, 10000);
-        });
-      } catch (_) {}
-      return {
-        ok: true,
-        data: { tab_id: tab.id, url: params.url },
-        meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
-      };
-    }
+		case "goto": {
+			const tab = await resolveTab(params);
+			await chrome.tabs.update(tab.id, { url: params.url });
+			try {
+				await new Promise((resolve) => {
+					const listener = (tabId, info) => {
+						if (tabId === tab.id && info.status === "complete") {
+							chrome.tabs.onUpdated.removeListener(listener);
+							resolve();
+						}
+					};
+					chrome.tabs.onUpdated.addListener(listener);
+					setTimeout(() => {
+						chrome.tabs.onUpdated.removeListener(listener);
+						resolve();
+					}, 10000);
+				});
+			} catch (_) {}
+			return {
+				ok: true,
+				data: { tab_id: tab.id, url: params.url },
+				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+			};
+		}
 
-    case "text": {
-      const tab = await resolveTab(params);
-      await ensureDebugger(tab.id);
-      const selector = params.selector || "body";
-      const policies = await activeFilterPolicies("text", params, tab);
-      const dropRules = domDropRules(policies);
-      const expression = dropRules.length > 0
-        ? buildDomReadExpression(selector, "text", dropRules)
-        : `String(document.querySelector(${JSON.stringify(selector)})?.innerText ?? "")`;
-      const evaluated = await chrome.debugger.sendCommand(
-        { tabId: tab.id },
-        "Runtime.evaluate",
-        {
-          expression,
-          returnByValue: true,
-        },
-      );
-      const value = runtimeEvaluateValue(evaluated);
-      const filteredRead = dropRules.length > 0
-        ? (value || { value: "", metadata: null })
-        : { value: value || "", metadata: null };
-      const full = filteredRead.value || "";
-      const cap = params.full ? full.length : (params.range ? null : 50000);
-      let text = full;
-      let range = [0, full.length];
-      let truncated = false;
-      if (cap !== null) {
-        text = full.slice(0, cap);
-        range = [0, text.length];
-        truncated = text.length < full.length;
-      } else if (params.range) {
-        const [s, e] = params.range;
-        text = full.slice(s, e);
-        range = [s, s + text.length];
-        truncated = (s + text.length) < full.length;
-      }
-      return attachFilterMetadata({
-        ok: true,
-        data: {
-          text,
-          truncated,
-          total_chars: full.length,
-          returned_chars: text.length,
-          range,
-        },
-        meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
-      }, filteredRead.metadata);
-    }
+		case "text": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const selector = params.selector || "body";
+			const policies = await activeFilterPolicies("text", params, tab);
+			const dropRules = domDropRules(policies);
+			const expression =
+				dropRules.length > 0
+					? buildDomReadExpression(selector, "text", dropRules)
+					: `String(document.querySelector(${JSON.stringify(selector)})?.innerText ?? "")`;
+			const evaluated = await chrome.debugger.sendCommand(
+				{ tabId: tab.id },
+				"Runtime.evaluate",
+				{
+					expression,
+					returnByValue: true,
+				},
+			);
+			const value = runtimeEvaluateValue(evaluated);
+			const filteredRead =
+				dropRules.length > 0
+					? value || { value: "", metadata: null }
+					: { value: value || "", metadata: null };
+			const full = filteredRead.value || "";
+			const cap = params.full ? full.length : params.range ? null : 50000;
+			let text = full;
+			let range = [0, full.length];
+			let truncated = false;
+			if (cap !== null) {
+				text = full.slice(0, cap);
+				range = [0, text.length];
+				truncated = text.length < full.length;
+			} else if (params.range) {
+				const [s, e] = params.range;
+				text = full.slice(s, e);
+				range = [s, s + text.length];
+				truncated = s + text.length < full.length;
+			}
+			return attachFilterMetadata(
+				{
+					ok: true,
+					data: {
+						text,
+						truncated,
+						total_chars: full.length,
+						returned_chars: text.length,
+						range,
+					},
+					meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+				},
+				filteredRead.metadata,
+			);
+		}
 
-    case "screenshot": {
-      const tab = await resolveTab(params);
-      await ensureDebugger(tab.id);
-      const opts = { format: "png" };
-      if (params.full) opts.captureBeyondViewport = true;
-      const { data } = await chrome.debugger.sendCommand(
-        { tabId: tab.id },
-        "Page.captureScreenshot",
-        opts,
-      );
-      return {
-        ok: true,
-        data: { tab_id: tab.id, data_url: `data:image/png;base64,${data}`, bytes: data.length },
-        meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
-      };
-    }
+		case "screenshot": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const opts = { format: "png" };
+			if (params.full) opts.captureBeyondViewport = true;
+			const { data } = await chrome.debugger.sendCommand(
+				{ tabId: tab.id },
+				"Page.captureScreenshot",
+				opts,
+			);
+			return {
+				ok: true,
+				data: {
+					tab_id: tab.id,
+					data_url: `data:image/png;base64,${data}`,
+					bytes: data.length,
+				},
+				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+			};
+		}
 
-    case "click": {
-      const tab = await resolveTab(params);
-      await ensureDebugger(tab.id);
-      const policies = await activeFilterPolicies("click", params, tab);
-      const denyRules = interactionDenyRules(policies);
-      const expr = denyRules.length > 0
-        ? buildInteractionExpression("click", params.selector, undefined, denyRules)
-        : `((el) => { if (!el) return false; el.scrollIntoView({block:'center'}); el.click(); return true; })(document.querySelector(${JSON.stringify(params.selector)}))`;
-      const evaluated = await chrome.debugger.sendCommand(
-        { tabId: tab.id },
-        "Runtime.evaluate",
-        { expression: expr, returnByValue: true },
-      );
-      const interaction = runtimeEvaluateValue(evaluated);
-      const outcome = interactionOutcome(interaction, denyRules.length > 0);
-      if (outcome === "denied") {
-        throw filterDeniedError(interaction.metadata);
-      }
-      if (outcome !== "ok") {
-        throw Object.assign(new Error(`selector not found: ${params.selector}`), { code: "SELECTOR_NO_MATCH" });
-      }
-      return attachFilterMetadata(
-        { ok: true, data: { clicked: true }, meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }) },
-        denyRules.length > 0 ? interaction?.metadata : null,
-      );
-    }
+		case "click": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const policies = await activeFilterPolicies("click", params, tab);
+			const denyRules = interactionDenyRules(policies);
+			const expr =
+				denyRules.length > 0
+					? buildInteractionExpression(
+							"click",
+							params.selector,
+							undefined,
+							denyRules,
+						)
+					: `((el) => { if (!el) return false; el.scrollIntoView({block:'center'}); el.click(); return true; })(document.querySelector(${JSON.stringify(params.selector)}))`;
+			const evaluated = await chrome.debugger.sendCommand(
+				{ tabId: tab.id },
+				"Runtime.evaluate",
+				{ expression: expr, returnByValue: true },
+			);
+			const interaction = runtimeEvaluateValue(evaluated);
+			const outcome = interactionOutcome(interaction, denyRules.length > 0);
+			if (outcome === "denied") {
+				throw filterDeniedError(interaction.metadata);
+			}
+			if (outcome !== "ok") {
+				throw Object.assign(
+					new Error(`selector not found: ${params.selector}`),
+					{ code: "SELECTOR_NO_MATCH" },
+				);
+			}
+			return attachFilterMetadata(
+				{
+					ok: true,
+					data: { clicked: true },
+					meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+				},
+				denyRules.length > 0 ? interaction?.metadata : null,
+			);
+		}
 
-    case "fill": {
-      const tab = await resolveTab(params);
-      await ensureDebugger(tab.id);
-      const policies = await activeFilterPolicies("fill", params, tab);
-      const denyRules = interactionDenyRules(policies);
-      const expr = denyRules.length > 0
-        ? buildInteractionExpression("fill", params.selector, params.value, denyRules)
-        : `((el, v) => { if (!el) return false; el.focus(); el.value = v; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return true; })(document.querySelector(${JSON.stringify(params.selector)}), ${JSON.stringify(params.value)})`;
-      const evaluated = await chrome.debugger.sendCommand(
-        { tabId: tab.id },
-        "Runtime.evaluate",
-        { expression: expr, returnByValue: true },
-      );
-      const interaction = runtimeEvaluateValue(evaluated);
-      const outcome = interactionOutcome(interaction, denyRules.length > 0);
-      if (outcome === "denied") {
-        throw filterDeniedError(interaction.metadata);
-      }
-      if (outcome !== "ok") {
-        throw Object.assign(new Error(`selector not found: ${params.selector}`), { code: "SELECTOR_NO_MATCH" });
-      }
-      return attachFilterMetadata(
-        { ok: true, data: { filled: true }, meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }) },
-        denyRules.length > 0 ? interaction?.metadata : null,
-      );
-    }
+		case "fill": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const policies = await activeFilterPolicies("fill", params, tab);
+			const denyRules = interactionDenyRules(policies);
+			const expr =
+				denyRules.length > 0
+					? buildInteractionExpression(
+							"fill",
+							params.selector,
+							params.value,
+							denyRules,
+						)
+					: `((el, v) => { if (!el) return false; el.focus(); el.value = v; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return true; })(document.querySelector(${JSON.stringify(params.selector)}), ${JSON.stringify(params.value)})`;
+			const evaluated = await chrome.debugger.sendCommand(
+				{ tabId: tab.id },
+				"Runtime.evaluate",
+				{ expression: expr, returnByValue: true },
+			);
+			const interaction = runtimeEvaluateValue(evaluated);
+			const outcome = interactionOutcome(interaction, denyRules.length > 0);
+			if (outcome === "denied") {
+				throw filterDeniedError(interaction.metadata);
+			}
+			if (outcome !== "ok") {
+				throw Object.assign(
+					new Error(`selector not found: ${params.selector}`),
+					{ code: "SELECTOR_NO_MATCH" },
+				);
+			}
+			return attachFilterMetadata(
+				{
+					ok: true,
+					data: { filled: true },
+					meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+				},
+				denyRules.length > 0 ? interaction?.metadata : null,
+			);
+		}
 
-    case "tabs.new": {
-      const props = { active: params.active !== false };
-      if (params.url) props.url = params.url;
-      const tab = await chrome.tabs.create(props);
-      return {
-        ok: true,
-        data: { id: tab.id, url: tab.url, title: tab.title, window_id: tab.windowId },
-        meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
-      };
-    }
+		case "tabs.new": {
+			const props = { active: params.active !== false };
+			if (params.url) props.url = params.url;
+			const tab = await chrome.tabs.create(props);
+			return {
+				ok: true,
+				data: {
+					id: tab.id,
+					url: tab.url,
+					title: tab.title,
+					window_id: tab.windowId,
+				},
+				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+			};
+		}
 
-    case "tabs.close": {
-      await chrome.tabs.remove(params.tab_id);
-      return { ok: true, data: { closed: params.tab_id }, meta: await buildMeta(null) };
-    }
+		case "tabs.close": {
+			await chrome.tabs.remove(params.tab_id);
+			return {
+				ok: true,
+				data: { closed: params.tab_id },
+				meta: await buildMeta(null),
+			};
+		}
 
-    case "tabs.get": {
-      const tab = await chrome.tabs.get(params.tab_id);
-      return {
-        ok: true,
-        data: {
-          id: tab.id, url: tab.url, title: tab.title,
-          window_id: tab.windowId, active: tab.active, pinned: tab.pinned,
-        },
-        meta: await buildMeta(null),
-      };
-    }
+		case "tabs.get": {
+			const tab = await chrome.tabs.get(params.tab_id);
+			return {
+				ok: true,
+				data: {
+					id: tab.id,
+					url: tab.url,
+					title: tab.title,
+					window_id: tab.windowId,
+					active: tab.active,
+					pinned: tab.pinned,
+				},
+				meta: await buildMeta(null),
+			};
+		}
 
-    case "back": {
-      const tab = await resolveTab(params);
-      await chrome.tabs.goBack(tab.id);
-      return { ok: true, data: { tab_id: tab.id }, meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }) };
-    }
+		case "back": {
+			const tab = await resolveTab(params);
+			await chrome.tabs.goBack(tab.id);
+			return {
+				ok: true,
+				data: { tab_id: tab.id },
+				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+			};
+		}
 
-    case "forward": {
-      const tab = await resolveTab(params);
-      await chrome.tabs.goForward(tab.id);
-      return { ok: true, data: { tab_id: tab.id }, meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }) };
-    }
+		case "forward": {
+			const tab = await resolveTab(params);
+			await chrome.tabs.goForward(tab.id);
+			return {
+				ok: true,
+				data: { tab_id: tab.id },
+				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+			};
+		}
 
-    case "reload": {
-      const tab = await resolveTab(params);
-      await chrome.tabs.reload(tab.id);
-      return { ok: true, data: { tab_id: tab.id }, meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }) };
-    }
+		case "reload": {
+			const tab = await resolveTab(params);
+			await chrome.tabs.reload(tab.id);
+			return {
+				ok: true,
+				data: { tab_id: tab.id },
+				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+			};
+		}
 
-    case "html": {
-      const tab = await resolveTab(params);
-      await ensureDebugger(tab.id);
-      const selector = params.selector || "html";
-      const policies = await activeFilterPolicies("html", params, tab);
-      const dropRules = domDropRules(policies);
-      const expression = dropRules.length > 0
-        ? buildDomReadExpression(selector, "html", dropRules)
-        : `String(document.querySelector(${JSON.stringify(selector)})?.outerHTML ?? "")`;
-      const evaluated = await chrome.debugger.sendCommand(
-        { tabId: tab.id },
-        "Runtime.evaluate",
-        { expression, returnByValue: true },
-      );
-      const value = runtimeEvaluateValue(evaluated);
-      const filteredRead = dropRules.length > 0
-        ? (value || { value: "", metadata: null })
-        : { value: value || "", metadata: null };
-      const response = await truncateOutput(filteredRead.value || "", params, tab, "html");
-      return attachFilterMetadata(response, filteredRead.metadata);
-    }
+		case "html": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const selector = params.selector || "html";
+			const policies = await activeFilterPolicies("html", params, tab);
+			const dropRules = domDropRules(policies);
+			const expression =
+				dropRules.length > 0
+					? buildDomReadExpression(selector, "html", dropRules)
+					: `String(document.querySelector(${JSON.stringify(selector)})?.outerHTML ?? "")`;
+			const evaluated = await chrome.debugger.sendCommand(
+				{ tabId: tab.id },
+				"Runtime.evaluate",
+				{ expression, returnByValue: true },
+			);
+			const value = runtimeEvaluateValue(evaluated);
+			const filteredRead =
+				dropRules.length > 0
+					? value || { value: "", metadata: null }
+					: { value: value || "", metadata: null };
+			const response = await truncateOutput(
+				filteredRead.value || "",
+				params,
+				tab,
+				"html",
+			);
+			return attachFilterMetadata(response, filteredRead.metadata);
+		}
 
-    case "press": {
-      const tab = await resolveTab(params);
-      await ensureDebugger(tab.id);
-      const keyInput = params.keys || params.key || "";
+		case "press": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const keyInput = params.keys || params.key || "";
 
-      const SPECIAL_KEYS = {
-        Enter:          { code: "Enter",          key: "Enter",          vk: 13, text: "\r" },
-        Tab:            { code: "Tab",            key: "Tab",            vk: 9,  text: "\t" },
-        Escape:         { code: "Escape",         key: "Escape",         vk: 27, text: "\x1b" },
-        Backspace:      { code: "Backspace",      key: "Backspace",      vk: 8,  text: "\b" },
-        Delete:         { code: "Delete",         key: "Delete",         vk: 46, text: "" },
-        ArrowUp:        { code: "ArrowUp",        key: "ArrowUp",        vk: 38, text: "" },
-        ArrowDown:      { code: "ArrowDown",      key: "ArrowDown",      vk: 40, text: "" },
-        ArrowLeft:      { code: "ArrowLeft",      key: "ArrowLeft",      vk: 37, text: "" },
-        ArrowRight:     { code: "ArrowRight",     key: "ArrowRight",     vk: 39, text: "" },
-        Home:           { code: "Home",           key: "Home",           vk: 36, text: "" },
-        End:            { code: "End",            key: "End",            vk: 35, text: "" },
-        PageUp:         { code: "PageUp",         key: "PageUp",         vk: 33, text: "" },
-        PageDown:       { code: "PageDown",       key: "PageDown",       vk: 34, text: "" },
-        Space:          { code: "Space",          key: " ",              vk: 32, text: " " },
-      };
+			const SPECIAL_KEYS = {
+				Enter: { code: "Enter", key: "Enter", vk: 13, text: "\r" },
+				Tab: { code: "Tab", key: "Tab", vk: 9, text: "\t" },
+				Escape: { code: "Escape", key: "Escape", vk: 27, text: "\x1b" },
+				Backspace: { code: "Backspace", key: "Backspace", vk: 8, text: "\b" },
+				Delete: { code: "Delete", key: "Delete", vk: 46, text: "" },
+				ArrowUp: { code: "ArrowUp", key: "ArrowUp", vk: 38, text: "" },
+				ArrowDown: { code: "ArrowDown", key: "ArrowDown", vk: 40, text: "" },
+				ArrowLeft: { code: "ArrowLeft", key: "ArrowLeft", vk: 37, text: "" },
+				ArrowRight: { code: "ArrowRight", key: "ArrowRight", vk: 39, text: "" },
+				Home: { code: "Home", key: "Home", vk: 36, text: "" },
+				End: { code: "End", key: "End", vk: 35, text: "" },
+				PageUp: { code: "PageUp", key: "PageUp", vk: 33, text: "" },
+				PageDown: { code: "PageDown", key: "PageDown", vk: 34, text: "" },
+				Space: { code: "Space", key: " ", vk: 32, text: " " },
+			};
 
-      const MODIFIER_VK = { Control: 17, Shift: 16, Alt: 18, Meta: 91 };
+			const MODIFIER_VK = { Control: 17, Shift: 16, Alt: 18, Meta: 91 };
 
-      if (SPECIAL_KEYS[keyInput]) {
-        const k = SPECIAL_KEYS[keyInput];
-        await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
-          type: "keyDown", code: k.code, key: k.key,
-          windowsVirtualKeyCode: k.vk, text: k.text || undefined,
-        });
-        await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
-          type: "keyUp", code: k.code, key: k.key, windowsVirtualKeyCode: k.vk,
-        });
-      } else if (keyInput.includes("+")) {
-        const parts = keyInput.split("+").map(s => s.trim());
-        const mainKey = parts[parts.length - 1];
-        const modifiers = parts.slice(0, -1);
-        const modNames = modifiers.map(m => m + "Key").join("");
-        const mainVK = mainKey.length === 1 ? mainKey.toUpperCase().charCodeAt(0) : (MODIFIER_VK[mainKey] || 0);
+			if (SPECIAL_KEYS[keyInput]) {
+				const k = SPECIAL_KEYS[keyInput];
+				await chrome.debugger.sendCommand(
+					{ tabId: tab.id },
+					"Input.dispatchKeyEvent",
+					{
+						type: "keyDown",
+						code: k.code,
+						key: k.key,
+						windowsVirtualKeyCode: k.vk,
+						text: k.text || undefined,
+					},
+				);
+				await chrome.debugger.sendCommand(
+					{ tabId: tab.id },
+					"Input.dispatchKeyEvent",
+					{
+						type: "keyUp",
+						code: k.code,
+						key: k.key,
+						windowsVirtualKeyCode: k.vk,
+					},
+				);
+			} else if (keyInput.includes("+")) {
+				const parts = keyInput.split("+").map((s) => s.trim());
+				const mainKey = parts[parts.length - 1];
+				const modifiers = parts.slice(0, -1);
+				const mainVK =
+					mainKey.length === 1
+						? mainKey.toUpperCase().charCodeAt(0)
+						: MODIFIER_VK[mainKey] || 0;
 
-        const modParams = {};
-        for (const m of modifiers) {
-          if (m === "Control") modParams.controlKey = true;
-          else if (m === "Shift") modParams.shiftKey = true;
-          else if (m === "Alt") modParams.altKey = true;
-          else if (m === "Meta") modParams.metaKey = true;
-        }
+				const modParams = {};
+				for (const m of modifiers) {
+					if (m === "Control") modParams.controlKey = true;
+					else if (m === "Shift") modParams.shiftKey = true;
+					else if (m === "Alt") modParams.altKey = true;
+					else if (m === "Meta") modParams.metaKey = true;
+				}
 
-        await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
-          type: "keyDown", code: "Key" + mainKey.toUpperCase()[0], key: mainKey,
-          windowsVirtualKeyCode: mainVK, ...modParams,
-        });
-        await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
-          type: "keyUp", code: "Key" + mainKey.toUpperCase()[0], key: mainKey,
-          windowsVirtualKeyCode: mainVK, ...modParams,
-        });
-      } else if (keyInput.length === 1) {
-        await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
-          type: "keyDown", key: keyInput, text: keyInput,
-        });
-        await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
-          type: "keyUp", key: keyInput,
-        });
-      } else {
-        await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.insertText", { text: keyInput });
-      }
-      return { ok: true, data: { pressed: keyInput }, meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }) };
-    }
+				await chrome.debugger.sendCommand(
+					{ tabId: tab.id },
+					"Input.dispatchKeyEvent",
+					{
+						type: "keyDown",
+						code: "Key" + mainKey.toUpperCase()[0],
+						key: mainKey,
+						windowsVirtualKeyCode: mainVK,
+						...modParams,
+					},
+				);
+				await chrome.debugger.sendCommand(
+					{ tabId: tab.id },
+					"Input.dispatchKeyEvent",
+					{
+						type: "keyUp",
+						code: "Key" + mainKey.toUpperCase()[0],
+						key: mainKey,
+						windowsVirtualKeyCode: mainVK,
+						...modParams,
+					},
+				);
+			} else if (keyInput.length === 1) {
+				await chrome.debugger.sendCommand(
+					{ tabId: tab.id },
+					"Input.dispatchKeyEvent",
+					{
+						type: "keyDown",
+						key: keyInput,
+						text: keyInput,
+					},
+				);
+				await chrome.debugger.sendCommand(
+					{ tabId: tab.id },
+					"Input.dispatchKeyEvent",
+					{
+						type: "keyUp",
+						key: keyInput,
+					},
+				);
+			} else {
+				await chrome.debugger.sendCommand(
+					{ tabId: tab.id },
+					"Input.insertText",
+					{ text: keyInput },
+				);
+			}
+			return {
+				ok: true,
+				data: { pressed: keyInput },
+				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+			};
+		}
 
-    case "wait": {
-      const tab = await resolveTab(params);
-      const selector = params.selector;
-      const timeout = params.timeout_ms || 5000;
-      const start = Date.now();
-      while (Date.now() - start < timeout) {
-        await ensureDebugger(tab.id);
-        const evaluated = await chrome.debugger.sendCommand(
-          { tabId: tab.id },
-          "Runtime.evaluate",
-          { expression: `!!document.querySelector(${JSON.stringify(selector)})`, returnByValue: true },
-        );
-        if (runtimeEvaluateValue(evaluated) === true) {
-          return { ok: true, data: { matched: true, waited_ms: Date.now() - start }, meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }) };
-        }
-        await new Promise((r) => setTimeout(r, 200));
-      }
-      throw Object.assign(new Error(`timeout waiting for ${selector}`), { code: "TIMEOUT" });
-    }
+		case "wait": {
+			const tab = await resolveTab(params);
+			const timeout = params.timeout_ms || 5000;
+			let data;
+			if (params.url_change_from != null) {
+				data = await waitForUrlChange(
+					tab.id,
+					params.url_change_from,
+					timeout,
+					chrome.tabs,
+				);
+			} else if (params.media_ended) {
+				await ensureDebugger(tab.id);
+				const evaluate = async (expression) =>
+					runtimeEvaluateValue(
+						await chrome.debugger.sendCommand(
+							{ tabId: tab.id },
+							"Runtime.evaluate",
+							{ expression, returnByValue: true, awaitPromise: true },
+						),
+					);
+				data = await waitForMediaEnd(
+					tab,
+					params.selector || "video",
+					timeout,
+					evaluate,
+					() => chrome.tabs.get(tab.id),
+				);
+			} else {
+				const start = Date.now();
+				while (Date.now() - start < timeout) {
+					await ensureDebugger(tab.id);
+					const evaluated = await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Runtime.evaluate",
+						{
+							expression: `!!document.querySelector(${JSON.stringify(params.selector)})`,
+							returnByValue: true,
+						},
+					);
+					if (runtimeEvaluateValue(evaluated) === true) {
+						data = { matched: true, waited_ms: Date.now() - start };
+						break;
+					}
+					await new Promise((r) => setTimeout(r, 200));
+				}
+				if (!data)
+					throw Object.assign(
+						new Error(`timeout waiting for ${params.selector}`),
+						{ code: "TIMEOUT" },
+					);
+			}
+			return {
+				ok: true,
+				data,
+				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+			};
+		}
 
-    case "scroll": {
-      const tab = await resolveTab(params);
-      await ensureDebugger(tab.id);
-      const count = Math.max(1, Math.min(params.count || 1, 50));
-      const pauseMs = Math.max(200, Math.min(params.pause_ms || 800, 5000));
-      const target = params.selector || null;
-      const scrolled = [];
-      for (let i = 0; i < count; i++) {
-        let moved = false;
-        if (target) {
-          const evaluated = await chrome.debugger.sendCommand(
-            { tabId: tab.id },
-            "Runtime.evaluate",
-            { expression: `(() => { const el = document.querySelector(${JSON.stringify(target)}); if (el) el.scrollIntoView({behavior:'auto', block:'end'}); return !!el; })()`, returnByValue: true },
-          );
-          moved = runtimeEvaluateValue(evaluated) === true;
-        } else {
-          const before = await chrome.debugger.sendCommand(
-            { tabId: tab.id },
-            "Runtime.evaluate",
-            { expression: "JSON.stringify({y: window.scrollY, h: document.body.scrollHeight})", returnByValue: true },
-          );
-          const beforeState = JSON.parse(runtimeEvaluateValue(before) || "{}");
-          await chrome.debugger.sendCommand(
-            { tabId: tab.id },
-            "Input.dispatchMouseEvent",
-            { type: "mouseWheel", x: 400, y: 300, deltaX: 0, deltaY: 5000 },
-          );
-          await new Promise((r) => setTimeout(r, 100));
-          const after = await chrome.debugger.sendCommand(
-            { tabId: tab.id },
-            "Runtime.evaluate",
-            { expression: "JSON.stringify({y: window.scrollY, h: document.body.scrollHeight})", returnByValue: true },
-          );
-          const afterState = JSON.parse(runtimeEvaluateValue(after) || "{}");
-          moved = afterState.y > beforeState.y || afterState.h > beforeState.h;
-        }
-        scrolled.push(moved);
-        await new Promise((r) => setTimeout(r, pauseMs));
-      }
-      return { ok: true, data: { scrolled_count: count, scrolled }, meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }) };
-    }
+		case "scroll": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const count = Math.max(1, Math.min(params.count || 1, 50));
+			const pauseMs = Math.max(200, Math.min(params.pause_ms || 800, 5000));
+			const target = params.selector || null;
+			const scrolled = [];
+			for (let i = 0; i < count; i++) {
+				let moved = false;
+				if (target) {
+					const evaluated = await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Runtime.evaluate",
+						{
+							expression: `(() => { const el = document.querySelector(${JSON.stringify(target)}); if (el) el.scrollIntoView({behavior:'auto', block:'end'}); return !!el; })()`,
+							returnByValue: true,
+						},
+					);
+					moved = runtimeEvaluateValue(evaluated) === true;
+				} else {
+					const before = await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Runtime.evaluate",
+						{
+							expression:
+								"JSON.stringify({y: window.scrollY, h: document.body.scrollHeight})",
+							returnByValue: true,
+						},
+					);
+					const beforeState = JSON.parse(runtimeEvaluateValue(before) || "{}");
+					await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Input.dispatchMouseEvent",
+						{ type: "mouseWheel", x: 400, y: 300, deltaX: 0, deltaY: 5000 },
+					);
+					await new Promise((r) => setTimeout(r, 100));
+					const after = await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Runtime.evaluate",
+						{
+							expression:
+								"JSON.stringify({y: window.scrollY, h: document.body.scrollHeight})",
+							returnByValue: true,
+						},
+					);
+					const afterState = JSON.parse(runtimeEvaluateValue(after) || "{}");
+					moved = afterState.y > beforeState.y || afterState.h > beforeState.h;
+				}
+				scrolled.push(moved);
+				await new Promise((r) => setTimeout(r, pauseMs));
+			}
+			return {
+				ok: true,
+				data: { scrolled_count: count, scrolled },
+				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+			};
+		}
 
-    case "cdp": {
-      const tab = await resolveTab(params);
-      await ensureDebugger(tab.id);
-      const result = await chrome.debugger.sendCommand(
-        { tabId: tab.id },
-        params.method,
-        params.params || {},
-      );
-      return { ok: true, data: { result }, meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }) };
-    }
+		case "cdp": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const result = await chrome.debugger.sendCommand(
+				{ tabId: tab.id },
+				params.method,
+				params.params || {},
+			);
+			return {
+				ok: true,
+				data: { result },
+				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+			};
+		}
 
-    case "eval": {
-      const tab = await resolveTab(params);
-      await ensureDebugger(tab.id);
-      const { result, exceptionDetails } = await chrome.debugger.sendCommand(
-        { tabId: tab.id },
-        "Runtime.evaluate",
-        { expression: params.expression, returnByValue: true, awaitPromise: true },
-      );
-      if (exceptionDetails) {
-        throw Object.assign(new Error(exceptionDetails.text || "JS exception"), { code: "JS_EXCEPTION" });
-      }
-      return {
-        ok: true,
-        data: { result: result?.value },
-        meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
-      };
-    }
+		case "eval": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const { result, exceptionDetails } = await chrome.debugger.sendCommand(
+				{ tabId: tab.id },
+				"Runtime.evaluate",
+				{
+					expression: params.expression,
+					returnByValue: true,
+					awaitPromise: true,
+				},
+			);
+			if (exceptionDetails) {
+				throw Object.assign(
+					new Error(exceptionDetails.text || "JS exception"),
+					{ code: "JS_EXCEPTION" },
+				);
+			}
+			return {
+				ok: true,
+				data: { result: result?.value },
+				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+			};
+		}
 
-    case "batch": {
-      const steps = params.steps || [];
-      const results = [];
-      let lastTab = null;
-      let batchFilterMetadata = null;
-      for (const step of steps) {
-        const stepMethod = step.method || step.cmd;
-        const stepParams = { ...(step.params || {}) };
-        if (Array.isArray(params._filters)) stepParams._filters = params._filters;
-        if (step.url) stepParams.url = step.url;
-        if (step.selector) stepParams.selector = step.selector;
-        if (step.value) stepParams.value = step.value;
-        if (step.expression) stepParams.expression = step.expression;
-        if (step.tab_id != null) stepParams.tab_id = step.tab_id;
-        else if (params.tab_id != null) stepParams.tab_id = params.tab_id;
-        try {
-          const isMeta = stepMethod === "ping" || stepMethod === "info";
-          if (!isMeta) {
-            lastTab = null;
-            lastTab = await resolveBatchStepTab(stepMethod, stepParams, resolveTab);
-            if (lastTab) {
-              cancelPendingRestore(lastTab.id);
-              await ensureDebugger(lastTab.id);
-              try { await swapFaviconToSparkle(lastTab.id); } catch (_) {}
-            }
-          }
-          const r = await dispatch(stepMethod, stepParams, lastTab || operatedTab);
-          const stepResult = { ok: true, data: r.data };
-          if (r.meta?.filters) {
-            stepResult.meta = { filters: r.meta.filters };
-            batchFilterMetadata = mergeFilterMetadata(batchFilterMetadata, r.meta.filters);
-          }
-          results.push(stepResult);
-        } catch (e) {
-          const stepResult = {
-            ok: false,
-            error: { code: e.code || "INTERNAL", message: e.message || String(e) },
-          };
-          if (e.filterMeta) {
-            stepResult.meta = { filters: e.filterMeta };
-            batchFilterMetadata = mergeFilterMetadata(batchFilterMetadata, e.filterMeta);
-          }
-          results.push(stepResult);
-          if (params.stop_on_error !== false) break;
-        }
-      }
-      const meta = lastTab
-        ? await buildMeta({ window_id: lastTab.windowId, tab_id: lastTab.id })
-        : await buildMeta(null);
-      return attachFilterMetadata({ ok: true, data: { results }, meta }, batchFilterMetadata);
-    }
+		case "batch": {
+			const steps = params.steps || [];
+			const results = [];
+			let lastTab = null;
+			let batchFilterMetadata = null;
+			for (const step of steps) {
+				const stepMethod = step.method || step.cmd;
+				var stepParams = buildBatchStepParams(step, params.tab_id);
+				if (Array.isArray(params._filters))
+					stepParams._filters = params._filters;
+				try {
+					const isMeta = stepMethod === "ping" || stepMethod === "info";
+					if (!isMeta) {
+						lastTab = null;
+						lastTab = await resolveBatchStepTab(
+							stepMethod,
+							stepParams,
+							resolveTab,
+						);
+						if (lastTab) {
+							cancelPendingRestore(lastTab.id);
+							await ensureDebugger(lastTab.id);
+							try {
+								await swapFaviconToSparkle(lastTab.id);
+							} catch (_) {}
+						}
+					}
+					const r = await dispatch(
+						stepMethod,
+						stepParams,
+						lastTab || operatedTab,
+					);
+					const stepResult = { ok: true, data: r.data };
+					if (r.meta?.filters) {
+						stepResult.meta = { filters: r.meta.filters };
+						batchFilterMetadata = mergeFilterMetadata(
+							batchFilterMetadata,
+							r.meta.filters,
+						);
+					}
+					results.push(stepResult);
+				} catch (e) {
+					const stepResult = {
+						ok: false,
+						error: {
+							code: e.code || "INTERNAL",
+							message: e.message || String(e),
+						},
+					};
+					if (e.filterMeta) {
+						stepResult.meta = { filters: e.filterMeta };
+						batchFilterMetadata = mergeFilterMetadata(
+							batchFilterMetadata,
+							e.filterMeta,
+						);
+					}
+					results.push(stepResult);
+					if (params.stop_on_error !== false) break;
+				}
+			}
+			const meta = lastTab
+				? await buildMeta({ window_id: lastTab.windowId, tab_id: lastTab.id })
+				: await buildMeta(null);
+			return attachFilterMetadata(
+				{ ok: true, data: { results }, meta },
+				batchFilterMetadata,
+			);
+		}
 
-    case "dev.console.list": {
-      const tab = await resolveTab(params);
-      await ensureDebugger(tab.id);
-      let msgs = consoleBuffers.get(tab.id) || [];
-      if (params.type) msgs = msgs.filter(m => m.type === params.type);
-      if (params.since) {
-        const sinceMs = typeof params.since === "number" ? params.since : Date.parse(params.since);
-        msgs = msgs.filter(m => m.ts >= sinceMs);
-      }
-      return { ok: true, data: { messages: msgs.slice().reverse() }, meta: await buildMeta({ tab_id: tab.id }) };
-    }
+		case "dev.console.list": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			let msgs = consoleBuffers.get(tab.id) || [];
+			if (params.type) msgs = msgs.filter((m) => m.type === params.type);
+			if (params.since) {
+				const sinceMs =
+					typeof params.since === "number"
+						? params.since
+						: Date.parse(params.since);
+				msgs = msgs.filter((m) => m.ts >= sinceMs);
+			}
+			return {
+				ok: true,
+				data: { messages: msgs.slice().reverse() },
+				meta: await buildMeta({ tab_id: tab.id }),
+			};
+		}
 
-    case "dev.console.clear": {
-      const tab = await resolveTab(params);
-      consoleBuffers.delete(tab.id);
-      return { ok: true, data: { cleared: true }, meta: await buildMeta({ tab_id: tab.id }) };
-    }
+		case "dev.console.clear": {
+			const tab = await resolveTab(params);
+			consoleBuffers.delete(tab.id);
+			return {
+				ok: true,
+				data: { cleared: true },
+				meta: await buildMeta({ tab_id: tab.id }),
+			};
+		}
 
-    case "dev.network.list": {
-      const tab = await resolveTab(params);
-      await ensureDebugger(tab.id);
-      const buf = networkBuffers.get(tab.id) || new Map();
-      let reqs = [...buf.values()].reverse();
-      if (params.failed) reqs = reqs.filter(r => r.failed || (r.status >= 400));
-      if (params.type) reqs = reqs.filter(r => r.type === params.type);
-      if (params.filter) {
-        const re = new RegExp(params.filter, "i");
-        reqs = reqs.filter(r => re.test(r.url || ""));
-      }
-      return { ok: true, data: { requests: reqs }, meta: await buildMeta({ tab_id: tab.id }) };
-    }
+		case "dev.network.list": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const buf = networkBuffers.get(tab.id) || new Map();
+			let reqs = [...buf.values()].reverse();
+			if (params.failed) reqs = reqs.filter((r) => r.failed || r.status >= 400);
+			if (params.type) reqs = reqs.filter((r) => r.type === params.type);
+			if (params.filter) {
+				const re = new RegExp(params.filter, "i");
+				reqs = reqs.filter((r) => re.test(r.url || ""));
+			}
+			return {
+				ok: true,
+				data: { requests: reqs },
+				meta: await buildMeta({ tab_id: tab.id }),
+			};
+		}
 
-    case "dev.network.get": {
-      const tab = await resolveTab(params);
-      await ensureDebugger(tab.id);
-      const buf = networkBuffers.get(tab.id) || new Map();
-      const entry = buf.get(params.request_id);
-      if (!entry) {
-        throw Object.assign(new Error(`no network request with id ${params.request_id}`), { code: "NOT_FOUND" });
-      }
-      let body = null;
-      try {
-        const r = await chrome.debugger.sendCommand({ tabId: tab.id }, "Network.getResponseBody", { requestId: params.request_id });
-        body = r.body ?? null;
-      } catch (_) {}
-      return { ok: true, data: { ...entry, body }, meta: await buildMeta({ tab_id: tab.id }) };
-    }
+		case "dev.network.get": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const buf = networkBuffers.get(tab.id) || new Map();
+			const entry = buf.get(params.request_id);
+			if (!entry) {
+				throw Object.assign(
+					new Error(`no network request with id ${params.request_id}`),
+					{ code: "NOT_FOUND" },
+				);
+			}
+			let body = null;
+			try {
+				const r = await chrome.debugger.sendCommand(
+					{ tabId: tab.id },
+					"Network.getResponseBody",
+					{ requestId: params.request_id },
+				);
+				body = r.body ?? null;
+			} catch (_) {}
+			return {
+				ok: true,
+				data: { ...entry, body },
+				meta: await buildMeta({ tab_id: tab.id }),
+			};
+		}
 
-    case "dev.errors": {
-      const tab = await resolveTab(params);
-      await ensureDebugger(tab.id);
-      const cBuf = consoleBuffers.get(tab.id) || [];
-      const nBuf = networkBuffers.get(tab.id) || new Map();
-      const errors = [];
-      for (const m of cBuf) {
-        if (m.type === "error") errors.push({ source: "console-error", text: m.text, url: m.url, ts: m.ts });
-      }
-      for (const r of nBuf.values()) {
-        if (r.failed || (r.status >= 400)) {
-          errors.push({ source: "network", text: `${r.method} ${r.url} → ${r.status ?? r.error_text}`, url: r.url, ts: r.ts });
-        }
-      }
-      errors.sort((a, b) => b.ts - a.ts);
-      return { ok: true, data: { errors }, meta: await buildMeta({ tab_id: tab.id }) };
-    }
+		case "dev.errors": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const cBuf = consoleBuffers.get(tab.id) || [];
+			const nBuf = networkBuffers.get(tab.id) || new Map();
+			const errors = [];
+			for (const m of cBuf) {
+				if (m.type === "error")
+					errors.push({
+						source: "console-error",
+						text: m.text,
+						url: m.url,
+						ts: m.ts,
+					});
+			}
+			for (const r of nBuf.values()) {
+				if (r.failed || r.status >= 400) {
+					errors.push({
+						source: "network",
+						text: `${r.method} ${r.url} → ${r.status ?? r.error_text}`,
+						url: r.url,
+						ts: r.ts,
+					});
+				}
+			}
+			errors.sort((a, b) => b.ts - a.ts);
+			return {
+				ok: true,
+				data: { errors },
+				meta: await buildMeta({ tab_id: tab.id }),
+			};
+		}
 
-    case "dev.cookies.list": {
-      const details = {};
-      if (params.domain) details.domain = params.domain;
-      if (params.url) details.url = params.url;
-      if (params.name) details.name = params.name;
-      const cookies = await chrome.cookies.getAll(details);
-      const trimmed = cookies.map(c => ({
-        name: c.name, value: c.value.slice(0, 200), domain: c.domain,
-        path: c.path, secure: c.secure, httpOnly: c.httpOnly,
-        sameSite: c.sameSite, hostOnly: c.hostOnly, session: c.session,
-        expirationDate: c.expirationDate || null,
-      }));
-      return { ok: true, data: { cookies: trimmed, total: trimmed.length } };
-    }
+		case "dev.cookies.list": {
+			const details = {};
+			if (params.domain) details.domain = params.domain;
+			if (params.url) details.url = params.url;
+			if (params.name) details.name = params.name;
+			const cookies = await chrome.cookies.getAll(details);
+			const trimmed = cookies.map((c) => ({
+				name: c.name,
+				value: c.value.slice(0, 200),
+				domain: c.domain,
+				path: c.path,
+				secure: c.secure,
+				httpOnly: c.httpOnly,
+				sameSite: c.sameSite,
+				hostOnly: c.hostOnly,
+				session: c.session,
+				expirationDate: c.expirationDate || null,
+			}));
+			return { ok: true, data: { cookies: trimmed, total: trimmed.length } };
+		}
 
-    case "dev.cookies.get": {
-      const url = params.url;
-      const name = params.name;
-      if (!url || !name) throw Object.assign(new Error("dev.cookies.get requires url + name"), { code: "BAD_PARAMS" });
-      const cookie = await chrome.cookies.get({ url, name });
-      return { ok: true, data: cookie ? {
-        name: cookie.name, value: cookie.value, domain: cookie.domain,
-        path: cookie.path, secure: cookie.secure, httpOnly: cookie.httpOnly,
-        sameSite: cookie.sameSite, hostOnly: cookie.hostOnly, session: cookie.session,
-        expirationDate: cookie.expirationDate || null,
-      } : null };
-    }
+		case "dev.cookies.get": {
+			const url = params.url;
+			const name = params.name;
+			if (!url || !name)
+				throw Object.assign(new Error("dev.cookies.get requires url + name"), {
+					code: "BAD_PARAMS",
+				});
+			const cookie = await chrome.cookies.get({ url, name });
+			return {
+				ok: true,
+				data: cookie
+					? {
+							name: cookie.name,
+							value: cookie.value,
+							domain: cookie.domain,
+							path: cookie.path,
+							secure: cookie.secure,
+							httpOnly: cookie.httpOnly,
+							sameSite: cookie.sameSite,
+							hostOnly: cookie.hostOnly,
+							session: cookie.session,
+							expirationDate: cookie.expirationDate || null,
+						}
+					: null,
+			};
+		}
 
-    case "dev.cookies.set": {
-      const url = params.url;
-      if (!url) throw Object.assign(new Error("dev.cookies.set requires url + name + value"), { code: "BAD_PARAMS" });
-      const details = { url, name: params.name || "", value: params.value || "" };
-      if (params.domain) details.domain = params.domain;
-      if (params.path) details.path = params.path;
-      if (params.secure != null) details.secure = params.secure;
-      if (params.httpOnly != null) details.httpOnly = params.httpOnly;
-      if (params.sameSite) details.sameSite = params.sameSite;
-      if (params.expirationDate != null) details.expirationDate = params.expirationDate;
-      const cookie = await chrome.cookies.set(details);
-      return { ok: true, data: { set: !!cookie, name: details.name, domain: details.domain || null } };
-    }
+		case "dev.cookies.set": {
+			const url = params.url;
+			if (!url)
+				throw Object.assign(
+					new Error("dev.cookies.set requires url + name + value"),
+					{ code: "BAD_PARAMS" },
+				);
+			const details = {
+				url,
+				name: params.name || "",
+				value: params.value || "",
+			};
+			if (params.domain) details.domain = params.domain;
+			if (params.path) details.path = params.path;
+			if (params.secure != null) details.secure = params.secure;
+			if (params.httpOnly != null) details.httpOnly = params.httpOnly;
+			if (params.sameSite) details.sameSite = params.sameSite;
+			if (params.expirationDate != null)
+				details.expirationDate = params.expirationDate;
+			const cookie = await chrome.cookies.set(details);
+			return {
+				ok: true,
+				data: {
+					set: !!cookie,
+					name: details.name,
+					domain: details.domain || null,
+				},
+			};
+		}
 
-    case "dev.cookies.delete": {
-      const url = params.url;
-      const name = params.name;
-      if (!url || !name) throw Object.assign(new Error("dev.cookies.delete requires url + name"), { code: "BAD_PARAMS" });
-      const result = await chrome.cookies.remove({ url, name });
-      return { ok: true, data: { deleted: !!result, url, name } };
-    }
+		case "dev.cookies.delete": {
+			const url = params.url;
+			const name = params.name;
+			if (!url || !name)
+				throw Object.assign(
+					new Error("dev.cookies.delete requires url + name"),
+					{ code: "BAD_PARAMS" },
+				);
+			const result = await chrome.cookies.remove({ url, name });
+			return { ok: true, data: { deleted: !!result, url, name } };
+		}
 
-    case "dev.extension.list": {
-      const all = await chrome.management.getAll();
-      const exts = all
-        .filter(e => e.type === "extension")
-        .map(e => ({
-          id: e.id,
-          name: e.name,
-          version: e.version,
-          enabled: e.enabled,
-          installType: e.installType,
-          description: (e.description || "").slice(0, 120),
-          mayDisable: e.mayDisable,
-        }));
-      return { ok: true, data: { extensions: exts, total: exts.length } };
-    }
+		case "dev.extension.list": {
+			const all = await chrome.management.getAll();
+			const exts = all
+				.filter((e) => e.type === "extension")
+				.map((e) => ({
+					id: e.id,
+					name: e.name,
+					version: e.version,
+					enabled: e.enabled,
+					installType: e.installType,
+					description: (e.description || "").slice(0, 120),
+					mayDisable: e.mayDisable,
+				}));
+			return { ok: true, data: { extensions: exts, total: exts.length } };
+		}
 
-    case "dev.extension.get": {
-      const id = params.id;
-      if (!id) throw Object.assign(new Error("dev.extension.get requires id"), { code: "BAD_PARAMS" });
-      const e = await chrome.management.get(id);
-      return {
-        ok: true,
-        data: {
-          id: e.id,
-          name: e.name,
-          shortName: e.shortName,
-          version: e.version,
-          versionName: e.versionName || null,
-          description: e.description || "",
-          enabled: e.enabled,
-          installType: e.installType,
-          type: e.type,
-          mayDisable: e.mayDisable,
-          homepageUrl: e.homepageUrl || null,
-          optionsUrl: e.optionsUrl || null,
-          permissions: e.permissions || [],
-          hostPermissions: e.hostPermissions || [],
-          icons: (e.icons || []).map(i => ({ size: i.size, url: i.url })),
-        },
-      };
-    }
+		case "dev.extension.get": {
+			const id = params.id;
+			if (!id)
+				throw Object.assign(new Error("dev.extension.get requires id"), {
+					code: "BAD_PARAMS",
+				});
+			const e = await chrome.management.get(id);
+			return {
+				ok: true,
+				data: {
+					id: e.id,
+					name: e.name,
+					shortName: e.shortName,
+					version: e.version,
+					versionName: e.versionName || null,
+					description: e.description || "",
+					enabled: e.enabled,
+					installType: e.installType,
+					type: e.type,
+					mayDisable: e.mayDisable,
+					homepageUrl: e.homepageUrl || null,
+					optionsUrl: e.optionsUrl || null,
+					permissions: e.permissions || [],
+					hostPermissions: e.hostPermissions || [],
+					icons: (e.icons || []).map((i) => ({ size: i.size, url: i.url })),
+				},
+			};
+		}
 
-    case "dev.extension.reload": {
-      const targetId = params.id || chrome.runtime.id;
-      if (targetId === chrome.runtime.id) {
-        chrome.runtime.reload();
-        return { ok: true, data: { reloaded: targetId, self: true, note: "extension restarting; expect ~3s disconnect" } };
-      }
-      await chrome.management.setEnabled(targetId, false);
-      await chrome.management.setEnabled(targetId, true);
-      const e = await chrome.management.get(targetId);
-      return { ok: true, data: { reloaded: targetId, self: false, enabled: e.enabled } };
-    }
+		case "dev.extension.reload": {
+			const targetId = params.id || chrome.runtime.id;
+			if (targetId === chrome.runtime.id) {
+				scheduleExtensionReload(() => chrome.runtime.reload());
+				return {
+					ok: true,
+					data: {
+						reloaded: targetId,
+						self: true,
+						note: "extension restarting; expect ~3s disconnect",
+					},
+				};
+			}
+			await chrome.management.setEnabled(targetId, false);
+			await chrome.management.setEnabled(targetId, true);
+			const e = await chrome.management.get(targetId);
+			return {
+				ok: true,
+				data: { reloaded: targetId, self: false, enabled: e.enabled },
+			};
+		}
 
-    case "dev.extension.enable": {
-      const id = params.id;
-      if (!id) throw Object.assign(new Error("dev.extension.enable requires id"), { code: "BAD_PARAMS" });
-      await chrome.management.setEnabled(id, true);
-      const e = await chrome.management.get(id);
-      return { ok: true, data: { id, enabled: e.enabled } };
-    }
+		case "dev.extension.enable": {
+			const id = params.id;
+			if (!id)
+				throw Object.assign(new Error("dev.extension.enable requires id"), {
+					code: "BAD_PARAMS",
+				});
+			await chrome.management.setEnabled(id, true);
+			const e = await chrome.management.get(id);
+			return { ok: true, data: { id, enabled: e.enabled } };
+		}
 
-    case "dev.extension.disable": {
-      const id = params.id;
-      if (!id) throw Object.assign(new Error("dev.extension.disable requires id"), { code: "BAD_PARAMS" });
-      if (id === chrome.runtime.id) throw Object.assign(new Error("cannot disable self; use reload instead"), { code: "BAD_PARAMS" });
-      await chrome.management.setEnabled(id, false);
-      const e = await chrome.management.get(id);
-      return { ok: true, data: { id, enabled: e.enabled } };
-    }
+		case "dev.extension.disable": {
+			const id = params.id;
+			if (!id)
+				throw Object.assign(new Error("dev.extension.disable requires id"), {
+					code: "BAD_PARAMS",
+				});
+			if (id === chrome.runtime.id)
+				throw Object.assign(
+					new Error("cannot disable self; use reload instead"),
+					{ code: "BAD_PARAMS" },
+				);
+			await chrome.management.setEnabled(id, false);
+			const e = await chrome.management.get(id);
+			return { ok: true, data: { id, enabled: e.enabled } };
+		}
 
-    case "dev.extension.uninstall": {
-      const id = params.id;
-      if (!id) throw Object.assign(new Error("dev.extension.uninstall requires id"), { code: "BAD_PARAMS" });
-      if (id === chrome.runtime.id) throw Object.assign(new Error("cannot uninstall self; use chrome://extensions UI"), { code: "BAD_PARAMS" });
-      await chrome.management.uninstall(id, { showConfirmDialog: false });
-      return { ok: true, data: { uninstalled: id } };
-    }
+		case "dev.extension.uninstall": {
+			const id = params.id;
+			if (!id)
+				throw Object.assign(new Error("dev.extension.uninstall requires id"), {
+					code: "BAD_PARAMS",
+				});
+			if (id === chrome.runtime.id)
+				throw Object.assign(
+					new Error("cannot uninstall self; use chrome://extensions UI"),
+					{ code: "BAD_PARAMS" },
+				);
+			await chrome.management.uninstall(id, { showConfirmDialog: false });
+			return { ok: true, data: { uninstalled: id } };
+		}
 
-    case "download.browser": {
-      const url = params.url;
-      const filename = params.filename;
-      if (!url) throw Object.assign(new Error("download.browser requires url"), { code: "BAD_PARAMS" });
-      const downloadId = await chrome.downloads.download({ url, filename, saveAs: false });
-      return { ok: true, data: { download_id: downloadId, filename: filename || null } };
-    }
+		case "download.browser": {
+			const url = params.url;
+			const filename = params.filename;
+			if (!url)
+				throw Object.assign(new Error("download.browser requires url"), {
+					code: "BAD_PARAMS",
+				});
+			const downloadId = await chrome.downloads.download({
+				url,
+				filename,
+				saveAs: false,
+			});
+			return {
+				ok: true,
+				data: { download_id: downloadId, filename: filename || null },
+			};
+		}
 
-    case "capture.pdf": {
-      const tab = await resolveTab(params);
-      await ensureDebugger(tab.id);
-      const filename = params.filename || "page.pdf";
-      const downloadPath = params.download_path || null;
-      const landscape = params.landscape || false;
-      const paperFormat = params.format || "A4";
-      const { data } = await chrome.debugger.sendCommand({ tabId: tab.id }, "Page.printToPDF", {
-        landscape, paperFormat, printBackground: true,
-      });
-      if (downloadPath) {
-        const fs = await import("fs").catch(() => null);
-        if (fs) {
-          const fullPath = downloadPath.endsWith("/") ? downloadPath + filename : downloadPath + "/" + filename;
-          await fs.promises.writeFile(fullPath, Buffer.from(data, "base64"));
-          return { ok: true, data: { file: fullPath, method: "direct-write" } };
-        }
-      }
-      const dataUrl = `data:application/pdf;base64,${data}`;
-      const id = await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
-      return { ok: true, data: { download_id: id, filename, method: "chrome-downloads" } };
-    }
+		case "capture.pdf": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const filename = params.filename || "page.pdf";
+			const downloadPath = params.download_path || null;
+			const landscape = params.landscape || false;
+			const paperFormat = params.format || "A4";
+			const { data } = await chrome.debugger.sendCommand(
+				{ tabId: tab.id },
+				"Page.printToPDF",
+				{
+					landscape,
+					paperFormat,
+					printBackground: true,
+				},
+			);
+			if (downloadPath) {
+				const fs = await import("fs").catch(() => null);
+				if (fs) {
+					const fullPath = downloadPath.endsWith("/")
+						? downloadPath + filename
+						: downloadPath + "/" + filename;
+					await fs.promises.writeFile(fullPath, Buffer.from(data, "base64"));
+					return { ok: true, data: { file: fullPath, method: "direct-write" } };
+				}
+			}
+			const dataUrl = `data:application/pdf;base64,${data}`;
+			const id = await chrome.downloads.download({
+				url: dataUrl,
+				filename,
+				saveAs: false,
+			});
+			return {
+				ok: true,
+				data: { download_id: id, filename, method: "chrome-downloads" },
+			};
+		}
 
-    case "capture.mhtml": {
-      const tab = await resolveTab(params);
-      await ensureDebugger(tab.id);
-      const filename = params.filename || "page.mhtml";
-      const downloadPath = params.download_path || null;
-      const { data } = await chrome.debugger.sendCommand({ tabId: tab.id }, "Page.captureSnapshot", {
-        format: "mhtml",
-      });
-      if (downloadPath) {
-        const fs = await import("fs").catch(() => null);
-        if (fs) {
-          const fullPath = downloadPath.endsWith("/") ? downloadPath + filename : downloadPath + "/" + filename;
-          await fs.promises.writeFile(fullPath, Buffer.from(data, "base64"));
-          return { ok: true, data: { file: fullPath, method: "direct-write" } };
-        }
-      }
-      const dataUrl = `data:text/x-mhtml;base64,${data}`;
-      const id = await chrome.downloads.download({ url: dataUrl, filename, saveAs: false });
-      return { ok: true, data: { download_id: id, filename, method: "chrome-downloads" } };
-    }
+		case "capture.mhtml": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const filename = params.filename || "page.mhtml";
+			const downloadPath = params.download_path || null;
+			const { data } = await chrome.debugger.sendCommand(
+				{ tabId: tab.id },
+				"Page.captureSnapshot",
+				{
+					format: "mhtml",
+				},
+			);
+			if (downloadPath) {
+				const fs = await import("fs").catch(() => null);
+				if (fs) {
+					const fullPath = downloadPath.endsWith("/")
+						? downloadPath + filename
+						: downloadPath + "/" + filename;
+					await fs.promises.writeFile(fullPath, Buffer.from(data, "base64"));
+					return { ok: true, data: { file: fullPath, method: "direct-write" } };
+				}
+			}
+			const dataUrl = `data:text/x-mhtml;base64,${data}`;
+			const id = await chrome.downloads.download({
+				url: dataUrl,
+				filename,
+				saveAs: false,
+			});
+			return {
+				ok: true,
+				data: { download_id: id, filename, method: "chrome-downloads" },
+			};
+		}
 
-    default:
-      throw Object.assign(new Error(`unknown method: ${method}`), {
-        code: "UNKNOWN_METHOD",
-      });
-  }
+		default:
+			throw Object.assign(new Error(`unknown method: ${method}`), {
+				code: "UNKNOWN_METHOD",
+			});
+	}
 }
 
 async function activeFilterPolicies(method, params, operatedTab) {
-  const policies = params?._filters;
-  if (!Array.isArray(policies) || policies.length === 0) return [];
-  const methodEligible = policies.some((policy) => {
-    const methods = policy?.match?.methods;
-    return !Array.isArray(methods) || methods.length === 0 || methods.includes(method);
-  });
-  if (!methodEligible) return [];
+	const policies = params?._filters;
+	if (!Array.isArray(policies) || policies.length === 0) return [];
+	const methodEligible = policies.some((policy) => {
+		const methods = policy?.match?.methods;
+		return (
+			!Array.isArray(methods) ||
+			methods.length === 0 ||
+			methods.includes(method)
+		);
+	});
+	if (!methodEligible) return [];
 
-  const tab = await resolveFilterOperationTab(operatedTab, params, resolveTab);
-  return matchingPolicies(policies, tab?.url, method);
+	const tab = await resolveFilterOperationTab(operatedTab, params, resolveTab);
+	return matchingPolicies(policies, tab?.url, method);
 }
 
 function attachFilterMetadata(response, metadata) {
-  if (!hasFilterDiagnostics(metadata)) return response;
-  response.meta ||= {};
-  response.meta.filters = mergeFilterMetadata(response.meta.filters, metadata);
-  return response;
+	if (!hasFilterDiagnostics(metadata)) return response;
+	response.meta ||= {};
+	response.meta.filters = mergeFilterMetadata(response.meta.filters, metadata);
+	return response;
 }
 
 function filterDeniedError(metadata) {
-  const policyIds = metadata?.matched_policy_ids || [];
-  const suffix = policyIds.length > 0 ? `: ${policyIds.join(", ")}` : "";
-  return Object.assign(new Error(`interaction denied by site filter${suffix}`), {
-    code: "FILTER_DENIED",
-    filterMeta: metadata,
-  });
+	const policyIds = metadata?.matched_policy_ids || [];
+	const suffix = policyIds.length > 0 ? `: ${policyIds.join(", ")}` : "";
+	return Object.assign(
+		new Error(`interaction denied by site filter${suffix}`),
+		{
+			code: "FILTER_DENIED",
+			filterMeta: metadata,
+		},
+	);
 }
 
 // Resolve target tab: explicit tab_id, else active tab of last focused window.
 async function resolveTab(params) {
-  if (params.tab_id != null) {
-    const t = await chrome.tabs.get(params.tab_id);
-    return t;
-  }
-  const win = await chrome.windows.getLastFocused();
-  const tabs = await chrome.tabs.query({ active: true, windowId: win.id });
-  if (!tabs[0]) throw Object.assign(new Error("no active tab"), { code: "TAB_NOT_FOUND" });
-  return tabs[0];
+	if (params.tab_id != null) {
+		const t = await chrome.tabs.get(params.tab_id);
+		return t;
+	}
+	const win = await chrome.windows.getLastFocused();
+	const tabs = await chrome.tabs.query({ active: true, windowId: win.id });
+	if (!tabs[0])
+		throw Object.assign(new Error("no active tab"), { code: "TAB_NOT_FOUND" });
+	return tabs[0];
 }
 
 // Attach debugger if not already attached.
@@ -1024,6 +1399,7 @@ const attachedTabs = new Set();
 const attachingTabs = new Map();
 const lockedTabs = new Set();
 const pendingRestoreTimers = new Map();
+const CLEANUP_TIMEOUT_MS = 500;
 
 // ─── Dev mode: per-tab ring buffers for console + network events ──────────
 const CONSOLE_BUFFER_CAP = 500;
@@ -1032,290 +1408,293 @@ const consoleBuffers = new Map();
 const networkBuffers = new Map();
 
 function pushConsole(tabId, entry) {
-  let buf = consoleBuffers.get(tabId);
-  if (!buf) { buf = []; consoleBuffers.set(tabId, buf); }
-  buf.push(entry);
-  if (buf.length > CONSOLE_BUFFER_CAP) buf.shift();
+	let buf = consoleBuffers.get(tabId);
+	if (!buf) {
+		buf = [];
+		consoleBuffers.set(tabId, buf);
+	}
+	buf.push(entry);
+	if (buf.length > CONSOLE_BUFFER_CAP) buf.shift();
 }
 
 function upsertNetwork(tabId, requestId, patch) {
-  let buf = networkBuffers.get(tabId);
-  if (!buf) { buf = new Map(); networkBuffers.set(tabId, buf); }
-  const existing = buf.get(requestId) || { request_id: requestId };
-  const updated = { ...existing, ...patch };
-  buf.set(requestId, updated);
-  if (buf.size > NETWORK_BUFFER_CAP) buf.delete(buf.keys().next().value);
-}
-
-function clearDevBuffers(tabId) {
-  consoleBuffers.delete(tabId);
-  networkBuffers.delete(tabId);
+	let buf = networkBuffers.get(tabId);
+	if (!buf) {
+		buf = new Map();
+		networkBuffers.set(tabId, buf);
+	}
+	const existing = buf.get(requestId) || { request_id: requestId };
+	const updated = { ...existing, ...patch };
+	buf.set(requestId, updated);
+	if (buf.size > NETWORK_BUFFER_CAP) buf.delete(buf.keys().next().value);
 }
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
-  const tabId = source.tabId;
-  if (tabId == null) return;
-  const ts = Date.now();
-  switch (method) {
-    case "Runtime.consoleAPICalled":
-      pushConsole(tabId, {
-        type: params.type || "log",
-        text: (params.args || []).map(a => a.value ?? a.description ?? "").join(" "),
-        url: params.stackTrace?.[0]?.url || null,
-        line: params.stackTrace?.[0]?.lineNumber ?? null,
-        column: params.stackTrace?.[0]?.columnNumber ?? null,
-        ts,
-      });
-      break;
-    case "Runtime.exceptionThrown":
-      pushConsole(tabId, {
-        type: "error",
-        text: params.exceptionDetails?.text || params.exceptionDetails?.exception?.description || "Uncaught exception",
-        stack: params.exceptionDetails?.stackTrace?.callFrames?.map(f => `${f.functionName}(${f.url}:${f.lineNumber})`).join("\n") || null,
-        url: params.exceptionDetails?.url || null,
-        ts,
-      });
-      break;
-    case "Log.entryAdded":
-      pushConsole(tabId, {
-        type: params.entry?.level || "log",
-        text: params.entry?.text || "",
-        url: params.entry?.url || null,
-        line: params.entry?.lineNumber ?? null,
-        ts: params.entry?.timestamp || ts,
-      });
-      break;
-    case "Network.requestWillBeSent":
-      upsertNetwork(tabId, params.requestId, {
-        method: params.request?.method,
-        url: params.request?.url,
-        type: params.type,
-        request_headers: params.request?.headers,
-        ts: params.timestamp ? Date.parse(params.timestamp) : ts,
-      });
-      break;
-    case "Network.responseReceived":
-      upsertNetwork(tabId, params.requestId, {
-        status: params.response?.status,
-        status_text: params.response?.statusText,
-        mime_type: params.response?.mimeType,
-        response_headers: params.response?.headers,
-        response_size: params.response?.encodedDataLength ?? null,
-      });
-      break;
-    case "Network.loadingFinished":
-      upsertNetwork(tabId, params.requestId, {
-        finished: true,
-        duration_ms: params.timestamp ? Math.round(params.timestamp * 1000) : null,
-      });
-      break;
-    case "Network.loadingFailed":
-      upsertNetwork(tabId, params.requestId, {
-        failed: true,
-        error_text: params.errorText,
-        finished: true,
-      });
-      break;
-    default:
-      break;
-    }
+	const tabId = source.tabId;
+	if (tabId === null || tabId === undefined) return;
+	const ts = Date.now();
+	switch (method) {
+		case "Runtime.consoleAPICalled":
+			pushConsole(tabId, {
+				type: params.type || "log",
+				text: (params.args || [])
+					.map((a) => a.value ?? a.description ?? "")
+					.join(" "),
+				url: params.stackTrace?.[0]?.url || null,
+				line: params.stackTrace?.[0]?.lineNumber ?? null,
+				column: params.stackTrace?.[0]?.columnNumber ?? null,
+				ts,
+			});
+			break;
+		case "Runtime.exceptionThrown":
+			pushConsole(tabId, {
+				type: "error",
+				text:
+					params.exceptionDetails?.text ||
+					params.exceptionDetails?.exception?.description ||
+					"Uncaught exception",
+				stack:
+					params.exceptionDetails?.stackTrace?.callFrames
+						?.map((f) => `${f.functionName}(${f.url}:${f.lineNumber})`)
+						.join("\n") || null,
+				url: params.exceptionDetails?.url || null,
+				ts,
+			});
+			break;
+		case "Log.entryAdded":
+			pushConsole(tabId, {
+				type: params.entry?.level || "log",
+				text: params.entry?.text || "",
+				url: params.entry?.url || null,
+				line: params.entry?.lineNumber ?? null,
+				ts: params.entry?.timestamp || ts,
+			});
+			break;
+		case "Network.requestWillBeSent":
+			upsertNetwork(tabId, params.requestId, {
+				method: params.request?.method,
+				url: params.request?.url,
+				type: params.type,
+				request_headers: params.request?.headers,
+				ts: params.timestamp ? Date.parse(params.timestamp) : ts,
+			});
+			break;
+		case "Network.responseReceived":
+			upsertNetwork(tabId, params.requestId, {
+				status: params.response?.status,
+				status_text: params.response?.statusText,
+				mime_type: params.response?.mimeType,
+				response_headers: params.response?.headers,
+				response_size: params.response?.encodedDataLength ?? null,
+			});
+			break;
+		case "Network.loadingFinished":
+			upsertNetwork(tabId, params.requestId, {
+				finished: true,
+				duration_ms: params.timestamp
+					? Math.round(params.timestamp * 1000)
+					: null,
+			});
+			break;
+		case "Network.loadingFailed":
+			upsertNetwork(tabId, params.requestId, {
+				failed: true,
+				error_text: params.errorText,
+				finished: true,
+			});
+			break;
+		default:
+			break;
+	}
 });
 
 async function ensureDebugger(tabId) {
-  await ensureAttachedOnce(tabId, { attachedTabs, attachingTabs }, async () => {
-    try {
-      await chrome.debugger.attach({ tabId }, "1.3");
-    } catch (e) {
-      if (e.message?.includes("Another debugger")) {
-        throw Object.assign(new Error(`debugger rejected for tab ${tabId}`), { code: "DEBUGGER_ATTACH_FAILED" });
-      }
-      if (!e.message?.includes("Already attached")) {
-        throw e;
-      }
-    }
-    await Promise.allSettled(
-      ["Runtime.enable", "Log.enable", "Network.enable", "Page.enable"].map(
-        (method) => chrome.debugger.sendCommand({ tabId }, method),
-      ),
-    );
-  });
+	await ensureAttachedOnce(tabId, { attachedTabs, attachingTabs }, async () => {
+		try {
+			await chrome.debugger.attach({ tabId }, "1.3");
+		} catch (e) {
+			if (e.message?.includes("Another debugger")) {
+				throw Object.assign(new Error(`debugger rejected for tab ${tabId}`), {
+					code: "DEBUGGER_ATTACH_FAILED",
+				});
+			}
+			if (!e.message?.includes("Already attached")) {
+				throw e;
+			}
+		}
+		await Promise.allSettled(
+			["Runtime.enable", "Log.enable", "Network.enable", "Page.enable"].map(
+				(method) => chrome.debugger.sendCommand({ tabId }, method),
+			),
+		);
+	});
 }
 
 function clearTabState(tabId) {
-  clearTabRuntimeState(tabId, {
-    attachedTabs,
-    attachingTabs,
-    lockedTabs,
-    pendingRestoreTimers,
-    consoleBuffers,
-    networkBuffers,
-  });
+	clearTabRuntimeState(tabId, {
+		attachedTabs,
+		attachingTabs,
+		lockedTabs,
+		pendingRestoreTimers,
+		consoleBuffers,
+		networkBuffers,
+	});
 }
 
 chrome.debugger.onDetach.addListener((source) => {
-  if (source.tabId != null) clearTabState(source.tabId);
+	if (source.tabId != null) clearTabState(source.tabId);
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => clearTabState(tabId));
 
 async function detachDebugger(tabId) {
-  if (!attachedTabs.has(tabId)) return;
-  try { await chrome.debugger.detach({ tabId }); } catch (_) {}
-  clearTabState(tabId);
+	if (!attachedTabs.has(tabId)) return;
+	try {
+		await chrome.debugger.detach({ tabId });
+	} catch (_) {}
+	clearTabState(tabId);
+}
+
+async function releaseTab(tabId) {
+	cancelPendingRestore(tabId);
+	await settleWithin(restoreFavicon(tabId), CLEANUP_TIMEOUT_MS);
+	await settleWithin(detachDebugger(tabId), CLEANUP_TIMEOUT_MS);
+	clearTabState(tabId);
 }
 
 async function unlockOtherTabs(keepTabId) {
-  for (const id of lockedTabs) {
-    if (id !== keepTabId) {
-      cancelPendingRestore(id);
-      try { await restoreFavicon(id); } catch (_) {}
-      await detachDebugger(id);
-      lockedTabs.delete(id);
-    }
-  }
+	await Promise.all(
+		[...lockedTabs].filter((id) => id !== keepTabId).map(releaseTab),
+	);
 }
 
 async function unlockAllTabs() {
-  for (const id of lockedTabs) {
-    cancelPendingRestore(id);
-    try { await restoreFavicon(id); } catch (_) {}
-    await detachDebugger(id);
-  }
-  lockedTabs.clear();
+	await Promise.all([...lockedTabs].map(releaseTab));
 }
 
 function cancelPendingRestore(tabId) {
-  const timer = pendingRestoreTimers.get(tabId);
-  if (timer) {
-    clearTimeout(timer);
-    pendingRestoreTimers.delete(tabId);
-  }
+	const timer = pendingRestoreTimers.get(tabId);
+	if (timer) {
+		clearTimeout(timer);
+		pendingRestoreTimers.delete(tabId);
+	}
 }
 
 function scheduleRestore(tabId, delayMs) {
-  cancelPendingRestore(tabId);
-  const timer = setTimeout(async () => {
-    pendingRestoreTimers.delete(tabId);
-    try { await restoreFavicon(tabId); } catch (_) {}
-    await detachDebugger(tabId);
-  }, delayMs);
-  pendingRestoreTimers.set(tabId, timer);
+	cancelPendingRestore(tabId);
+	const timer = setTimeout(() => releaseTab(tabId), delayMs);
+	pendingRestoreTimers.set(tabId, timer);
 }
 
 async function truncateOutput(full, params, tab, field) {
-  let text = full, range = [0, full.length], truncated = false;
-  if (params.full) {
-    // no truncation
-  } else if (params.range) {
-    const [s, e] = params.range;
-    text = full.slice(s, e);
-    range = [s, s + text.length];
-    truncated = s + text.length < full.length;
-  } else {
-    const cap = 50000;
-    text = full.slice(0, cap);
-    range = [0, text.length];
-    truncated = text.length < full.length;
-  }
-  const data = { [field]: text };
-  if (truncated) {
-    data.truncated = true;
-    data.total_chars = full.length;
-    data.range = range;
-  }
-  return {
-    ok: true,
-    data,
-    meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
-  };
+	let text = full,
+		range = [0, full.length],
+		truncated = false;
+	if (params.full) {
+		// no truncation
+	} else if (params.range) {
+		const [s, e] = params.range;
+		text = full.slice(s, e);
+		range = [s, s + text.length];
+		truncated = s + text.length < full.length;
+	} else {
+		const cap = 50000;
+		text = full.slice(0, cap);
+		range = [0, text.length];
+		truncated = text.length < full.length;
+	}
+	const data = { [field]: text };
+	if (truncated) {
+		data.truncated = true;
+		data.total_chars = full.length;
+		data.range = range;
+	}
+	return {
+		ok: true,
+		data,
+		meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+	};
 }
 
-function parseKeyCombo(combo) {
-  // "Control+a" → [{type:"keyDown",...},{type:"keyUp",...}] per key segment
-  // Simplified: split on "+", map each to keyDown+keyUp pair
-  const parts = combo.split("+");
-  const events = [];
-  for (const p of parts) {
-    const key = p.trim();
-    events.push({ type: "rawKeyDown", key, code: key });
-    events.push({ type: "keyUp", key, code: key });
-  }
-  if (parts.length > 1) {
-    // For combos like Control+a, only fire the final key's char
-    return [{ type: "char", text: parts[parts.length - 1].trim() }];
-  }
-  return events;
-}
 async function buildMeta(operated) {
-  try {
-    const win = await chrome.windows.getLastFocused({ populate: false });
-    const tabs = await chrome.tabs.query({ active: true, windowId: win.id });
-    const at = tabs[0] || null;
-    const matched = operated && at ? operated.tab_id === at.id : false;
-    const { instance_id, label } = await ensureInstanceId();
-    const meta = {
-      operated,
-      focus: { matched_operated_target: matched },
-      profile: { instance_id, label: label || null },
-    };
-    if (!matched && at) {
-      meta.focus.tab_id = at.id;
-      meta.focus.tab_title = at.title;
-    }
-    return meta;
-  } catch (e) {
-    return { focus: { matched_operated_target: false } };
-  }
+	try {
+		const win = await chrome.windows.getLastFocused({ populate: false });
+		const tabs = await chrome.tabs.query({ active: true, windowId: win.id });
+		const at = tabs[0] || null;
+		const matched = operated && at ? operated.tab_id === at.id : false;
+		const { instance_id, label } = await ensureInstanceId();
+		const meta = {
+			operated,
+			focus: { matched_operated_target: matched },
+			profile: { instance_id, label: label || null },
+		};
+		if (!matched && at) {
+			meta.focus.tab_id = at.id;
+			meta.focus.tab_title = at.title;
+		}
+		return meta;
+	} catch (e) {
+		return { focus: { matched_operated_target: false } };
+	}
 }
 
 // ─── Keep-alive ──────────────────────────────────────────────────────────
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name !== KEEPALIVE_ALARM) return;
-  if (nativePort) {
-    try {
-      nativePort.postMessage({ jsonrpc: "2.0", method: "keepalive", params: {} });
-    } catch (e) {
-      console.warn("[ap-browser] keepalive postMessage failed:", e);
-    }
-  } else {
-    // Port dropped — reconnect.
-    connectNativePort();
-  }
+	if (alarm.name !== KEEPALIVE_ALARM) return;
+	if (nativePort) {
+		const port = nativePort;
+		try {
+			port.postMessage({
+				jsonrpc: "2.0",
+				method: "keepalive",
+				params: {},
+			});
+		} catch (e) {
+			console.warn("[ap-browser] keepalive postMessage failed:", e);
+			if (isCurrentPort(nativePort, port)) {
+				nativePort = null;
+				scheduleNativeReconnect();
+			}
+		}
+	} else {
+		// Port dropped — reconnect.
+		connectNativePort();
+	}
 });
 
 // ─── Storage change → re-push hello with new label ───────────────────────
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local") return;
-  if (changes.label) {
-    labelCache = changes.label.newValue || "";
-    if (nativePort) {
-      ensureInstanceId().then(({ instance_id }) =>
-        buildHelloWithTabs(instance_id, labelCache).then((hello) =>
-          nativePort.postMessage({
-            jsonrpc: "2.0",
-            method: "hello",
-            params: hello,
-          }),
-        ),
-      );
-    }
-  }
+	if (area !== "local") return;
+	if (changes.label) {
+		labelCache = changes.label.newValue || "";
+		if (nativePort) {
+			ensureInstanceId().then(({ instance_id }) =>
+				buildHelloWithTabs(instance_id, labelCache).then((hello) =>
+					nativePort.postMessage({
+						jsonrpc: "2.0",
+						method: "hello",
+						params: hello,
+					}),
+				),
+			);
+		}
+	}
 });
 
 // ─── SW lifecycle hooks ──────────────────────────────────────────────────
 chrome.runtime.onInstalled.addListener(async () => {
-  await ensureInstanceId();
-  await chrome.alarms.create(KEEPALIVE_ALARM, {
-    periodInMinutes: KEEPALIVE_PERIOD_MIN,
-  });
-  await connectNativePort();
+	await ensureInstanceId();
+	await chrome.alarms.create(KEEPALIVE_ALARM, {
+		periodInMinutes: KEEPALIVE_PERIOD_MIN,
+	});
+	await connectNativePort();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  await ensureInstanceId();
-  await chrome.alarms.create(KEEPALIVE_ALARM, {
-    periodInMinutes: KEEPALIVE_PERIOD_MIN,
-  });
+	await ensureInstanceId();
+	await chrome.alarms.create(KEEPALIVE_ALARM, {
+		periodInMinutes: KEEPALIVE_PERIOD_MIN,
+	});
 });
 
 // Top-level unconditional connect: fires on every SW spawn, regardless of
@@ -1326,13 +1705,13 @@ ensureInstanceId().then(() => connectNativePort());
 chrome.action.onClicked.addListener(() => {});
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.method === "status") {
-    sendResponse({
-      native_host: nativePort ? "connected" : "disconnected",
-      active_ops: lockedTabs.size,
-    });
-    return false;
-  }
+	if (msg?.method === "status") {
+		sendResponse({
+			native_host: nativePort ? "connected" : "disconnected",
+			active_ops: lockedTabs.size,
+		});
+		return false;
+	}
 });
 
 // On SW wakeup (any event), make sure we have a port.
