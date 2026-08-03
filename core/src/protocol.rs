@@ -36,6 +36,9 @@ impl Request {
 }
 
 /// Top-level JSON-RPC response.
+// ponytail: SuccessResponse carries the full payload; boxing would add an
+// indirection to every request path for a lint — acceptable as-is.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Response {

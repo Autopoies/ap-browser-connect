@@ -34,17 +34,16 @@ const MESSAGE_FRAME_MAX: usize = 64 * 1024 * 1024;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let instance = flag_value(&args, "--instance")
-        .unwrap_or_else(|| {
-            eprintln!("usage: ap-browser-bridge --instance <id> [--listen ADDR:PORT] [--token-file PATH]");
-            std::process::exit(2);
-        });
+    let instance = flag_value(&args, "--instance").unwrap_or_else(|| {
+        eprintln!(
+            "usage: ap-browser-bridge --instance <id> [--listen ADDR:PORT] [--token-file PATH]"
+        );
+        std::process::exit(2);
+    });
     let listen = flag_value(&args, "--listen").unwrap_or_else(|| "127.0.0.1:17777".to_string());
     let token_file: PathBuf = flag_value(&args, "--token-file")
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs_home().join(".ap-browser").join("bridge-token")
-        });
+        .unwrap_or_else(|| dirs_home().join(".ap-browser").join("bridge-token"));
 
     // Verify the target instance is actually online before opening the listener.
     // Saves the user from a bridge that accepts connections then dies on first use.
@@ -53,7 +52,8 @@ fn main() -> Result<()> {
         bail!(
             "no ap-browser-host instance `{}` is listening on {}.\n\
              Is Chrome running with the extension loaded?",
-            instance, socket_name
+            instance,
+            socket_name
         );
     }
 
@@ -71,16 +71,21 @@ fn main() -> Result<()> {
         std::fs::write(&token_file, &token)?;
     }
 
-    let listener = TcpListener::bind(&listen)
-        .with_context(|| format!("bind TCP {}", listen))?;
+    let listener = TcpListener::bind(&listen).with_context(|| format!("bind TCP {}", listen))?;
     eprintln!("[ap-browser-bridge] listening on tcp://{}", listen);
-    eprintln!("[ap-browser-bridge] forwarding to instance `{}` ({})", instance, socket_name);
-    eprintln!("[ap-browser-bridge] token written to {}", token_file.display());
-    eprintln!("");
+    eprintln!(
+        "[ap-browser-bridge] forwarding to instance `{}` ({})",
+        instance, socket_name
+    );
+    eprintln!(
+        "[ap-browser-bridge] token written to {}",
+        token_file.display()
+    );
+    eprintln!();
     eprintln!("In the remote container/VM, set:");
     eprintln!("    AP_BROWSER_REMOTE=tcp://{}?token={}", listen, token);
     eprintln!("    AP_BROWSER_INSTANCE={}", instance);
-    eprintln!("");
+    eprintln!();
     eprintln!("Ctrl-C to stop.");
 
     for incoming in listener.incoming() {
@@ -116,15 +121,15 @@ fn handle_conn(mut tcp: std::net::TcpStream, cfg: Config) -> Result<()> {
     tcp.set_write_timeout(Some(Duration::from_secs(30)))?;
 
     let auth_req: serde_json::Value = read_auth_frame(&mut tcp)?;
-    let got_token = auth_req
-        .get("token")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let got_token = auth_req.get("token").and_then(|v| v.as_str()).unwrap_or("");
     if got_token != cfg.token {
-        let _ = write_tcp_frame(&mut tcp, &serde_json::json!({
-            "ok": false,
-            "error": { "code": "AUTH_FAILED", "message": "bad token" }
-        }));
+        let _ = write_tcp_frame(
+            &mut tcp,
+            &serde_json::json!({
+                "ok": false,
+                "error": { "code": "AUTH_FAILED", "message": "bad token" }
+            }),
+        );
         bail!("auth failed: bad token");
     }
     write_tcp_frame(&mut tcp, &serde_json::json!({"ok": true}))?;
@@ -186,14 +191,16 @@ fn read_tcp_frame_with_limit<R: Read>(
     kind: &str,
 ) -> Result<serde_json::Value> {
     let mut header = [0u8; 4];
-    stream.read_exact(&mut header)
+    stream
+        .read_exact(&mut header)
         .with_context(|| format!("read {kind} header"))?;
     let len = u32::from_le_bytes(header) as usize;
     if len > limit {
         bail!("{kind} frame too large: {len}");
     }
     let mut payload = vec![0u8; len];
-    stream.read_exact(&mut payload)
+    stream
+        .read_exact(&mut payload)
         .with_context(|| format!("read {kind} payload"))?;
     Ok(serde_json::from_slice(&payload)?)
 }
@@ -239,7 +246,7 @@ fn fallback_token() -> String {
 
 fn base64url(b: &[u8]) -> String {
     const TBL: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::with_capacity((b.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(b.len().div_ceil(3) * 4);
     for chunk in b.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
@@ -258,7 +265,10 @@ fn base64url(b: &[u8]) -> String {
 }
 
 fn flag_value(args: &[String], flag: &str) -> Option<String> {
-    args.windows(2).find(|w| w[0] == flag).and_then(|w| w.get(1)).cloned()
+    args.windows(2)
+        .find(|w| w[0] == flag)
+        .and_then(|w| w.get(1))
+        .cloned()
 }
 
 fn dirs_home() -> PathBuf {
@@ -266,7 +276,7 @@ fn dirs_home() -> PathBuf {
         .ok()
         .map(PathBuf::from)
         .or_else(|| std::env::var("USERPROFILE").ok().map(PathBuf::from))
-        .unwrap_or_else(|| std::env::temp_dir())
+        .unwrap_or_else(std::env::temp_dir)
 }
 
 #[cfg(test)]

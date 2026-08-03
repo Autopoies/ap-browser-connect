@@ -8,6 +8,6 @@ pub mod transport;
 
 pub use frame::{encode, read_frame, FrameError, MAX_FRAME_SIZE};
 pub use protocol::{
-    Error, ErrorResponse, FocusSnapshot, HelloParams, Meta, OperatedTarget,
-    ProfileRef, Request, Response, RpcResult, SuccessResponse, TabRef,
+    Error, ErrorResponse, FocusSnapshot, HelloParams, Meta, OperatedTarget, ProfileRef, Request,
+    Response, RpcResult, SuccessResponse, TabRef,
 };
