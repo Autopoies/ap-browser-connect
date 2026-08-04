@@ -95,8 +95,10 @@ pub fn probe_info(id: &str) -> Result<ProfileInfo> {
     // SW behind a live host must fail the probe fast, not stall resolution.
     let req = json!({ "jsonrpc": "2.0", "method": "info", "params": { "_timeout_hint_secs": 5 } });
     let bytes = cli_frame::encode(&req)?;
-    let mut stream = transport::connect(&transport::instance_name(id))
-        .with_context(|| format!("connect {}", id))?;
+    // Retry the dial: during a SW/host reconnect the socket may briefly be
+    // absent — a single-shot connect here turned reconnects into spurious
+    // "no online profile matches" failures.
+    let mut stream = dial_with_retry(id, 3, Duration::from_millis(200))?;
     use std::io::Write;
     stream.write_all(&bytes)?;
     stream.flush()?;
