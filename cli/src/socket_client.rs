@@ -91,7 +91,9 @@ pub fn list_instance_ids() -> Result<Vec<String>> {
 
 /// Probe an instance for its info via a short-lived connection.
 pub fn probe_info(id: &str) -> Result<ProfileInfo> {
-    let req = json!({"jsonrpc":"2.0","method":"info","params":{}});
+    // Hint the host to bound this probe at 5s, not its 30s default: a dead
+    // SW behind a live host must fail the probe fast, not stall resolution.
+    let req = json!({ "jsonrpc": "2.0", "method": "info", "params": { "_timeout_hint_secs": 5 } });
     let bytes = cli_frame::encode(&req)?;
     let mut stream = transport::connect(&transport::instance_name(id))
         .with_context(|| format!("connect {}", id))?;

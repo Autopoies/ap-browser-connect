@@ -52,7 +52,24 @@ async function restoreFavicon(tabId) {
 
 const NATIVE_HOST_NAME = "com.apbrowser.connect";
 const KEEPALIVE_ALARM = "ap-keepalive";
-const KEEPALIVE_PERIOD_MIN = 0.4; // 24 seconds
+// 0.5 = 30s, the minimum period Chrome honors in ALL contexts (packed +
+// unpacked). An open connectNative port already keeps the SW alive; this
+// alarm is the wake-net for when the port dies (SW disposed → port closed
+// → host exits → CLI loses the socket).
+const KEEPALIVE_PERIOD_MIN = 0.5;
+
+async function ensureKeepaliveAlarm() {
+	try {
+		const existing = await chrome.alarms.get(KEEPALIVE_ALARM);
+		if (!existing) {
+			await chrome.alarms.create(KEEPALIVE_ALARM, {
+				periodInMinutes: KEEPALIVE_PERIOD_MIN,
+			});
+		}
+	} catch (e) {
+		console.warn("[ap-browser] keepalive alarm ensure failed:", e);
+	}
+}
 
 // ─── State ──────────────────────────────────────────────────────────────
 let nativePort = null;
@@ -68,6 +85,18 @@ function scheduleNativeReconnect() {
 		nativeReconnectTimer = null;
 		connectNativePort();
 	}, delayMs);
+}
+
+// Post to the port this message arrived on. The global `nativePort` can be
+// null (port just disconnected) or already replaced by a newer connection —
+// responding on the captured port is always correct, and a dead port just
+// logs (onDisconnect drives reconnection).
+function postToNative(port, payload) {
+	try {
+		port.postMessage(payload);
+	} catch (e) {
+		console.warn("[ap-browser] postMessage failed:", e);
+	}
 }
 
 // ─── instance_id bootstrap ───────────────────────────────────────────────
@@ -120,7 +149,7 @@ async function connectNativePort() {
 	try {
 		const port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
 		nativePort = port;
-		port.onMessage.addListener(handleNativeMessage);
+		port.onMessage.addListener((msg) => handleNativeMessage(msg, port));
 		port.onDisconnect.addListener(() => {
 			if (!isCurrentPort(nativePort, port)) return;
 			console.warn("[ap-browser] native port disconnected");
@@ -161,7 +190,7 @@ async function connectNativePort() {
 }
 
 // ─── Message dispatch (JSON-RPC) ─────────────────────────────────────────
-async function handleNativeMessage(msg) {
+async function handleNativeMessage(msg, port) {
 	if (!msg || typeof msg !== "object") return;
 	if (msg.jsonrpc !== "2.0") return;
 	if (!("id" in msg)) return;
@@ -215,14 +244,14 @@ async function handleNativeMessage(msg) {
 		}
 
 		const result = await dispatch(method, params, operatedTab);
-		nativePort.postMessage({ jsonrpc: "2.0", id, result });
+		postToNative(port, { jsonrpc: "2.0", id, result });
 	} catch (e) {
 		const error = {
 			code: e.code || "INTERNAL",
 			message: e.message || String(e),
 		};
 		if (e.filterMeta) error.data = { filters: e.filterMeta };
-		nativePort.postMessage({ jsonrpc: "2.0", id, error });
+		postToNative(port, { jsonrpc: "2.0", id, error });
 	} finally {
 		if (operatedTab) {
 			if (!method.startsWith(NO_RESTORE_PREFIX)) {
@@ -1641,21 +1670,10 @@ async function buildMeta(operated) {
 // ─── Keep-alive ──────────────────────────────────────────────────────────
 chrome.alarms.onAlarm.addListener((alarm) => {
 	if (alarm.name !== KEEPALIVE_ALARM) return;
+	ensureKeepaliveAlarm(); // self-heal if the alarm ever went missing
 	if (nativePort) {
 		const port = nativePort;
-		try {
-			port.postMessage({
-				jsonrpc: "2.0",
-				method: "keepalive",
-				params: {},
-			});
-		} catch (e) {
-			console.warn("[ap-browser] keepalive postMessage failed:", e);
-			if (isCurrentPort(nativePort, port)) {
-				nativePort = null;
-				scheduleNativeReconnect();
-			}
-		}
+		postToNative(port, { jsonrpc: "2.0", method: "keepalive", params: {} });
 	} else {
 		// Port dropped — reconnect.
 		connectNativePort();
@@ -1684,23 +1702,23 @@ chrome.storage.onChanged.addListener((changes, area) => {
 // ─── SW lifecycle hooks ──────────────────────────────────────────────────
 chrome.runtime.onInstalled.addListener(async () => {
 	await ensureInstanceId();
-	await chrome.alarms.create(KEEPALIVE_ALARM, {
-		periodInMinutes: KEEPALIVE_PERIOD_MIN,
-	});
+	await ensureKeepaliveAlarm();
 	await connectNativePort();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
 	await ensureInstanceId();
-	await chrome.alarms.create(KEEPALIVE_ALARM, {
-		periodInMinutes: KEEPALIVE_PERIOD_MIN,
-	});
+	await ensureKeepaliveAlarm();
 });
 
 // Top-level unconditional connect: fires on every SW spawn, regardless of
 // what woke it (alarm, popup message, tab event, etc). Chrome MV3 may tear
 // down the SW and respawn it without re-firing onStartup/onInstalled.
+// Alarm ensure here too: if the SW was disposed while the alarm was missing
+// (e.g. onInstalled never ran after a reload), this recreates it so the
+// wake-net is never lost.
 ensureInstanceId().then(() => connectNativePort());
+ensureKeepaliveAlarm();
 
 chrome.action.onClicked.addListener(() => {});
 

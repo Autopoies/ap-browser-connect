@@ -213,6 +213,13 @@ fn response_timeout_secs(request: &serde_json::Value) -> u64 {
         .unwrap_or(RESPONSE_TIMEOUT_SECS)
 }
 
+fn write_error_to_cli(stream: &mut transport::Stream, code: &str, message: &str) -> Result<()> {
+    let err = serde_json::json!({ "ok": false, "error": { "code": code, "message": message } });
+    stream.write_all(&encode(&err)?)?;
+    let _ = stream.flush();
+    Ok(())
+}
+
 fn handle_cli_connection(host: Arc<Host>, mut stream: transport::Stream) -> Result<()> {
     let req_value = read_frame(&mut stream).context("read cli frame")?;
     let req: Request = serde_json::from_value(req_value.clone()).context("parse cli request")?;
@@ -233,15 +240,28 @@ fn handle_cli_connection(host: Arc<Host>, mut stream: transport::Stream) -> Resu
     };
     let encoded = encode(&forwarded)?;
 
-    let stdout_tx = host
-        .stdout_tx
-        .lock()
-        .unwrap()
-        .clone()
-        .context("stdout channel closed")?;
-    stdout_tx
-        .send(encoded)
-        .context("forward to SW via stdout")?;
+    let stdout_tx = match host.stdout_tx.lock().unwrap().clone() {
+        Some(tx) => tx,
+        None => {
+            host.pending.lock().unwrap().remove(&id);
+            return write_error_to_cli(
+                &mut stream,
+                "EXTENSION_DISCONNECTED",
+                "stdout channel closed (Chrome disconnected)",
+            );
+        }
+    };
+    if stdout_tx.send(encoded).is_err() {
+        // The stdout writer thread is gone — Chrome closed the native pipe,
+        // so no response will ever come back. Tell the CLI instead of
+        // silently dropping the connection (which would hang its read).
+        host.pending.lock().unwrap().remove(&id);
+        return write_error_to_cli(
+            &mut stream,
+            "EXTENSION_DISCONNECTED",
+            "Chrome disconnected the native port before the response",
+        );
+    }
 
     match rx.recv_timeout(std::time::Duration::from_secs(timeout_secs)) {
         Ok(buf) => {
@@ -249,24 +269,18 @@ fn handle_cli_connection(host: Arc<Host>, mut stream: transport::Stream) -> Resu
             let _ = stream.flush();
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            let err = serde_json::json!({
-                "ok": false,
-                "error": {
-                    "code": "TIMEOUT",
-                    "message": format!("request timed out after {timeout_secs}s")
-                }
-            });
-            let _ = stream.write_all(&encode(&err)?);
+            write_error_to_cli(
+                &mut stream,
+                "TIMEOUT",
+                &format!("request timed out after {timeout_secs}s"),
+            )?;
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            let err = serde_json::json!({
-                "ok": false,
-                "error": {
-                    "code": "EXTENSION_DISCONNECTED",
-                    "message": "SW Port disconnected while waiting for response"
-                }
-            });
-            let _ = stream.write_all(&encode(&err)?);
+            write_error_to_cli(
+                &mut stream,
+                "EXTENSION_DISCONNECTED",
+                "SW Port disconnected while waiting for response",
+            )?;
         }
     }
 
