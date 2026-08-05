@@ -303,6 +303,11 @@ pub fn dispatch_site(
     let tab_override = extract_flag(raw_args, "--tab").and_then(|s| s.parse::<i64>().ok());
     let profile_override =
         extract_flag(raw_args, "profile").or_else(|| extract_flag(raw_args, "--profile"));
+    // Agent --timeout beats the adapter's own `timeout`, which beats the
+    // step estimate. Positive only; garbage falls back silently.
+    let timeout_override = extract_flag(raw_args, "--timeout")
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&t| t > 0);
     let filter_registry = crate::filters::Registry::load();
 
     if read_stdin && adapter.input.is_none() {
@@ -337,6 +342,7 @@ pub fn dispatch_site(
                 tab_override,
                 profile_override.as_deref(),
                 &filter_registry,
+                timeout_override,
             )?;
             print_response(resp, want_ndjson, human);
         }
@@ -348,6 +354,7 @@ pub fn dispatch_site(
             tab_override,
             profile_override.as_deref(),
             &filter_registry,
+            timeout_override,
         )?;
         print_response(resp, want_ndjson, human);
         Ok(())
@@ -393,13 +400,17 @@ fn send_adapter_batch(
     tab: Option<i64>,
     profile: Option<&str>,
     filter_registry: &crate::filters::Registry,
+    timeout_override: Option<u64>,
 ) -> Result<Value> {
     let steps = expand_steps(&adapter.steps, args)?;
-    // Default: estimate from the steps (30s floor). An adapter-declared
-    // `timeout` (seconds) overrides the estimate entirely.
-    let timeout = adapter
-        .timeout
+    // Precedence: agent --timeout > adapter `timeout` > step estimate (30s floor).
+    let timeout = timeout_override
         .map(|t| std::time::Duration::from_secs(t.min(MAX_ADAPTER_TIMEOUT_SECS)))
+        .or_else(|| {
+            adapter
+                .timeout
+                .map(|t| std::time::Duration::from_secs(t.min(MAX_ADAPTER_TIMEOUT_SECS)))
+        })
         .unwrap_or_else(|| estimate_batch_timeout(&steps));
     let timeout_secs = timeout.as_secs();
     let mut params =

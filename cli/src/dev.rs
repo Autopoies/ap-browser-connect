@@ -52,11 +52,25 @@ fn extract_profile(args: &[String]) -> Option<String> {
         .map(|w| w[1].clone())
 }
 
+fn extract_timeout(args: &[String]) -> Option<u64> {
+    args.windows(2)
+        .find(|w| w[0] == "--timeout")
+        .and_then(|w| w[1].parse().ok())
+        .filter(|&t| t > 0)
+}
+
 fn rpc(method: &str, params: Value, args: &[String]) -> Result<Value> {
     let mut p = params;
     if let Some(t) = extract_tab(args) {
         if let Some(o) = p.as_object_mut() {
             o.insert("tab_id".into(), json!(t));
+        }
+    }
+    // Agent --timeout overrides the host's 30s default (host caps at 3600).
+    let timeout_hint = extract_timeout(args).map(|t| t.min(3_600));
+    if let Some(h) = timeout_hint {
+        if let Some(o) = p.as_object_mut() {
+            o.insert("_timeout_hint_secs".into(), json!(h));
         }
     }
     let socket = crate::socket_client::resolve_socket(extract_profile(args).as_deref())?;
@@ -66,7 +80,10 @@ fn rpc(method: &str, params: Value, args: &[String]) -> Result<Value> {
     use std::io::Write;
     stream.write_all(&bytes)?;
     stream.flush()?;
-    let envelope = crate::cli_frame::read_response(&mut stream, Duration::from_secs(60))?;
+    let envelope = crate::cli_frame::read_response(
+        &mut stream,
+        Duration::from_secs(timeout_hint.unwrap_or(60)),
+    )?;
     let resp = match envelope.get("result") {
         Some(r) => r.clone(),
         None => match envelope.get("error") {
