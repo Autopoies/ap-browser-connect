@@ -1158,7 +1158,10 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			let batchFilterMetadata = null;
 			// CLI-style aliases → extension method names (agents write `state`,
 			// the extension dispatches `state.snapshot`).
-			const METHOD_ALIASES = { state: "state.snapshot", download: "download.browser" };
+			const METHOD_ALIASES = {
+				state: "state.snapshot",
+				download: "download.browser",
+			};
 			for (const step of steps) {
 				const stepMethod =
 					METHOD_ALIASES[step.method || step.cmd] || step.method || step.cmd;

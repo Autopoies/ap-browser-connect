@@ -13,7 +13,7 @@
 export const STATE_ELEMENT_SELECTOR =
 	'button, input, select, textarea, a[href], [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="radio"], [contenteditable], [tabindex]';
 
-export const STATE_MAX_REFS = 120;
+export const STATE_MAX_REFS = 250;
 
 const REF_ATTR = "data-ap-ref";
 
