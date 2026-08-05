@@ -88,6 +88,18 @@ enum Cmd {
         target: String,
         value: String,
     },
+    Select {
+        target: String,
+        option: String,
+    },
+    Scroll {
+        #[arg(long)]
+        count: Option<u64>,
+        #[arg(long)]
+        pause_ms: Option<u64>,
+        #[arg(long)]
+        selector: Option<String>,
+    },
     Press {
         keys: String,
     },
@@ -375,6 +387,30 @@ fn main() -> Result<()> {
             human,
             |_| {},
         )?,
+        Cmd::Select { target, option } => rpc(
+            &cli,
+            "select",
+            target_params(target, json!({"option": option})),
+            human,
+            |_| {},
+        )?,
+        Cmd::Scroll {
+            count,
+            pause_ms,
+            selector,
+        } => {
+            let mut params = json!({});
+            if let Some(c) = count {
+                params["count"] = json!(c);
+            }
+            if let Some(p) = pause_ms {
+                params["pause_ms"] = json!(p);
+            }
+            if let Some(s) = selector {
+                params["selector"] = json!(s);
+            }
+            rpc(&cli, "scroll", params, human, |_| {})?
+        }
         Cmd::State => rpc(&cli, "state.snapshot", json!({}), human, |resp| {
             if human {
                 render_state_tree(resp);
@@ -914,6 +950,8 @@ fn error_to_exit_code(resp: &Value) -> i32 {
         | "CDP_ERROR"
         | "JS_EXCEPTION"
         | "SELECTOR_NO_MATCH"
+        | "OPTION_NOT_FOUND"
+        | "NOT_A_SELECT"
         | "FILTER_DENIED"
         | "INTERNAL" => 4,
         "TIMEOUT" => 5,

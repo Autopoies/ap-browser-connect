@@ -264,34 +264,34 @@ export function redactResult(value, policies) {
 // Serialized into Runtime.evaluate expressions, so it must stay
 // self-contained (emptyFilterMetadata is injected by the builder).
 export function guardInteractionTarget(documentObject, targetSelector, rules) {
-  const metadata = emptyFilterMetadata();
-  const target = documentObject.querySelector(targetSelector);
-  if (!target) return { target: null, metadata };
+	const metadata = emptyFilterMetadata();
+	const target = documentObject.querySelector(targetSelector);
+	if (!target) return { target: null, metadata };
 
-  const deniedPolicyIds = new Set();
-  for (const rule of rules || []) {
-    let invalidForPolicy = false;
-    for (const selector of rule.selectors || []) {
-      try {
-        if (target.matches(selector) || target.closest?.(selector)) {
-          deniedPolicyIds.add(rule.policy_id);
-        }
-      } catch (_) {
-        metadata.invalid_selectors += 1;
-        invalidForPolicy = true;
-      }
-    }
-    if (invalidForPolicy) metadata.matched_policy_ids.push(rule.policy_id);
-  }
+	const deniedPolicyIds = new Set();
+	for (const rule of rules || []) {
+		let invalidForPolicy = false;
+		for (const selector of rule.selectors || []) {
+			try {
+				if (target.matches(selector) || target.closest?.(selector)) {
+					deniedPolicyIds.add(rule.policy_id);
+				}
+			} catch (_) {
+				metadata.invalid_selectors += 1;
+				invalidForPolicy = true;
+			}
+		}
+		if (invalidForPolicy) metadata.matched_policy_ids.push(rule.policy_id);
+	}
 
-  if (deniedPolicyIds.size > 0) {
-    metadata.matched_policy_ids = [
-      ...new Set([...metadata.matched_policy_ids, ...deniedPolicyIds]),
-    ];
-    metadata.denied_interactions = 1;
-    return { denied: true, metadata };
-  }
-  return { target, metadata };
+	if (deniedPolicyIds.size > 0) {
+		metadata.matched_policy_ids = [
+			...new Set([...metadata.matched_policy_ids, ...deniedPolicyIds]),
+		];
+		metadata.denied_interactions = 1;
+		return { denied: true, metadata };
+	}
+	return { target, metadata };
 }
 
 // Resolve-only variant for native-input clicks: filter guard + scrollIntoView,
@@ -300,34 +300,34 @@ export function guardInteractionTarget(documentObject, targetSelector, rules) {
 // controls (Reddit, Radix/MUI) react to pointer/mouse events that el.click()
 // never synthesizes.
 export function resolveForNativeClick(documentObject, targetSelector, rules) {
-  const guard = guardInteractionTarget(documentObject, targetSelector, rules);
-  if (guard.denied) return { status: "denied", metadata: guard.metadata };
-  const target = guard.target;
-  if (!target) return { status: "not_found", metadata: guard.metadata };
+	const guard = guardInteractionTarget(documentObject, targetSelector, rules);
+	if (guard.denied) return { status: "denied", metadata: guard.metadata };
+	const target = guard.target;
+	if (!target) return { status: "not_found", metadata: guard.metadata };
 
-  target.scrollIntoView({ block: "center" });
-  const r = target.getBoundingClientRect();
-  // Hit-test the element center: real input events land on whatever is
-  // topmost there, so only use them when that is the target or one of its
-  // descendants. Wrapper cards / overlays covering the center (Reddit's
-  // community-highlight-card, tooltip layers) would swallow the click —
-  // those must go through el.click(), which ignores hit-testing.
-  const cx = r.x + r.width / 2;
-  const cy = r.y + r.height / 2;
-  let hitOk = false;
-  if (r.width >= 1 && r.height >= 1 && cx >= 0 && cy >= 0) {
-    const hit = documentObject.elementFromPoint(cx, cy);
-    hitOk = hit === target || target.contains(hit);
-  }
-  return {
-    status: "ok",
-    metadata: guard.metadata,
-    x: r.x,
-    y: r.y,
-    w: r.width,
-    h: r.height,
-    hitOk,
-  };
+	target.scrollIntoView({ block: "center" });
+	const r = target.getBoundingClientRect();
+	// Hit-test the element center: real input events land on whatever is
+	// topmost there, so only use them when that is the target or one of its
+	// descendants. Wrapper cards / overlays covering the center (Reddit's
+	// community-highlight-card, tooltip layers) would swallow the click —
+	// those must go through el.click(), which ignores hit-testing.
+	const cx = r.x + r.width / 2;
+	const cy = r.y + r.height / 2;
+	let hitOk = false;
+	if (r.width >= 1 && r.height >= 1 && cx >= 0 && cy >= 0) {
+		const hit = documentObject.elementFromPoint(cx, cy);
+		hitOk = hit === target || target.contains(hit);
+	}
+	return {
+		status: "ok",
+		metadata: guard.metadata,
+		x: r.x,
+		y: r.y,
+		w: r.width,
+		h: r.height,
+		hitOk,
+	};
 }
 
 // Resolve-only variant for native-typing fill: filter guard + scrollIntoView
@@ -335,30 +335,30 @@ export function resolveForNativeClick(documentObject, targetSelector, rules) {
 // Input.insertText (real keystrokes — works for <input>, <textarea>, AND
 // contenteditable, which el.value assignment can't touch).
 export function resolveForNativeFill(documentObject, targetSelector, rules) {
-  const guard = guardInteractionTarget(documentObject, targetSelector, rules);
-  if (guard.denied) return { status: "denied", metadata: guard.metadata };
-  const target = guard.target;
-  if (!target) return { status: "not_found", metadata: guard.metadata };
+	const guard = guardInteractionTarget(documentObject, targetSelector, rules);
+	if (guard.denied) return { status: "denied", metadata: guard.metadata };
+	const target = guard.target;
+	if (!target) return { status: "not_found", metadata: guard.metadata };
 
-  target.scrollIntoView({ block: "center" });
-  target.focus();
-  // Select existing content so native insertion replaces it.
-  try {
-    if (typeof target.select === "function") {
-      target.select();
-    } else {
-      const sel = documentObject.getSelection();
-      const range = documentObject.createRange();
-      range.selectNodeContents(target);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
-  } catch (_) {}
-  return { status: "ok", metadata: guard.metadata };
+	target.scrollIntoView({ block: "center" });
+	target.focus();
+	// Select existing content so native insertion replaces it.
+	try {
+		if (typeof target.select === "function") {
+			target.select();
+		} else {
+			const sel = documentObject.getSelection();
+			const range = documentObject.createRange();
+			range.selectNodeContents(target);
+			sel.removeAllRanges();
+			sel.addRange(range);
+		}
+	} catch (_) {}
+	return { status: "ok", metadata: guard.metadata };
 }
 
 export function buildNativeClickResolveExpression(targetSelector, rules) {
-  return `(() => {
+	return `(() => {
     const emptyFilterMetadata = ${emptyFilterMetadata.toString()};
     const guardInteractionTarget = ${guardInteractionTarget.toString()};
     const resolveForNativeClick = ${resolveForNativeClick.toString()};
@@ -379,6 +379,72 @@ export function buildNativeFillResolveExpression(targetSelector, rules) {
       document,
       ${JSON.stringify(targetSelector)},
       ${JSON.stringify(rules)}
+    );
+  })()`;
+}
+
+// Native <select> dropdowns are OS-level widgets — CDP input events can't
+// open or click them, so selecting happens by DOM mutation (opencli's
+// approach): match the option by exact value or visible label, set it, and
+// dispatch a bubbling change so React/Vue listeners fire.
+export function performNativeSelect(
+	documentObject,
+	targetSelector,
+	rules,
+	want,
+) {
+	const guard = guardInteractionTarget(documentObject, targetSelector, rules);
+	if (guard.denied) return { status: "denied", metadata: guard.metadata };
+	const target = guard.target;
+	if (!target) return { status: "not_found", metadata: guard.metadata };
+
+	const tag = target.tagName ? target.tagName.toUpperCase() : "";
+	if (tag !== "SELECT") return { status: "not_a_select", metadata: guard.metadata };
+
+	target.scrollIntoView({ block: "center" });
+	target.focus();
+	const options = Array.from(target.options || []);
+	const available = options.map((o) => ({
+		value: o.value,
+		label: (o.textContent || "").trim(),
+	}));
+	const wantStr = String(want ?? "").trim();
+	let picked = null;
+	for (let i = 0; i < options.length; i++) {
+		const o = options[i];
+		const label = (o.textContent || "").trim();
+		if (o.value === wantStr || label === wantStr) {
+			picked = { index: i, value: o.value, label };
+			break;
+		}
+	}
+	if (!picked) {
+		return {
+			status: "option_not_found",
+			metadata: guard.metadata,
+			available,
+		};
+	}
+	target.selectedIndex = picked.index;
+	target.dispatchEvent(new Event("change", { bubbles: true }));
+	target.dispatchEvent(new Event("input", { bubbles: true }));
+	return {
+		status: "ok",
+		metadata: guard.metadata,
+		selected: { value: picked.value, label: picked.label },
+	};
+}
+
+export function buildNativeSelectExpression(targetSelector, rules, want) {
+	return `(() => {
+    const emptyFilterMetadata = ${emptyFilterMetadata.toString()};
+    const guardInteractionTarget = ${guardInteractionTarget.toString()};
+    const performNativeSelect = ${performNativeSelect.toString()};
+    return performNativeSelect(
+      document,
+      ${JSON.stringify(targetSelector)},
+      ${JSON.stringify(rules)},
+      ${JSON.stringify(want)}
     );
   })()`;
 }

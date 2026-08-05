@@ -5,6 +5,7 @@ import {
 	buildDomReadExpression,
 	buildNativeClickResolveExpression,
 	buildNativeFillResolveExpression,
+	buildNativeSelectExpression,
 	domDropRules,
 	hasFilterDiagnostics,
 	interactionDenyRules,
@@ -254,6 +255,7 @@ async function handleNativeMessage(msg, port) {
 			message: e.message || String(e),
 		};
 		if (e.filterMeta) error.data = { filters: e.filterMeta };
+		if (e.data) error.data = { ...(error.data || {}), ...e.data };
 		postToNative(port, { jsonrpc: "2.0", id, error });
 	} finally {
 		if (operatedTab) {
@@ -566,15 +568,19 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				];
 				// CDP input events don't route to background tabs; focus
 				// emulation makes the page accept them without stealing focus.
-				await withFocusEmulation(tab.id, chrome.debugger.sendCommand, async () => {
-					for (const ev of events) {
-						await chrome.debugger.sendCommand(
-							{ tabId: tab.id },
-							"Input.dispatchMouseEvent",
-							ev,
-						);
-					}
-				});
+				await withFocusEmulation(
+					tab.id,
+					chrome.debugger.sendCommand,
+					async () => {
+						for (const ev of events) {
+							await chrome.debugger.sendCommand(
+								{ tabId: tab.id },
+								"Input.dispatchMouseEvent",
+								ev,
+							);
+						}
+					},
+				);
 			}
 			return attachFilterMetadata(
 				{
@@ -626,40 +632,115 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			// insertText types the value. Works for <input>/<textarea> AND
 			// contenteditable (Reddit comment boxes, rich editors), which
 			// el.value assignment can't touch.
-			await withFocusEmulation(tab.id, chrome.debugger.sendCommand, async () => {
-				await chrome.debugger.sendCommand(
-					{ tabId: tab.id },
-					"Input.dispatchKeyEvent",
-					{ type: "keyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
-				);
-				await chrome.debugger.sendCommand(
-					{ tabId: tab.id },
-					"Input.dispatchKeyEvent",
-					{ type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
-				);
-				await chrome.debugger.sendCommand(
-					{ tabId: tab.id },
-					"Input.insertText",
-					{ text: params.value },
-				);
-			});
+			await withFocusEmulation(
+				tab.id,
+				chrome.debugger.sendCommand,
+				async () => {
+					await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Input.dispatchKeyEvent",
+						{
+							type: "keyDown",
+							key: "Backspace",
+							code: "Backspace",
+							windowsVirtualKeyCode: 8,
+						},
+					);
+					await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Input.dispatchKeyEvent",
+						{
+							type: "keyUp",
+							key: "Backspace",
+							code: "Backspace",
+							windowsVirtualKeyCode: 8,
+						},
+					);
+					await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Input.insertText",
+						{ text: params.value },
+					);
+				},
+			);
 			// Phase 3: read back what landed — React controlled inputs and
 			// masked fields can silently eat characters (opencli rule).
 			const verify = await chrome.debugger
-				.sendCommand(
-					{ tabId: tab.id },
-					"Runtime.evaluate",
-					{
-						expression: `(() => { const el = document.querySelector(${JSON.stringify(query)}); if (!el) return ""; return el.value ?? el.textContent ?? ""; })()`,
-						returnByValue: true,
-					},
-				)
+				.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+					expression: `(() => { const el = document.querySelector(${JSON.stringify(query)}); if (!el) return ""; return el.value ?? el.textContent ?? ""; })()`,
+					returnByValue: true,
+				})
 				.catch(() => null);
-			const actual = verify ? runtimeEvaluateValue(verify) ?? "" : "";
+			const actual = verify ? (runtimeEvaluateValue(verify) ?? "") : "";
 			return attachFilterMetadata(
 				{
 					ok: true,
 					data: { filled: true, method: "native-insert", value: actual },
+					meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+				},
+				denyRules.length > 0 ? interaction?.metadata : null,
+			);
+		}
+
+		case "select": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const policies = await activeFilterPolicies("select", params, tab);
+			const denyRules = interactionDenyRules(policies);
+			const query =
+				params.ref != null ? refSelector(params.ref) : params.selector;
+			const evaluated = await chrome.debugger.sendCommand(
+				{ tabId: tab.id },
+				"Runtime.evaluate",
+				{
+					expression: buildNativeSelectExpression(
+						query,
+						denyRules,
+						params.option,
+					),
+					returnByValue: true,
+				},
+			);
+			const interaction = runtimeEvaluateValue(evaluated);
+			const status = interaction?.status;
+			if (status === "denied") {
+				throw filterDeniedError(interaction.metadata);
+			}
+			if (status === "option_not_found") {
+				const err = new Error(`no option matches '${params.option}'`);
+				err.code = "OPTION_NOT_FOUND";
+				err.data = { available: interaction.available || [] };
+				throw err;
+			}
+			if (status === "not_a_select") {
+				throw Object.assign(
+					new Error(
+						"target is not a <select> — custom dropdowns need click/eval",
+					),
+					{ code: "NOT_A_SELECT" },
+				);
+			}
+			if (status !== "ok") {
+				if (params.ref != null) {
+					throw Object.assign(
+						new Error(
+							`ref ${params.ref} not found — page changed? run state again`,
+						),
+						{ code: "STALE_REF" },
+					);
+				}
+				throw Object.assign(
+					new Error(`selector not found: ${params.selector}`),
+					{ code: "SELECTOR_NO_MATCH" },
+				);
+			}
+			return attachFilterMetadata(
+				{
+					ok: true,
+					data: {
+						selected: interaction.selected,
+						method: "dom-select",
+					},
 					meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
 				},
 				denyRules.length > 0 ? interaction?.metadata : null,
@@ -994,21 +1075,18 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 						},
 					);
 					const beforeState = safeJsonParse(runtimeEvaluateValue(before));
-					await withFocusEmulation(
-						tab.id,
-						chrome.debugger.sendCommand,
-						() =>
-							chrome.debugger.sendCommand(
-								{ tabId: tab.id },
-								"Input.dispatchMouseEvent",
-								{
-									type: "mouseWheel",
-									x: 400,
-									y: 300,
-									deltaX: 0,
-									deltaY: 5000,
-								},
-							),
+					await withFocusEmulation(tab.id, chrome.debugger.sendCommand, () =>
+						chrome.debugger.sendCommand(
+							{ tabId: tab.id },
+							"Input.dispatchMouseEvent",
+							{
+								type: "mouseWheel",
+								x: 400,
+								y: 300,
+								deltaX: 0,
+								deltaY: 5000,
+							},
+						),
 					);
 					await new Promise((r) => setTimeout(r, 100));
 					const after = await chrome.debugger.sendCommand(

@@ -76,7 +76,7 @@ pub fn lint_adapter(a: &Adapter, site_folder: &str, _meta: Option<&SiteMeta>) ->
     }
     // step methods allowed
     let allowed = [
-        "goto", "wait", "eval", "text", "click", "fill", "press", "scroll",
+        "goto", "wait", "eval", "text", "click", "fill", "press", "scroll", "select",
     ];
     let mut eval_count = 0;
     for (i, step) in a.steps.iter().enumerate() {

@@ -675,6 +675,17 @@ fn build_step_obj(method: &str, expanded: &Value) -> Result<Value> {
                 .unwrap_or(5000);
             Ok(json!({"method": "wait", "params": {"selector": selector, "timeout_ms": timeout}}))
         }
+        "select" => {
+            let selector = expanded
+                .as_str()
+                .or_else(|| expanded.get("selector").and_then(|v| v.as_str()))
+                .ok_or_else(|| anyhow!("select step needs a selector and option"))?;
+            let option = expanded
+                .get("option")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow!("select step needs an option"))?;
+            Ok(json!({"method": "select", "params": {"selector": selector, "option": option}}))
+        }
         "eval" => {
             let expr = expanded
                 .as_str()
