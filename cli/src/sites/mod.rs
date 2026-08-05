@@ -53,6 +53,10 @@ pub struct Adapter {
     pub input: Option<InputDef>,
     pub output: Option<OutputDef>,
     pub steps: Vec<HashMap<String, Value>>,
+    /// Optional max seconds for the batch request. Overrides the default
+    /// estimate (30s floor); the host caps hints at 3600.
+    #[serde(default)]
+    pub timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -350,6 +354,9 @@ pub fn dispatch_site(
     }
 }
 
+// Host-side cap for _timeout_hint_secs (host/src/main.rs MAX_RESPONSE_TIMEOUT_SECS).
+const MAX_ADAPTER_TIMEOUT_SECS: u64 = 3_600;
+
 fn estimate_batch_timeout(steps: &[Value]) -> std::time::Duration {
     let mut secs: u64 = 10;
     for step in steps {
@@ -388,7 +395,12 @@ fn send_adapter_batch(
     filter_registry: &crate::filters::Registry,
 ) -> Result<Value> {
     let steps = expand_steps(&adapter.steps, args)?;
-    let timeout = estimate_batch_timeout(&steps);
+    // Default: estimate from the steps (30s floor). An adapter-declared
+    // `timeout` (seconds) overrides the estimate entirely.
+    let timeout = adapter
+        .timeout
+        .map(|t| std::time::Duration::from_secs(t.min(MAX_ADAPTER_TIMEOUT_SECS)))
+        .unwrap_or_else(|| estimate_batch_timeout(&steps));
     let timeout_secs = timeout.as_secs();
     let mut params =
         json!({"steps": steps, "stop_on_error": true, "_timeout_hint_secs": timeout_secs});
@@ -889,7 +901,14 @@ pub fn expand_steps_for_verify(
 }
 
 pub fn send_single_step(step: &Value) -> Result<Value> {
-    let mut params = json!({"steps": [step], "stop_on_error": true});
+    // Bound verify with the same estimate the real batch path uses; without a
+    // hint the host falls back to its 30s default and cuts long waits short.
+    let timeout = estimate_batch_timeout(std::slice::from_ref(step));
+    let mut params = json!({
+        "steps": [step],
+        "stop_on_error": true,
+        "_timeout_hint_secs": timeout.as_secs()
+    });
     crate::filters::Registry::load().attach_to(&mut params);
     let socket = crate::socket_client::resolve_socket(None)?;
     let request = json!({"jsonrpc":"2.0","method":"batch","params":params});
@@ -899,8 +918,7 @@ pub fn send_single_step(step: &Value) -> Result<Value> {
     use std::io::Write;
     stream.write_all(&bytes)?;
     stream.flush()?;
-    let envelope =
-        crate::cli_frame::read_response(&mut stream, std::time::Duration::from_secs(30))?;
+    let envelope = crate::cli_frame::read_response(&mut stream, timeout)?;
     let resp = match envelope.get("result") {
         Some(r) => r.clone(),
         None => match envelope.get("error") {

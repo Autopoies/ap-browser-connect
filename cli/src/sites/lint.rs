@@ -64,6 +64,16 @@ pub fn lint_adapter(a: &Adapter, site_folder: &str, _meta: Option<&SiteMeta>) ->
     if a.steps.is_empty() {
         errors.push("'steps' must be a non-empty list".to_string());
     }
+    // timeout sanity: must be positive; host caps hints at 3600s
+    if let Some(t) = a.timeout {
+        if t < 1 {
+            errors.push("'timeout' must be >= 1 second".to_string());
+        } else if t > 3600 {
+            warnings.push(format!(
+                "'timeout' {t}s exceeds the 3600s host cap; it will be clamped"
+            ));
+        }
+    }
     // step methods allowed
     let allowed = [
         "goto", "wait", "eval", "text", "click", "fill", "press", "scroll",
