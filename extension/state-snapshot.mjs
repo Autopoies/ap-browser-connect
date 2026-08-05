@@ -57,4 +57,3 @@ export function buildSnapshotExpression() {
   return JSON.stringify({ elements: out, scroll: { y: Math.round(window.scrollY), h: document.documentElement.scrollHeight, vh: window.innerHeight, vw: window.innerWidth }, url: location.href });
 })()`;
 }
-

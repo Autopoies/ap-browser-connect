@@ -27,10 +27,7 @@ import {
 	waitForMediaEnd,
 	waitForUrlChange,
 } from "./runtime-helpers.mjs";
-import {
-	buildSnapshotExpression,
-	refSelector,
-} from "./state-snapshot.mjs";
+import { buildSnapshotExpression, refSelector } from "./state-snapshot.mjs";
 
 // ── Autopoies brand favicon swap (inlined, no module import) ──
 const AP_ICON_SVG = `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="bg" x1="0" y1="0" x2="16" y2="16" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#313B42"/><stop offset="1" stop-color="#242B30"/></linearGradient></defs><rect width="16" height="16" rx="3" fill="url(#bg)"/><g transform="translate(2.88 3.00) scale(0.020)"><path d="M 237.4 310 L 258.2 310 Q 274.6 310 283.5 323.8 L 296.3 343.8 Q 326 390 271.1 390 L 130.9 390 Q 76 390 105.7 343.8 L 230.8 149.3 Q 256 110 281.2 149.3 L 436 390" fill="none" stroke="#5AA788" stroke-width="70" stroke-linecap="round" stroke-linejoin="round"/></g></svg>`;
@@ -439,17 +436,14 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			let annotation = null;
 			if (params.annotate) {
 				const evaluated = await chrome.debugger
-					.sendCommand(
-						{ tabId: tab.id },
-						"Runtime.evaluate",
-						{ expression: buildSnapshotExpression(), returnByValue: true },
-					)
+					.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+						expression: buildSnapshotExpression(),
+						returnByValue: true,
+					})
 					.catch(() => null);
 				if (evaluated) {
 					try {
-						annotation = JSON.parse(
-							runtimeEvaluateValue(evaluated) || "null",
-						);
+						annotation = JSON.parse(runtimeEvaluateValue(evaluated) || "null");
 					} catch (_) {}
 				}
 			}
