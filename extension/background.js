@@ -27,6 +27,10 @@ import {
 	waitForMediaEnd,
 	waitForUrlChange,
 } from "./runtime-helpers.mjs";
+import {
+	buildSnapshotExpression,
+	refSelector,
+} from "./state-snapshot.mjs";
 
 // ── Autopoies brand favicon swap (inlined, no module import) ──
 const AP_ICON_SVG = `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="bg" x1="0" y1="0" x2="16" y2="16" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#313B42"/><stop offset="1" stop-color="#242B30"/></linearGradient></defs><rect width="16" height="16" rx="3" fill="url(#bg)"/><g transform="translate(2.88 3.00) scale(0.020)"><path d="M 237.4 310 L 258.2 310 Q 274.6 310 283.5 323.8 L 296.3 343.8 Q 326 390 271.1 390 L 130.9 390 Q 76 390 105.7 343.8 L 230.8 149.3 Q 256 110 281.2 149.3 L 436 390" fill="none" stroke="#5AA788" stroke-width="70" stroke-linecap="round" stroke-linejoin="round"/></g></svg>`;
@@ -429,6 +433,26 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 		case "screenshot": {
 			const tab = await resolveTab(params);
 			await ensureDebugger(tab.id);
+			// Annotate: snapshot rects first; the CLI composites boxes/badges
+			// onto the PNG (DOM overlays don't survive background-tab
+			// captures — see state-snapshot.mjs note).
+			let annotation = null;
+			if (params.annotate) {
+				const evaluated = await chrome.debugger
+					.sendCommand(
+						{ tabId: tab.id },
+						"Runtime.evaluate",
+						{ expression: buildSnapshotExpression(), returnByValue: true },
+					)
+					.catch(() => null);
+				if (evaluated) {
+					try {
+						annotation = JSON.parse(
+							runtimeEvaluateValue(evaluated) || "null",
+						);
+					} catch (_) {}
+				}
+			}
 			const opts = { format: "png" };
 			if (params.full) opts.captureBeyondViewport = true;
 			const { data } = await chrome.debugger.sendCommand(
@@ -436,13 +460,36 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				"Page.captureScreenshot",
 				opts,
 			);
+			const out = {
+				tab_id: tab.id,
+				data_url: `data:image/png;base64,${data}`,
+				bytes: data.length,
+				annotated: !!params.annotate,
+			};
+			if (annotation) out.annotation = annotation;
 			return {
 				ok: true,
-				data: {
-					tab_id: tab.id,
-					data_url: `data:image/png;base64,${data}`,
-					bytes: data.length,
-				},
+				data: out,
+				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
+			};
+		}
+
+		case "state.snapshot": {
+			const tab = await resolveTab(params);
+			await ensureDebugger(tab.id);
+			const evaluated = await chrome.debugger.sendCommand(
+				{ tabId: tab.id },
+				"Runtime.evaluate",
+				{ expression: buildSnapshotExpression(), returnByValue: true },
+			);
+			const value = runtimeEvaluateValue(evaluated);
+			let data = {};
+			try {
+				data = JSON.parse(value || "{}");
+			} catch (_) {}
+			return {
+				ok: true,
+				data,
 				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
 			};
 		}
@@ -452,15 +499,12 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			await ensureDebugger(tab.id);
 			const policies = await activeFilterPolicies("click", params, tab);
 			const denyRules = interactionDenyRules(policies);
+			const query =
+				params.ref != null ? refSelector(params.ref) : params.selector;
 			const expr =
 				denyRules.length > 0
-					? buildInteractionExpression(
-							"click",
-							params.selector,
-							undefined,
-							denyRules,
-						)
-					: `((el) => { if (!el) return false; el.scrollIntoView({block:'center'}); el.click(); return true; })(document.querySelector(${JSON.stringify(params.selector)}))`;
+					? buildInteractionExpression("click", query, undefined, denyRules)
+					: `((el) => { if (!el) return false; el.scrollIntoView({block:'center'}); el.click(); return true; })(document.querySelector(${JSON.stringify(query)}))`;
 			const evaluated = await chrome.debugger.sendCommand(
 				{ tabId: tab.id },
 				"Runtime.evaluate",
@@ -472,6 +516,14 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				throw filterDeniedError(interaction.metadata);
 			}
 			if (outcome !== "ok") {
+				if (params.ref != null) {
+					throw Object.assign(
+						new Error(
+							`ref ${params.ref} not found — page changed? run state again`,
+						),
+						{ code: "STALE_REF" },
+					);
+				}
 				throw Object.assign(
 					new Error(`selector not found: ${params.selector}`),
 					{ code: "SELECTOR_NO_MATCH" },
@@ -492,15 +544,12 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			await ensureDebugger(tab.id);
 			const policies = await activeFilterPolicies("fill", params, tab);
 			const denyRules = interactionDenyRules(policies);
+			const query =
+				params.ref != null ? refSelector(params.ref) : params.selector;
 			const expr =
 				denyRules.length > 0
-					? buildInteractionExpression(
-							"fill",
-							params.selector,
-							params.value,
-							denyRules,
-						)
-					: `((el, v) => { if (!el) return false; el.focus(); el.value = v; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return true; })(document.querySelector(${JSON.stringify(params.selector)}), ${JSON.stringify(params.value)})`;
+					? buildInteractionExpression("fill", query, params.value, denyRules)
+					: `((el, v) => { if (!el) return false; el.focus(); el.value = v; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return true; })(document.querySelector(${JSON.stringify(query)}), ${JSON.stringify(params.value)})`;
 			const evaluated = await chrome.debugger.sendCommand(
 				{ tabId: tab.id },
 				"Runtime.evaluate",
@@ -512,6 +561,14 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				throw filterDeniedError(interaction.metadata);
 			}
 			if (outcome !== "ok") {
+				if (params.ref != null) {
+					throw Object.assign(
+						new Error(
+							`ref ${params.ref} not found — page changed? run state again`,
+						),
+						{ code: "STALE_REF" },
+					);
+				}
 				throw Object.assign(
 					new Error(`selector not found: ${params.selector}`),
 					{ code: "SELECTOR_NO_MATCH" },
@@ -543,14 +600,13 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			};
 		}
 
-		case "tabs.close": {
+		case "tabs.close":
 			await chrome.tabs.remove(params.tab_id);
 			return {
 				ok: true,
 				data: { closed: params.tab_id },
 				meta: await buildMeta(null),
 			};
-		}
 
 		case "tabs.get": {
 			const tab = await chrome.tabs.get(params.tab_id);
@@ -774,6 +830,8 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					() => chrome.tabs.get(tab.id),
 				);
 			} else {
+				const query =
+					params.ref != null ? refSelector(params.ref) : params.selector;
 				const start = Date.now();
 				while (Date.now() - start < timeout) {
 					await ensureDebugger(tab.id);
@@ -781,7 +839,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 						{ tabId: tab.id },
 						"Runtime.evaluate",
 						{
-							expression: `!!document.querySelector(${JSON.stringify(params.selector)})`,
+							expression: `!!document.querySelector(${JSON.stringify(query)})`,
 							returnByValue: true,
 						},
 					);
@@ -792,10 +850,9 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					await new Promise((r) => setTimeout(r, 200));
 				}
 				if (!data)
-					throw Object.assign(
-						new Error(`timeout waiting for ${params.selector}`),
-						{ code: "TIMEOUT" },
-					);
+					throw Object.assign(new Error(`timeout waiting for ${query}`), {
+						code: "TIMEOUT",
+					});
 			}
 			return {
 				ok: true,
@@ -833,7 +890,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 							returnByValue: true,
 						},
 					);
-					const beforeState = JSON.parse(runtimeEvaluateValue(before) || "{}");
+					const beforeState = safeJsonParse(runtimeEvaluateValue(before));
 					await chrome.debugger.sendCommand(
 						{ tabId: tab.id },
 						"Input.dispatchMouseEvent",
@@ -849,7 +906,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 							returnByValue: true,
 						},
 					);
-					const afterState = JSON.parse(runtimeEvaluateValue(after) || "{}");
+					const afterState = safeJsonParse(runtimeEvaluateValue(after));
 					moved = afterState.y > beforeState.y || afterState.h > beforeState.h;
 				}
 				scrolled.push(moved);
@@ -1664,6 +1721,15 @@ async function buildMeta(operated) {
 		return meta;
 	} catch (e) {
 		return { focus: { matched_operated_target: false } };
+	}
+}
+
+// Page-provided strings stay untrusted; never parse them bare.
+function safeJsonParse(value) {
+	try {
+		return JSON.parse(value || "{}") || {};
+	} catch (_) {
+		return {};
 	}
 }
 

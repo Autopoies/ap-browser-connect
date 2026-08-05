@@ -19,6 +19,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 serde_yaml = "0.9"
 dirs.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"

@@ -1,5 +1,6 @@
 //! ap-browser — operator-level CLI. Drives the user's logged-in Chrome from any agent.
 
+mod annotate;
 mod capture;
 mod cli_frame;
 mod dev;
@@ -38,6 +39,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Cmd {
     Ping,
+    State,
     Status,
     Profiles,
     Use {
@@ -60,6 +62,8 @@ enum Cmd {
         full: bool,
         #[arg(long)]
         element: Option<String>,
+        #[arg(long)]
+        annotate: bool,
     },
     Text {
         #[arg(long, default_value = "body")]
@@ -78,10 +82,10 @@ enum Cmd {
         range: Option<String>,
     },
     Click {
-        selector: String,
+        target: String,
     },
     Fill {
-        selector: String,
+        target: String,
         value: String,
     },
     Press {
@@ -335,7 +339,12 @@ fn main() -> Result<()> {
             }
             rpc(&cli, "html", params, human, |_| {})?
         }
-        Cmd::Screenshot { out, full, element } => {
+        Cmd::Screenshot {
+            out,
+            full,
+            element,
+            annotate,
+        } => {
             if let Some(sel) = element {
                 capture::element_screenshot(sel, out, cli.tab, cli.profile.as_deref())?;
                 eprintln!("[screenshot saved: {out} (element: {sel})]");
@@ -344,21 +353,33 @@ fn main() -> Result<()> {
                 if *full {
                     params["full"] = json!(true);
                 }
+                if *annotate {
+                    params["annotate"] = json!(true);
+                }
                 rpc(&cli, "screenshot", params, human, |resp| {
-                    save_screenshot(resp, out);
+                    save_screenshot(resp, out, *annotate, *full);
                 })?
             }
         }
-        Cmd::Click { selector } => {
-            rpc(&cli, "click", json!({"selector": selector}), human, |_| {})?
-        }
-        Cmd::Fill { selector, value } => rpc(
+        Cmd::Click { target } => rpc(
             &cli,
-            "fill",
-            json!({"selector": selector, "value": value}),
+            "click",
+            target_params(target, json!({})),
             human,
             |_| {},
         )?,
+        Cmd::Fill { target, value } => rpc(
+            &cli,
+            "fill",
+            target_params(target, json!({"value": value})),
+            human,
+            |_| {},
+        )?,
+        Cmd::State => rpc(&cli, "state.snapshot", json!({}), human, |resp| {
+            if human {
+                render_state_tree(resp);
+            }
+        })?,
         Cmd::Press { keys } => rpc(&cli, "press", json!({"keys": keys}), human, |_| {})?,
         Cmd::Wait {
             selector,
@@ -611,6 +632,49 @@ fn requested_timeout_ms(params: &Value) -> u64 {
     direct.max(batch)
 }
 
+/// opencli-style target contract: a pure-integer target is a `state` ref,
+/// anything else is a CSS selector. (A bare number is never valid CSS, so
+/// the interpretation is unambiguous.)
+fn target_params(target: &str, mut extra: Value) -> Value {
+    if let Ok(n) = target.parse::<u64>() {
+        extra["ref"] = json!(n);
+    } else {
+        extra["selector"] = json!(target);
+    }
+    extra
+}
+
+fn render_state_tree(resp: &mut Value) {
+    if resp.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+        return;
+    }
+    let Some(elements) = resp
+        .get_mut("data")
+        .and_then(|d| d.get_mut("elements"))
+        .and_then(|e| e.as_array_mut())
+    else {
+        return;
+    };
+    let lines: Vec<String> = elements
+        .iter()
+        .filter_map(|e| {
+            let ref_n = e.get("ref")?.as_u64()?;
+            let tag = e.get("tag").and_then(|v| v.as_str()).unwrap_or("?");
+            let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let y = e.get("y").and_then(|v| v.as_i64()).unwrap_or(0);
+            Some(format!("[{ref_n}] {tag:<8} {name}  (y={y})"))
+        })
+        .collect();
+    let tree = if lines.is_empty() {
+        "(no interactive elements in viewport)".to_string()
+    } else {
+        lines.join("\n")
+    };
+    if let Some(data) = resp.get_mut("data") {
+        *data = json!(tree);
+    }
+}
+
 fn wait_params(
     selector: Option<&str>,
     url: Option<&str>,
@@ -632,10 +696,14 @@ fn wait_params(
     }
     let selector = selector
         .ok_or_else(|| anyhow!("wait requires a selector, --url-change-from, or --media-ended"))?;
+    if let Ok(n) = selector.parse::<u64>() {
+        // Numeric target = state ref (opencli target contract).
+        return Ok(json!({"ref": n, "timeout_ms": timeout_ms}));
+    }
     Ok(json!({"selector": selector, "timeout_ms": timeout_ms}))
 }
 
-fn save_screenshot(resp: &mut Value, out: &str) {
+fn save_screenshot(resp: &mut Value, out: &str, annotate: bool, full: bool) {
     let data_url = resp
         .get("data")
         .and_then(|d| d.get("data_url"))
@@ -643,6 +711,22 @@ fn save_screenshot(resp: &mut Value, out: &str) {
         .unwrap_or("");
     let decoded = base64_decode(data_url.trim_start_matches("data:image/png;base64,"));
     let result = decoded.and_then(|raw| {
+        let raw = if annotate {
+            match resp
+                .get("data")
+                .and_then(|d| d.get("annotation"))
+                .and_then(Value::as_object)
+            {
+                Some(annotation) => crate::annotate::apply_annotation(
+                    &raw,
+                    &Value::Object(annotation.clone()),
+                    full,
+                )?,
+                None => raw,
+            }
+        } else {
+            raw
+        };
         std::fs::write(out, &raw)?;
         Ok(raw.len())
     });
@@ -808,7 +892,11 @@ pub fn print_human(resp: &Value) {
         return;
     }
     if let Some(data) = resp.get("data") {
-        println!("{}", serde_json::to_string(data).unwrap_or_default());
+        if let Some(s) = data.as_str() {
+            println!("{s}");
+        } else {
+            println!("{}", serde_json::to_string(data).unwrap_or_default());
+        }
     } else {
         println!("{}", serde_json::to_string(resp).unwrap_or_default());
     }
@@ -1182,7 +1270,7 @@ mod tests {
             "data": {"tab_id": 7, "data_url": "data:image/png;base64,AQID", "bytes": 4}
         });
 
-        save_screenshot(&mut response, path.to_str().unwrap());
+        save_screenshot(&mut response, path.to_str().unwrap(), false, false);
 
         assert_eq!(std::fs::read(&path).unwrap(), [1, 2, 3]);
         assert!(response["data"].get("data_url").is_none());
