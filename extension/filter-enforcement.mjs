@@ -285,12 +285,85 @@ export function buildInteractionExpression(kind, targetSelector, value, rules) {
   return `(() => {
     const emptyFilterMetadata = ${emptyFilterMetadata.toString()};
     const performGuardedInteraction = ${performGuardedInteraction.toString()};
+
     return performGuardedInteraction(
       document,
       ${JSON.stringify(targetSelector)},
       ${JSON.stringify(rules)},
       ${JSON.stringify(kind)},
       ${JSON.stringify(value)}
+    );
+  })()`;
+}
+
+// Resolve-only variant for native-input clicks: same filter guard and
+// scrollIntoView as performGuardedInteraction, but instead of el.click() it
+// returns the element's viewport rect so the extension can dispatch real CDP
+// mouse events (Input.dispatchMouseEvent) at the element center. SPA custom
+// controls (Reddit, Radix/MUI) react to pointer/mouse events that el.click()
+// never synthesizes.
+export function resolveForNativeClick(documentObject, targetSelector, rules) {
+  const metadata = emptyFilterMetadata();
+  const target = documentObject.querySelector(targetSelector);
+  if (!target) return { status: "not_found", metadata };
+
+  const deniedPolicyIds = new Set();
+  for (const rule of rules || []) {
+    let invalidForPolicy = false;
+    for (const selector of rule.selectors || []) {
+      try {
+        if (target.matches(selector) || target.closest?.(selector)) {
+          deniedPolicyIds.add(rule.policy_id);
+        }
+      } catch (_) {
+        metadata.invalid_selectors += 1;
+        invalidForPolicy = true;
+      }
+    }
+    if (invalidForPolicy) metadata.matched_policy_ids.push(rule.policy_id);
+  }
+
+  if (deniedPolicyIds.size > 0) {
+    metadata.matched_policy_ids = [
+      ...new Set([...metadata.matched_policy_ids, ...deniedPolicyIds]),
+    ];
+    metadata.denied_interactions = 1;
+    return { status: "denied", metadata };
+  }
+
+  target.scrollIntoView({ block: "center" });
+  const r = target.getBoundingClientRect();
+  // Hit-test the element center: real input events land on whatever is
+  // topmost there, so only use them when that is the target or one of its
+  // descendants. Wrapper cards / overlays covering the center (Reddit's
+  // community-highlight-card, tooltip layers) would swallow the click —
+  // those must go through el.click(), which ignores hit-testing.
+  const cx = r.x + r.width / 2;
+  const cy = r.y + r.height / 2;
+  let hitOk = false;
+  if (r.width >= 1 && r.height >= 1 && cx >= 0 && cy >= 0) {
+    const hit = documentObject.elementFromPoint(cx, cy);
+    hitOk = hit === target || target.contains(hit);
+  }
+  return {
+    status: "ok",
+    metadata,
+    x: r.x,
+    y: r.y,
+    w: r.width,
+    h: r.height,
+    hitOk,
+  };
+}
+
+export function buildNativeClickResolveExpression(targetSelector, rules) {
+  return `(() => {
+    const emptyFilterMetadata = ${emptyFilterMetadata.toString()};
+    const resolveForNativeClick = ${resolveForNativeClick.toString()};
+    return resolveForNativeClick(
+      document,
+      ${JSON.stringify(targetSelector)},
+      ${JSON.stringify(rules)}
     );
   })()`;
 }

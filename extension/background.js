@@ -4,6 +4,7 @@
 import {
 	buildDomReadExpression,
 	buildInteractionExpression,
+	buildNativeClickResolveExpression,
 	domDropRules,
 	hasFilterDiagnostics,
 	interactionDenyRules,
@@ -495,14 +496,18 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const denyRules = interactionDenyRules(policies);
 			const query =
 				params.ref != null ? refSelector(params.ref) : params.selector;
-			const expr =
-				denyRules.length > 0
-					? buildInteractionExpression("click", query, undefined, denyRules)
-					: `((el) => { if (!el) return false; el.scrollIntoView({block:'center'}); el.click(); return true; })(document.querySelector(${JSON.stringify(query)}))`;
+			// Phase 1: resolve + filter guard + scrollIntoView, returning the
+			// element's viewport rect (see resolveForNativeClick).
 			const evaluated = await chrome.debugger.sendCommand(
 				{ tabId: tab.id },
 				"Runtime.evaluate",
-				{ expression: expr, returnByValue: true },
+				{
+					expression: buildNativeClickResolveExpression(
+						query,
+						denyRules,
+					),
+					returnByValue: true,
+				},
 			);
 			const interaction = runtimeEvaluateValue(evaluated);
 			const outcome = interactionOutcome(interaction, denyRules.length > 0);
@@ -523,10 +528,73 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					{ code: "SELECTOR_NO_MATCH" },
 				);
 			}
+			// Phase 2: real input events at the element center — SPA custom
+			// controls (Reddit, Radix/MUI) react to pointer/mouse events that
+			// el.click() never synthesizes. el.click() remains the fallback
+			// when the center is covered (hitOk=false: wrapper cards,
+			// overlays, zero-size elements).
+			const cx = interaction.x + interaction.w / 2;
+			const cy = interaction.y + interaction.h / 2;
+			let method = "native-input";
+			if (!interaction.hitOk) {
+				await chrome.debugger.sendCommand(
+					{ tabId: tab.id },
+					"Runtime.evaluate",
+					{
+						expression: `(() => { const el = document.querySelector(${JSON.stringify(query)}); if (!el) return false; el.click(); return true; })()`,
+						returnByValue: true,
+					},
+				);
+				method = "js-click";
+			} else {
+				const events = [
+					{ type: "mouseMoved", x: cx, y: cy },
+					{
+						type: "mousePressed",
+						x: cx,
+						y: cy,
+						button: "left",
+						buttons: 1,
+						clickCount: 1,
+					},
+					{
+						type: "mouseReleased",
+						x: cx,
+						y: cy,
+						button: "left",
+						buttons: 0,
+						clickCount: 1,
+					},
+				];
+				// CDP input events don't route to background tabs; focus
+				// emulation makes the page accept them without stealing focus.
+				try {
+					await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Emulation.setFocusEmulationEnabled",
+						{ enabled: true },
+					);
+					for (const ev of events) {
+						await chrome.debugger.sendCommand(
+							{ tabId: tab.id },
+							"Input.dispatchMouseEvent",
+							ev,
+						);
+					}
+				} finally {
+					await chrome.debugger
+						.sendCommand(
+							{ tabId: tab.id },
+							"Emulation.setFocusEmulationEnabled",
+							{ enabled: false },
+						)
+						.catch(() => {});
+				}
+			}
 			return attachFilterMetadata(
 				{
 					ok: true,
-					data: { clicked: true },
+					data: { clicked: true, method },
 					meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
 				},
 				denyRules.length > 0 ? interaction?.metadata : null,
@@ -681,6 +749,14 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const tab = await resolveTab(params);
 			await ensureDebugger(tab.id);
 			const keyInput = params.keys || params.key || "";
+			// CDP input events don't route to background tabs; focus emulation
+			// makes the page accept them without stealing focus.
+			await chrome.debugger.sendCommand(
+				{ tabId: tab.id },
+				"Emulation.setFocusEmulationEnabled",
+				{ enabled: true },
+			);
+			try {
 
 			const SPECIAL_KEYS = {
 				Enter: { code: "Enter", key: "Enter", vk: 13, text: "\r" },
@@ -787,6 +863,15 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					"Input.insertText",
 					{ text: keyInput },
 				);
+			}
+			} finally {
+				await chrome.debugger
+					.sendCommand(
+						{ tabId: tab.id },
+						"Emulation.setFocusEmulationEnabled",
+						{ enabled: false },
+					)
+					.catch(() => {});
 			}
 			return {
 				ok: true,
