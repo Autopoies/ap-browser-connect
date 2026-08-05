@@ -266,6 +266,19 @@ fn main() -> Result<()> {
             let json = raw_args.iter().any(|a| a == "--json");
             return doctor::run(fix, json);
         }
+        // `ap-browser --tab 5 hackernews top ...` — agents put global flags
+        // first (the static CLI accepts both orders), but adapter commands are
+        // argv[1]-dispatched and only see flags after the subcommand. Rewrite
+        // leading global flags to the tail when argv[1] is a known site.
+        if let Some(reordered) = reorder_leading_flags(&raw_args) {
+            let registry = sites::Registry::load();
+            let site = &reordered[0];
+            let cmd = reordered.get(1).cloned().unwrap_or_else(|| {
+                eprintln!("Usage: ap-browser {} <command> [args]", site);
+                std::process::exit(1);
+            });
+            return sites::dispatch_site(&registry, site, &cmd, &reordered[2..]);
+        }
         if !sites::RESERVED.contains(&first.as_str()) {
             let registry = sites::Registry::load();
             if registry.match_site(first).is_some() {
@@ -935,6 +948,82 @@ pub fn print_human(resp: &Value) {
         }
     } else {
         println!("{}", serde_json::to_string(resp).unwrap_or_default());
+    }
+}
+
+/// Leading global flags before a dynamic adapter command
+/// (`ap-browser --tab 5 hackernews top --limit 3`) get rewritten to the tail
+/// (`ap-browser hackernews top --limit 3 --tab 5`) when argv[1] matches a
+/// known adapter site. Only flags the adapter path understands are moved:
+/// the value-taking `--tab/--profile/--timeout/--format/--map` and the
+/// valueless `--human/--read-stdin`. Returns None when the first token is not
+/// a flag or argv[1] is not a site.
+fn reorder_leading_flags(raw: &[String]) -> Option<Vec<String>> {
+    let first = raw.first()?;
+    if !first.starts_with("--") || raw.len() < 2 {
+        return None;
+    }
+    let mut i = 0;
+    let mut leading: Vec<String> = Vec::new();
+    while i < raw.len() && raw[i].starts_with("--") {
+        let a = raw[i].clone();
+        leading.push(a.clone());
+        i += 1;
+        if matches!(
+            a.as_str(),
+            "--tab" | "--profile" | "--timeout" | "--format" | "--map"
+        ) && i < raw.len()
+        {
+            leading.push(raw[i].clone());
+            i += 1;
+        }
+    }
+    if i >= raw.len() {
+        return None;
+    }
+    let registry = sites::Registry::load();
+    if !sites::RESERVED.contains(&raw[i].as_str()) && registry.match_site(&raw[i]).is_some() {
+        let mut reordered: Vec<String> = raw[i..].to_vec();
+        reordered.extend(leading);
+        Some(reordered)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod flag_reorder_tests {
+    use super::reorder_leading_flags;
+
+    #[test]
+    fn moves_leading_global_flags_to_tail_for_site_commands() {
+        let reordered = reorder_leading_flags(&[
+            "--tab".into(),
+            "5".into(),
+            "hackernews".into(),
+            "top".into(),
+            "--limit".into(),
+            "3".into(),
+        ])
+        .expect("reorder should match hackernews");
+        assert_eq!(
+            reordered,
+            vec![
+                "hackernews".to_string(),
+                "top".to_string(),
+                "--limit".to_string(),
+                "3".to_string(),
+                "--tab".to_string(),
+                "5".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn leaves_normal_commands_untouched() {
+        assert!(reorder_leading_flags(&["goto".into(), "https://x".into()]).is_none());
+        assert!(reorder_leading_flags(&["--tab".into(), "5".into(), "goto".into()]).is_none());
+        assert!(reorder_leading_flags(&["--tab".into(), "5".into()]).is_none());
     }
 }
 
