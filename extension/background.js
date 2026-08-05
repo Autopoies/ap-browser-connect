@@ -204,7 +204,16 @@ async function handleNativeMessage(msg, port) {
 	const params = msg.params || {};
 	const lockedTab = params.tab_id != null;
 	const META_METHODS = new Set(["ping", "info", "keepalive", "hello"]);
-	const NO_TAB_METHODS = new Set(["download.browser"]);
+	// Tab management never attaches the active tab — it must keep working even
+	// when the active tab is a chrome:// or chrome-extension:// page.
+	const NO_TAB_METHODS = new Set([
+		"download.browser",
+		"tabs.new",
+		"tabs.list",
+		"tabs.get",
+		"tabs.close",
+		"tabs.activate",
+	]);
 	const NO_RESTORE_PREFIX = "dev.";
 	let operatedTab = null;
 	try {
@@ -1028,9 +1037,17 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				);
 				const hits = runtimeEvaluateValue(evaluated);
 				if (Array.isArray(hits) && hits.length > 0) {
-					data = { matched: true, url: hits[0], waited_ms: 0, source: "history" };
+					data = {
+						matched: true,
+						url: hits[0],
+						waited_ms: 0,
+						source: "history",
+					};
 				} else {
-					await chrome.debugger.sendCommand({ tabId: tab.id }, "Network.enable");
+					await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Network.enable",
+					);
 					data = await waitForXhr(tab.id, params.xhr, timeout);
 				}
 			} else {
@@ -1179,7 +1196,8 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			// adapter's canonical domain and run the steps there. Same-host
 			// tabs keep the "adapter reads the current page" contract.
 			if (params._auto_tab && params.tab_id == null) {
-				const current = operatedTab || (await resolveTab(params).catch(() => null));
+				const current =
+					operatedTab || (await resolveTab(params).catch(() => null));
 				const host = current?.url ? safeHostOf(current.url) : null;
 				const want = normalizeHost(params._auto_tab.domain || "");
 				if (!host || !want || host !== want) {
@@ -1727,7 +1745,10 @@ function safeHostOf(url) {
 	}
 }
 function normalizeHost(domain) {
-	return domain.replace(/^https?:\/\//, "").replace(/^www\./, "").toLowerCase();
+	return domain
+		.replace(/^https?:\/\//, "")
+		.replace(/^www\./, "")
+		.toLowerCase();
 }
 
 // Wait until an XHR/fetch whose URL contains `urlSubstr` completes.

@@ -271,8 +271,20 @@ fn main() -> Result<()> {
         // `ap-browser --tab 5 hackernews top ...` — agents put global flags
         // first (the static CLI accepts both orders), but adapter commands are
         // argv[1]-dispatched and only see flags after the subcommand. Rewrite
-        // leading global flags to the tail when argv[1] is a known site.
+        // leading global flags to the tail when argv[1] is a known site or a
+        // reserved (manually-dispatched) command.
         if let Some(reordered) = reorder_leading_flags(&raw_args) {
+            if reordered[0] == "sites" {
+                return run_sites_command(&reordered[1..]);
+            }
+            if reordered[0] == "dev" {
+                return dev::dispatch(&reordered[1..]);
+            }
+            if reordered[0] == "doctor" {
+                let fix = reordered.iter().any(|a| a == "--fix");
+                let json = reordered.iter().any(|a| a == "--json");
+                return doctor::run(fix, json);
+            }
             let registry = sites::Registry::load();
             let site = &reordered[0];
             let cmd = reordered.get(1).cloned().unwrap_or_else(|| {
@@ -997,7 +1009,7 @@ fn reorder_leading_flags(raw: &[String]) -> Option<Vec<String>> {
         return None;
     }
     let registry = sites::Registry::load();
-    if !sites::RESERVED.contains(&raw[i].as_str()) && registry.match_site(&raw[i]).is_some() {
+    if sites::RESERVED.contains(&raw[i].as_str()) || registry.match_site(&raw[i]).is_some() {
         let mut reordered: Vec<String> = raw[i..].to_vec();
         reordered.extend(leading);
         Some(reordered)
@@ -1035,10 +1047,38 @@ mod flag_reorder_tests {
     }
 
     #[test]
+    fn moves_leading_global_flags_to_tail_for_reserved_commands() {
+        let reordered = reorder_leading_flags(&[
+            "--profile".into(),
+            "Study".into(),
+            "dev".into(),
+            "extension".into(),
+            "reload".into(),
+        ])
+        .expect("reorder should match dev");
+        assert_eq!(
+            reordered,
+            vec![
+                "dev".to_string(),
+                "extension".to_string(),
+                "reload".to_string(),
+                "--profile".to_string(),
+                "Study".to_string()
+            ]
+        );
+    }
+
+    #[test]
     fn leaves_normal_commands_untouched() {
         assert!(reorder_leading_flags(&["goto".into(), "https://x".into()]).is_none());
-        assert!(reorder_leading_flags(&["--tab".into(), "5".into(), "goto".into()]).is_none());
         assert!(reorder_leading_flags(&["--tab".into(), "5".into()]).is_none());
+        // RESERVED commands with leading flags are reordered too:
+        let reordered = reorder_leading_flags(&["--tab".into(), "5".into(), "goto".into()])
+            .expect("goto is reserved and should be reordered");
+        assert_eq!(
+            reordered,
+            vec!["goto".to_string(), "--tab".to_string(), "5".to_string()]
+        );
     }
 }
 
