@@ -1,19 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import vm from "node:vm";
 
 import {
   buildDomReadExpression,
-  buildInteractionExpression,
+  buildNativeClickResolveExpression,
+  buildNativeFillResolveExpression,
   domDropRules,
   filterDomSubtree,
   interactionDenyRules,
   interactionOutcome,
   matchingPolicies,
   mergeFilterMetadata,
-  performGuardedInteraction,
   redactResult,
   resolveBatchStepTab,
   resolveFilterOperationTab,
+  resolveForNativeClick,
+  resolveForNativeFill,
   shouldFilterOuterResponse,
 } from "./filter-enforcement.mjs";
 
@@ -244,8 +247,8 @@ test("generated DOM read expression executes the same clone-only enforcement", (
   ]);
   const expression = buildDomReadExpression("main", "text", domDropRules([POLICY]));
 
-  const filtered = Function("document", `return ${expression}`)({
-    querySelector: () => live,
+  const filtered = new vm.Script(expression).runInNewContext({
+    document: { querySelector: () => live },
   });
 
   assert.equal(filtered.value, "Legitimate question");
@@ -315,32 +318,37 @@ test("unclosed literal blocks are preserved", () => {
   assert.equal(filtered.metadata.redacted_blocks, 0);
 });
 
-test("interaction guard denies a matching target before invoking its handler", () => {
+test("interaction guard denies a matching target before any action", () => {
   let clicked = 0;
-  let filled = 0;
+  let focused = 0;
   const deniedSelector = '[data-action="acknowledge-guidelines"]';
   const target = {
     matches: (selector) => selector === deniedSelector,
     closest: () => null,
     scrollIntoView: () => {},
     click: () => { clicked += 1; },
-    focus: () => {},
-    dispatchEvent: () => { filled += 1; },
-    value: "",
+    focus: () => { focused += 1; },
   };
   const document = { querySelector: () => target };
   const rules = interactionDenyRules([POLICY]);
 
-  const click = performGuardedInteraction(document, "button", rules, "click");
-  const fill = performGuardedInteraction(document, "button", rules, "fill", "secret");
+  const click = resolveForNativeClick(document, "button", rules);
+  const fill = resolveForNativeFill(document, "button", rules);
 
   assert.equal(click.status, "denied");
   assert.equal(fill.status, "denied");
   assert.equal(clicked, 0);
-  assert.equal(filled, 0);
+  assert.equal(focused, 0);
   assert.deepEqual(click.metadata.matched_policy_ids, ["coursera/content-integrity"]);
   assert.equal(click.metadata.denied_interactions, 1);
-  assert.match(buildInteractionExpression("click", "button", undefined, rules), /performGuardedInteraction|function/);
+  assert.match(
+    buildNativeClickResolveExpression("button", rules),
+    /guardInteractionTarget|function/,
+  );
+  assert.match(
+    buildNativeFillResolveExpression("button", rules),
+    /guardInteractionTarget|function/,
+  );
 });
 
 test("generated interaction expression denies before invoking a page handler", () => {
@@ -352,15 +360,13 @@ test("generated interaction expression denies before invoking a page handler", (
     scrollIntoView: () => {},
     click: () => { clicked += 1; },
   };
-  const expression = buildInteractionExpression(
-    "click",
+  const expression = buildNativeClickResolveExpression(
     "button",
-    undefined,
     interactionDenyRules([POLICY]),
   );
 
-  const result = Function("document", `return ${expression}`)({
-    querySelector: () => target,
+  const result = new vm.Script(expression).runInNewContext({
+    document: { querySelector: () => target },
   });
 
   assert.equal(result.status, "denied");
@@ -369,21 +375,50 @@ test("generated interaction expression denies before invoking a page handler", (
 });
 
 test("interaction guard permits non-matching targets", () => {
-  let clicked = 0;
   const target = {
     matches: () => false,
     closest: () => null,
     scrollIntoView: () => {},
-    click: () => { clicked += 1; },
+    focus: () => {},
+    getBoundingClientRect: () => ({ x: 10, y: 20, width: 30, height: 40 }),
+    contains: () => false,
+    select: () => {},
   };
-  const result = performGuardedInteraction(
+  const document = {
+    querySelector: () => target,
+    elementFromPoint: () => target,
+  };
+  const click = resolveForNativeClick(
+    document,
+    "button",
+    interactionDenyRules([POLICY]),
+  );
+  const fill = resolveForNativeFill(
+    document,
+    "button",
+    interactionDenyRules([POLICY]),
+  );
+  assert.equal(click.status, "ok");
+  assert.equal(click.hitOk, true);
+  assert.equal(fill.status, "ok");
+});
+
+test("fill resolve selects existing content for replacement", () => {
+  let selected = 0;
+  const target = {
+    matches: () => false,
+    closest: () => null,
+    scrollIntoView: () => {},
+    focus: () => {},
+    select: () => { selected += 1; },
+  };
+  const result = resolveForNativeFill(
     { querySelector: () => target },
     "button",
     interactionDenyRules([POLICY]),
-    "click",
   );
   assert.equal(result.status, "ok");
-  assert.equal(clicked, 1);
+  assert.equal(selected, 1);
 });
 
 test("guarded interaction fails closed when Runtime.evaluate has no valid status", () => {

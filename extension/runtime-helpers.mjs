@@ -2,6 +2,26 @@ export function isCurrentPort(currentPort, disconnectedPort) {
 	return currentPort === disconnectedPort;
 }
 
+// CDP Input.* events don't route to background tabs (verified: key and mouse
+// events are dropped on silent tabs). Focus emulation makes the page accept
+// them without stealing real focus; always restore it afterwards.
+export async function withFocusEmulation(tabId, sendCommand, fn) {
+	await sendCommand(
+		{ tabId },
+		"Emulation.setFocusEmulationEnabled",
+		{ enabled: true },
+	);
+	try {
+		return await fn();
+	} finally {
+		await sendCommand(
+			{ tabId },
+			"Emulation.setFocusEmulationEnabled",
+			{ enabled: false },
+		).catch(() => {});
+	}
+}
+
 export function nextReconnectDelay(delayMs) {
 	return Math.min(delayMs * 2, 30_000);
 }

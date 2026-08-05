@@ -12,7 +12,38 @@ import {
 	settleWithin,
 	waitForMediaEnd,
 	waitForUrlChange,
+	withFocusEmulation,
 } from "./runtime-helpers.mjs";
+
+test("focus emulation wraps work and always restores", async () => {
+	const calls = [];
+	const sendCommand = async (_target, method, params) => {
+		calls.push([method, params?.enabled]);
+	};
+	let ran = 0;
+	await withFocusEmulation(7, sendCommand, async () => {
+		ran += 1;
+	});
+	assert.equal(ran, 1);
+	assert.deepEqual(calls, [
+		["Emulation.setFocusEmulationEnabled", true],
+		["Emulation.setFocusEmulationEnabled", false],
+	]);
+});
+
+test("focus emulation restores even when the work throws", async () => {
+	const calls = [];
+	const sendCommand = async (_t, method, params) => {
+		calls.push([method, params?.enabled]);
+	};
+	await assert.rejects(
+		withFocusEmulation(7, sendCommand, async () => {
+			throw new Error("boom");
+		}),
+		/boom/,
+	);
+	assert.equal(calls.filter((c) => c[1] === false).length, 1);
+});
 
 test("only the current native port may clear itself and reconnect", () => {
 	const oldPort = {};

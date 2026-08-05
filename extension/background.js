@@ -3,8 +3,8 @@
 
 import {
 	buildDomReadExpression,
-	buildInteractionExpression,
 	buildNativeClickResolveExpression,
+	buildNativeFillResolveExpression,
 	domDropRules,
 	hasFilterDiagnostics,
 	interactionDenyRules,
@@ -27,6 +27,7 @@ import {
 	settleWithin,
 	waitForMediaEnd,
 	waitForUrlChange,
+	withFocusEmulation,
 } from "./runtime-helpers.mjs";
 import { buildSnapshotExpression, refSelector } from "./state-snapshot.mjs";
 
@@ -502,10 +503,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				{ tabId: tab.id },
 				"Runtime.evaluate",
 				{
-					expression: buildNativeClickResolveExpression(
-						query,
-						denyRules,
-					),
+					expression: buildNativeClickResolveExpression(query, denyRules),
 					returnByValue: true,
 				},
 			);
@@ -568,12 +566,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				];
 				// CDP input events don't route to background tabs; focus
 				// emulation makes the page accept them without stealing focus.
-				try {
-					await chrome.debugger.sendCommand(
-						{ tabId: tab.id },
-						"Emulation.setFocusEmulationEnabled",
-						{ enabled: true },
-					);
+				await withFocusEmulation(tab.id, chrome.debugger.sendCommand, async () => {
 					for (const ev of events) {
 						await chrome.debugger.sendCommand(
 							{ tabId: tab.id },
@@ -581,15 +574,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 							ev,
 						);
 					}
-				} finally {
-					await chrome.debugger
-						.sendCommand(
-							{ tabId: tab.id },
-							"Emulation.setFocusEmulationEnabled",
-							{ enabled: false },
-						)
-						.catch(() => {});
-				}
+				});
 			}
 			return attachFilterMetadata(
 				{
@@ -608,14 +593,15 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const denyRules = interactionDenyRules(policies);
 			const query =
 				params.ref != null ? refSelector(params.ref) : params.selector;
-			const expr =
-				denyRules.length > 0
-					? buildInteractionExpression("fill", query, params.value, denyRules)
-					: `((el, v) => { if (!el) return false; el.focus(); el.value = v; el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); return true; })(document.querySelector(${JSON.stringify(query)}), ${JSON.stringify(params.value)})`;
+			// Phase 1: resolve + filter guard + scrollIntoView + focus + select
+			// existing content (see resolveForNativeFill).
 			const evaluated = await chrome.debugger.sendCommand(
 				{ tabId: tab.id },
 				"Runtime.evaluate",
-				{ expression: expr, returnByValue: true },
+				{
+					expression: buildNativeFillResolveExpression(query, denyRules),
+					returnByValue: true,
+				},
 			);
 			const interaction = runtimeEvaluateValue(evaluated);
 			const outcome = interactionOutcome(interaction, denyRules.length > 0);
@@ -636,10 +622,44 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					{ code: "SELECTOR_NO_MATCH" },
 				);
 			}
+			// Phase 2: real keystrokes — Backspace clears the selection, then
+			// insertText types the value. Works for <input>/<textarea> AND
+			// contenteditable (Reddit comment boxes, rich editors), which
+			// el.value assignment can't touch.
+			await withFocusEmulation(tab.id, chrome.debugger.sendCommand, async () => {
+				await chrome.debugger.sendCommand(
+					{ tabId: tab.id },
+					"Input.dispatchKeyEvent",
+					{ type: "keyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
+				);
+				await chrome.debugger.sendCommand(
+					{ tabId: tab.id },
+					"Input.dispatchKeyEvent",
+					{ type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8 },
+				);
+				await chrome.debugger.sendCommand(
+					{ tabId: tab.id },
+					"Input.insertText",
+					{ text: params.value },
+				);
+			});
+			// Phase 3: read back what landed — React controlled inputs and
+			// masked fields can silently eat characters (opencli rule).
+			const verify = await chrome.debugger
+				.sendCommand(
+					{ tabId: tab.id },
+					"Runtime.evaluate",
+					{
+						expression: `(() => { const el = document.querySelector(${JSON.stringify(query)}); if (!el) return ""; return el.value ?? el.textContent ?? ""; })()`,
+						returnByValue: true,
+					},
+				)
+				.catch(() => null);
+			const actual = verify ? runtimeEvaluateValue(verify) ?? "" : "";
 			return attachFilterMetadata(
 				{
 					ok: true,
-					data: { filled: true },
+					data: { filled: true, method: "native-insert", value: actual },
 					meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
 				},
 				denyRules.length > 0 ? interaction?.metadata : null,
@@ -757,113 +777,117 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				{ enabled: true },
 			);
 			try {
-
-			const SPECIAL_KEYS = {
-				Enter: { code: "Enter", key: "Enter", vk: 13, text: "\r" },
-				Tab: { code: "Tab", key: "Tab", vk: 9, text: "\t" },
-				Escape: { code: "Escape", key: "Escape", vk: 27, text: "\x1b" },
-				Backspace: { code: "Backspace", key: "Backspace", vk: 8, text: "\b" },
-				Delete: { code: "Delete", key: "Delete", vk: 46, text: "" },
-				ArrowUp: { code: "ArrowUp", key: "ArrowUp", vk: 38, text: "" },
-				ArrowDown: { code: "ArrowDown", key: "ArrowDown", vk: 40, text: "" },
-				ArrowLeft: { code: "ArrowLeft", key: "ArrowLeft", vk: 37, text: "" },
-				ArrowRight: { code: "ArrowRight", key: "ArrowRight", vk: 39, text: "" },
-				Home: { code: "Home", key: "Home", vk: 36, text: "" },
-				End: { code: "End", key: "End", vk: 35, text: "" },
-				PageUp: { code: "PageUp", key: "PageUp", vk: 33, text: "" },
-				PageDown: { code: "PageDown", key: "PageDown", vk: 34, text: "" },
-				Space: { code: "Space", key: " ", vk: 32, text: " " },
-			};
-
-			const MODIFIER_VK = { Control: 17, Shift: 16, Alt: 18, Meta: 91 };
-
-			if (SPECIAL_KEYS[keyInput]) {
-				const k = SPECIAL_KEYS[keyInput];
-				await chrome.debugger.sendCommand(
-					{ tabId: tab.id },
-					"Input.dispatchKeyEvent",
-					{
-						type: "keyDown",
-						code: k.code,
-						key: k.key,
-						windowsVirtualKeyCode: k.vk,
-						text: k.text || undefined,
+				const SPECIAL_KEYS = {
+					Enter: { code: "Enter", key: "Enter", vk: 13, text: "\r" },
+					Tab: { code: "Tab", key: "Tab", vk: 9, text: "\t" },
+					Escape: { code: "Escape", key: "Escape", vk: 27, text: "\x1b" },
+					Backspace: { code: "Backspace", key: "Backspace", vk: 8, text: "\b" },
+					Delete: { code: "Delete", key: "Delete", vk: 46, text: "" },
+					ArrowUp: { code: "ArrowUp", key: "ArrowUp", vk: 38, text: "" },
+					ArrowDown: { code: "ArrowDown", key: "ArrowDown", vk: 40, text: "" },
+					ArrowLeft: { code: "ArrowLeft", key: "ArrowLeft", vk: 37, text: "" },
+					ArrowRight: {
+						code: "ArrowRight",
+						key: "ArrowRight",
+						vk: 39,
+						text: "",
 					},
-				);
-				await chrome.debugger.sendCommand(
-					{ tabId: tab.id },
-					"Input.dispatchKeyEvent",
-					{
-						type: "keyUp",
-						code: k.code,
-						key: k.key,
-						windowsVirtualKeyCode: k.vk,
-					},
-				);
-			} else if (keyInput.includes("+")) {
-				const parts = keyInput.split("+").map((s) => s.trim());
-				const mainKey = parts[parts.length - 1];
-				const modifiers = parts.slice(0, -1);
-				const mainVK =
-					mainKey.length === 1
-						? mainKey.toUpperCase().charCodeAt(0)
-						: MODIFIER_VK[mainKey] || 0;
+					Home: { code: "Home", key: "Home", vk: 36, text: "" },
+					End: { code: "End", key: "End", vk: 35, text: "" },
+					PageUp: { code: "PageUp", key: "PageUp", vk: 33, text: "" },
+					PageDown: { code: "PageDown", key: "PageDown", vk: 34, text: "" },
+					Space: { code: "Space", key: " ", vk: 32, text: " " },
+				};
 
-				const modParams = {};
-				for (const m of modifiers) {
-					if (m === "Control") modParams.controlKey = true;
-					else if (m === "Shift") modParams.shiftKey = true;
-					else if (m === "Alt") modParams.altKey = true;
-					else if (m === "Meta") modParams.metaKey = true;
+				const MODIFIER_VK = { Control: 17, Shift: 16, Alt: 18, Meta: 91 };
+
+				if (SPECIAL_KEYS[keyInput]) {
+					const k = SPECIAL_KEYS[keyInput];
+					await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Input.dispatchKeyEvent",
+						{
+							type: "keyDown",
+							code: k.code,
+							key: k.key,
+							windowsVirtualKeyCode: k.vk,
+							text: k.text || undefined,
+						},
+					);
+					await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Input.dispatchKeyEvent",
+						{
+							type: "keyUp",
+							code: k.code,
+							key: k.key,
+							windowsVirtualKeyCode: k.vk,
+						},
+					);
+				} else if (keyInput.includes("+")) {
+					const parts = keyInput.split("+").map((s) => s.trim());
+					const mainKey = parts[parts.length - 1];
+					const modifiers = parts.slice(0, -1);
+					const mainVK =
+						mainKey.length === 1
+							? mainKey.toUpperCase().charCodeAt(0)
+							: MODIFIER_VK[mainKey] || 0;
+
+					const modParams = {};
+					for (const m of modifiers) {
+						if (m === "Control") modParams.controlKey = true;
+						else if (m === "Shift") modParams.shiftKey = true;
+						else if (m === "Alt") modParams.altKey = true;
+						else if (m === "Meta") modParams.metaKey = true;
+					}
+
+					await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Input.dispatchKeyEvent",
+						{
+							type: "keyDown",
+							code: "Key" + mainKey.toUpperCase()[0],
+							key: mainKey,
+							windowsVirtualKeyCode: mainVK,
+							...modParams,
+						},
+					);
+					await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Input.dispatchKeyEvent",
+						{
+							type: "keyUp",
+							code: "Key" + mainKey.toUpperCase()[0],
+							key: mainKey,
+							windowsVirtualKeyCode: mainVK,
+							...modParams,
+						},
+					);
+				} else if (keyInput.length === 1) {
+					await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Input.dispatchKeyEvent",
+						{
+							type: "keyDown",
+							key: keyInput,
+							text: keyInput,
+						},
+					);
+					await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Input.dispatchKeyEvent",
+						{
+							type: "keyUp",
+							key: keyInput,
+						},
+					);
+				} else {
+					await chrome.debugger.sendCommand(
+						{ tabId: tab.id },
+						"Input.insertText",
+						{ text: keyInput },
+					);
 				}
-
-				await chrome.debugger.sendCommand(
-					{ tabId: tab.id },
-					"Input.dispatchKeyEvent",
-					{
-						type: "keyDown",
-						code: "Key" + mainKey.toUpperCase()[0],
-						key: mainKey,
-						windowsVirtualKeyCode: mainVK,
-						...modParams,
-					},
-				);
-				await chrome.debugger.sendCommand(
-					{ tabId: tab.id },
-					"Input.dispatchKeyEvent",
-					{
-						type: "keyUp",
-						code: "Key" + mainKey.toUpperCase()[0],
-						key: mainKey,
-						windowsVirtualKeyCode: mainVK,
-						...modParams,
-					},
-				);
-			} else if (keyInput.length === 1) {
-				await chrome.debugger.sendCommand(
-					{ tabId: tab.id },
-					"Input.dispatchKeyEvent",
-					{
-						type: "keyDown",
-						key: keyInput,
-						text: keyInput,
-					},
-				);
-				await chrome.debugger.sendCommand(
-					{ tabId: tab.id },
-					"Input.dispatchKeyEvent",
-					{
-						type: "keyUp",
-						key: keyInput,
-					},
-				);
-			} else {
-				await chrome.debugger.sendCommand(
-					{ tabId: tab.id },
-					"Input.insertText",
-					{ text: keyInput },
-				);
-			}
 			} finally {
 				await chrome.debugger
 					.sendCommand(
@@ -970,10 +994,21 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 						},
 					);
 					const beforeState = safeJsonParse(runtimeEvaluateValue(before));
-					await chrome.debugger.sendCommand(
-						{ tabId: tab.id },
-						"Input.dispatchMouseEvent",
-						{ type: "mouseWheel", x: 400, y: 300, deltaX: 0, deltaY: 5000 },
+					await withFocusEmulation(
+						tab.id,
+						chrome.debugger.sendCommand,
+						() =>
+							chrome.debugger.sendCommand(
+								{ tabId: tab.id },
+								"Input.dispatchMouseEvent",
+								{
+									type: "mouseWheel",
+									x: 400,
+									y: 300,
+									deltaX: 0,
+									deltaY: 5000,
+								},
+							),
 					);
 					await new Promise((r) => setTimeout(r, 100));
 					const after = await chrome.debugger.sendCommand(
