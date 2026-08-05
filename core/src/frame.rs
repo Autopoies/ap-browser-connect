@@ -1,15 +1,17 @@
 //! Frame codec: 4-byte LE length prefix + UTF-8 JSON payload.
 //!
 //! Identical framing on both transports (Chrome native messaging stdin/stdout,
-//! and Unix domain socket between CLI and host). Max frame = 1 MiB per Chrome
-//! native messaging spec.
+//! and Unix domain socket between CLI and host). The cap bounds runaway
+//! responses (a screenshot data_url + annotation can reach several MB on
+//! heavy pages); 64 MiB matches the CLI's read side. Chrome's native messaging
+//! spec itself does not impose a 1 MiB frame limit.
 
 use serde_json::Value;
 use std::io::Read;
 use thiserror::Error;
 
-/// Chrome native messaging hard limit.
-pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
+/// Upper bound for a single frame (screenshots are the big ones).
+pub const MAX_FRAME_SIZE: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum FrameError {
