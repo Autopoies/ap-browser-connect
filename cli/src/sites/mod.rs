@@ -288,6 +288,14 @@ pub fn dispatch_site(
         .get(cmd)
         .ok_or_else(|| anyhow!("unknown command: {} {}", site, cmd))?;
 
+    // `ap-browser <site> <cmd> --help` prints the adapter's usage instead of
+    // trying to parse --help as an arg (parse_args has no clap help). This is
+    // the agent's one-hop arg discovery path: sites search -> --help -> run.
+    if raw_args.iter().any(|a| a == "--help" || a == "-h") {
+        print_adapter_usage(site, cmd, adapter);
+        return Ok(());
+    }
+
     registry.record_use(site);
 
     // Parse CLI args
@@ -745,6 +753,57 @@ fn build_step_obj(method: &str, expanded: &Value) -> Result<Value> {
 }
 
 // ── CLI arg parsing for adapters ───────────────────────────────────────────
+
+fn print_adapter_usage(site: &str, cmd: &str, adapter: &Adapter) {
+    println!(
+        "Usage: ap-browser {site} {cmd} {}",
+        usage_placeholder(adapter)
+    );
+    if let Some(d) = &adapter.description {
+        println!("  {d}");
+    }
+    if !adapter.args.is_empty() {
+        println!();
+        println!("Args:");
+        let mut names: Vec<&String> = adapter.args.keys().collect();
+        names.sort();
+        for name in names {
+            let def = &adapter.args[name];
+            let req = if def.required { "required" } else { "optional" };
+            match &def.default {
+                Some(d) => println!("  --{name:<16} <{}>  {req} (default: {d})", def.arg_type),
+                None => println!("  --{name:<16} <{}>  {req}", def.arg_type),
+            }
+        }
+    }
+    if let Some(input) = &adapter.input {
+        if let Some(f) = &input.field {
+            println!();
+            println!("Input: reads `{f}` from piped JSON");
+        }
+    }
+}
+
+// Required args are positionals, optional args are --flags (parse_args contract).
+fn usage_placeholder(adapter: &Adapter) -> String {
+    let mut parts: Vec<String> = adapter
+        .args
+        .iter()
+        .filter(|(_, d)| d.required)
+        .map(|(k, _)| format!("<{k}>"))
+        .collect();
+    let mut opt: Vec<&String> = adapter
+        .args
+        .iter()
+        .filter(|(_, d)| !d.required)
+        .map(|(k, _)| k)
+        .collect();
+    opt.sort();
+    for k in opt {
+        parts.push(format!("--{k} <{}>", adapter.args[k].arg_type));
+    }
+    parts.join(" ")
+}
 
 fn parse_args(adapter: &Adapter, raw: &[String]) -> Result<HashMap<String, Value>> {
     let mut out = HashMap::new();

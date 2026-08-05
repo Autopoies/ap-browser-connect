@@ -371,7 +371,7 @@ export function buildNativeClickResolveExpression(targetSelector, rules) {
 }
 
 export function buildNativeFillResolveExpression(targetSelector, rules) {
-  return `(() => {
+	return `(() => {
     const emptyFilterMetadata = ${emptyFilterMetadata.toString()};
     const guardInteractionTarget = ${guardInteractionTarget.toString()};
     const resolveForNativeFill = ${resolveForNativeFill.toString()};
@@ -399,7 +399,8 @@ export function performNativeSelect(
 	if (!target) return { status: "not_found", metadata: guard.metadata };
 
 	const tag = target.tagName ? target.tagName.toUpperCase() : "";
-	if (tag !== "SELECT") return { status: "not_a_select", metadata: guard.metadata };
+	if (tag !== "SELECT")
+		return { status: "not_a_select", metadata: guard.metadata };
 
 	target.scrollIntoView({ block: "center" });
 	target.focus();

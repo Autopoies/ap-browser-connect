@@ -6,19 +6,15 @@ export function isCurrentPort(currentPort, disconnectedPort) {
 // events are dropped on silent tabs). Focus emulation makes the page accept
 // them without stealing real focus; always restore it afterwards.
 export async function withFocusEmulation(tabId, sendCommand, fn) {
-	await sendCommand(
-		{ tabId },
-		"Emulation.setFocusEmulationEnabled",
-		{ enabled: true },
-	);
+	await sendCommand({ tabId }, "Emulation.setFocusEmulationEnabled", {
+		enabled: true,
+	});
 	try {
 		return await fn();
 	} finally {
-		await sendCommand(
-			{ tabId },
-			"Emulation.setFocusEmulationEnabled",
-			{ enabled: false },
-		).catch(() => {});
+		await sendCommand({ tabId }, "Emulation.setFocusEmulationEnabled", {
+			enabled: false,
+		}).catch(() => {});
 	}
 }
 
@@ -90,6 +86,11 @@ export function buildBatchStepParams(step, inheritedTabId) {
 		"timeout_ms",
 		"url_change_from",
 		"media_ended",
+		"ref",
+		"option",
+		"count",
+		"pause_ms",
+		"active",
 	]) {
 		if (step[key] !== undefined) params[key] = step[key];
 	}

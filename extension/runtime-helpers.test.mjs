@@ -188,6 +188,34 @@ test("batch forwards flattened event-wait parameters", () => {
 	);
 });
 
+test("batch forwards flattened interaction params (ref/option/scroll)", () => {
+	assert.deepEqual(
+		buildBatchStepParams(
+			{
+				method: "click",
+				ref: 3,
+			},
+			null,
+		),
+		{ ref: 3 },
+	);
+	assert.deepEqual(
+		buildBatchStepParams(
+			{
+				method: "select",
+				selector: "#c",
+				option: "us",
+			},
+			null,
+		),
+		{ selector: "#c", option: "us" },
+	);
+	assert.deepEqual(
+		buildBatchStepParams({ method: "scroll", count: 3, pause_ms: 200 }, 5),
+		{ count: 3, pause_ms: 200, tab_id: 5 },
+	);
+});
+
 test("URL-change wait uses the tab event instead of polling", async () => {
 	let listener;
 	const tabs = {
