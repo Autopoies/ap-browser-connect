@@ -1013,6 +1013,26 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					evaluate,
 					() => chrome.tabs.get(tab.id),
 				);
+			} else if (params.xhr) {
+				// Match an XHR/fetch by URL substring. First check resource timing
+				// history (covers requests that already completed, e.g. a click in
+				// an earlier batch step), then watch Network events for new ones.
+				await ensureDebugger(tab.id);
+				const evaluated = await chrome.debugger.sendCommand(
+					{ tabId: tab.id },
+					"Runtime.evaluate",
+					{
+						expression: `performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes(${JSON.stringify(params.xhr)}))`,
+						returnByValue: true,
+					},
+				);
+				const hits = runtimeEvaluateValue(evaluated);
+				if (Array.isArray(hits) && hits.length > 0) {
+					data = { matched: true, url: hits[0], waited_ms: 0, source: "history" };
+				} else {
+					await chrome.debugger.sendCommand({ tabId: tab.id }, "Network.enable");
+					data = await waitForXhr(tab.id, params.xhr, timeout);
+				}
 			} else {
 				const query =
 					params.ref != null ? refSelector(params.ref) : params.selector;
@@ -1153,6 +1173,24 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 
 		case "batch": {
 			const steps = params.steps || [];
+			// Adapter auto-tab: adapter commands send _auto_tab = {domain} when
+			// no explicit --tab was given. If the operated tab is unscriptable
+			// (chrome://) or on a different host, silently open a tab on the
+			// adapter's canonical domain and run the steps there. Same-host
+			// tabs keep the "adapter reads the current page" contract.
+			if (params._auto_tab && params.tab_id == null) {
+				const current = operatedTab || (await resolveTab(params).catch(() => null));
+				const host = current?.url ? safeHostOf(current.url) : null;
+				const want = normalizeHost(params._auto_tab.domain || "");
+				if (!host || !want || host !== want) {
+					const created = await chrome.tabs.create({
+						url: `https://${params._auto_tab.domain}`,
+						active: false,
+					});
+					operatedTab = created;
+					params.tab_id = created.id;
+				}
+			}
 			const results = [];
 			let lastTab = null;
 			let batchFilterMetadata = null;
@@ -1677,6 +1715,56 @@ async function resolveTab(params) {
 	if (!tabs[0])
 		throw Object.assign(new Error("no active tab"), { code: "TAB_NOT_FOUND" });
 	return tabs[0];
+}
+
+// Host without scheme/port/www. Used to compare the operated tab against an
+// adapter's canonical site domain (auto-tab decision).
+function safeHostOf(url) {
+	try {
+		return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
+	} catch {
+		return null;
+	}
+}
+function normalizeHost(domain) {
+	return domain.replace(/^https?:\/\//, "").replace(/^www\./, "").toLowerCase();
+}
+
+// Wait until an XHR/fetch whose URL contains `urlSubstr` completes.
+function waitForXhr(tabId, urlSubstr, timeoutMs) {
+	return new Promise((resolve, reject) => {
+		const start = Date.now();
+		let done = false;
+		const finish = (fn, value) => {
+			if (done) return;
+			done = true;
+			chrome.debugger.onEvent.removeListener(listener);
+			clearTimeout(timer);
+			fn(value);
+		};
+		const listener = (source, method, params) => {
+			if (source.tabId !== tabId || method !== "Network.responseReceived")
+				return;
+			const url = params.response && params.response.url;
+			if (url && url.includes(urlSubstr)) {
+				finish(resolve, {
+					matched: true,
+					url,
+					waited_ms: Date.now() - start,
+					source: "network",
+				});
+			}
+		};
+		const timer = setTimeout(() => {
+			finish(
+				reject,
+				Object.assign(new Error(`timeout waiting for xhr ${urlSubstr}`), {
+					code: "TIMEOUT",
+				}),
+			);
+		}, timeoutMs);
+		chrome.debugger.onEvent.addListener(listener);
+	});
 }
 
 // Attach debugger if not already attached.

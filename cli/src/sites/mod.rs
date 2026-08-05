@@ -42,6 +42,9 @@ pub const RESERVED: &[&str] = &[
 #[derive(Debug, Clone, Deserialize)]
 pub struct SiteMeta {
     pub description: Option<String>,
+    /// Canonical domain from site.yml (`domain:`). Adapter commands use it to
+    /// decide whether the operated tab matches the site (auto-tab).
+    pub domain: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -317,6 +320,17 @@ pub fn dispatch_site(
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|&t| t > 0);
     let filter_registry = crate::filters::Registry::load();
+    // Adapter auto-tab: when the adapter declares a canonical site domain and
+    // no explicit --tab was given, the extension opens a silent tab on that
+    // domain when the operated tab is unscriptable (chrome://) or on another
+    // host. "Adapter reads the current page" stays intact for same-host tabs.
+    let auto_tab_domain = tab_override.map(|_| None).unwrap_or_else(|| {
+        registry
+            .sites
+            .get(site)
+            .and_then(|s| s.meta.as_ref())
+            .and_then(|m| m.domain.clone())
+    });
 
     if read_stdin && adapter.input.is_none() {
         bail!(
@@ -351,6 +365,7 @@ pub fn dispatch_site(
                 profile_override.as_deref(),
                 &filter_registry,
                 timeout_override,
+                auto_tab_domain.as_deref(),
             )?;
             print_response(resp, want_ndjson, human);
         }
@@ -363,6 +378,7 @@ pub fn dispatch_site(
             profile_override.as_deref(),
             &filter_registry,
             timeout_override,
+            auto_tab_domain.as_deref(),
         )?;
         print_response(resp, want_ndjson, human);
         Ok(())
@@ -409,6 +425,7 @@ fn send_adapter_batch(
     profile: Option<&str>,
     filter_registry: &crate::filters::Registry,
     timeout_override: Option<u64>,
+    auto_tab_domain: Option<&str>,
 ) -> Result<Value> {
     let steps = expand_steps(&adapter.steps, args)?;
     // Precedence: agent --timeout > adapter `timeout` > step estimate (30s floor).
@@ -425,6 +442,9 @@ fn send_adapter_batch(
         json!({"steps": steps, "stop_on_error": true, "_timeout_hint_secs": timeout_secs});
     if let Some(t) = tab {
         params["tab_id"] = json!(t);
+    }
+    if let Some(d) = auto_tab_domain {
+        params["_auto_tab"] = json!({ "domain": d });
     }
     filter_registry.attach_to(&mut params);
     let socket = crate::socket_client::resolve_socket(profile)?;
@@ -891,7 +911,25 @@ fn coerce_value(ty: &str, s: &str) -> Result<Value> {
 
 // ── Output ─────────────────────────────────────────────────────────────────
 
+/// Make chrome:// unscriptable errors actionable. The raw CDP message
+/// ("Cannot access a chrome:// URL") doesn't say how to fix it; append a
+/// pointer to the silent-tab workflow.
+pub fn enhance_chrome_error(resp: &mut Value) {
+    let Some(msg) = resp.pointer_mut("/error/message") else {
+        return;
+    };
+    if let Some(s) = msg.as_str() {
+        if s.to_lowercase().contains("chrome://") {
+            *msg = json!(format!(
+                "{} — the operated tab is a chrome:// page and cannot be scripted. Open a normal page first (e.g. `tabs new '<url>' --silent`) and target it with `--tab <id>`.",
+                s
+            ));
+        }
+    }
+}
+
 fn print_response(mut resp: Value, ndjson: bool, human: bool) {
+    enhance_chrome_error(&mut resp);
     super::tag_untrusted(&mut resp);
     if human {
         emit_security_metadata(&resp);

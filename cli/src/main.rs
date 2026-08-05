@@ -108,6 +108,8 @@ enum Cmd {
         #[arg(long)]
         url_change_from: Option<String>,
         #[arg(long)]
+        xhr: Option<String>,
+        #[arg(long)]
         media_ended: bool,
         #[arg(long, default_value = "5000")]
         timeout_ms: u64,
@@ -433,12 +435,14 @@ fn main() -> Result<()> {
         Cmd::Wait {
             selector,
             url_change_from,
+            xhr,
             media_ended,
             timeout_ms,
         } => {
             let params = wait_params(
                 selector.as_deref(),
                 url_change_from.as_deref(),
+                xhr.as_deref(),
                 *media_ended,
                 *timeout_ms,
             )?;
@@ -627,6 +631,7 @@ fn rpc(
     if matches!(method, "text" | "html") {
         tag_untrusted(&mut response);
     }
+    sites::enhance_chrome_error(&mut response);
 
     if human {
         print_human(&response);
@@ -727,24 +732,34 @@ fn render_state_tree(resp: &mut Value) {
 fn wait_params(
     selector: Option<&str>,
     url: Option<&str>,
+    xhr: Option<&str>,
     media: bool,
     timeout_ms: u64,
 ) -> Result<Value> {
     if let Some(from) = url {
-        if selector.is_some() || media {
+        if selector.is_some() || media || xhr.is_some() {
             return Err(anyhow!(
-                "--url-change-from cannot be combined with a selector or --media-ended"
+                "--url-change-from cannot be combined with a selector, --xhr, or --media-ended"
             ));
         }
         return Ok(json!({"url_change_from": from, "timeout_ms": timeout_ms}));
+    }
+    if let Some(sub) = xhr {
+        if selector.is_some() || media {
+            return Err(anyhow!(
+                "--xhr cannot be combined with a selector or --media-ended"
+            ));
+        }
+        return Ok(json!({"xhr": sub, "timeout_ms": timeout_ms}));
     }
     if media {
         return Ok(
             json!({"media_ended": true, "selector": selector.unwrap_or("video"), "timeout_ms": timeout_ms}),
         );
     }
-    let selector = selector
-        .ok_or_else(|| anyhow!("wait requires a selector, --url-change-from, or --media-ended"))?;
+    let selector = selector.ok_or_else(|| {
+        anyhow!("wait requires a selector, --url-change-from, --xhr, or --media-ended")
+    })?;
     if let Ok(n) = selector.parse::<u64>() {
         // Numeric target = state ref (opencli target contract).
         return Ok(json!({"ref": n, "timeout_ms": timeout_ms}));
@@ -1369,24 +1384,24 @@ mod tests {
     #[test]
     fn wait_modes_build_distinct_rpc_params() {
         assert_eq!(
-            wait_params(Some(".done"), None, false, 5_000).unwrap(),
+            wait_params(Some(".done"), None, None, false, 5_000).unwrap(),
             json!({
                 "selector": ".done", "timeout_ms": 5_000
             })
         );
         assert_eq!(
-            wait_params(None, Some("https://old.example/"), false, 180_000).unwrap(),
+            wait_params(None, Some("https://old.example/"), None, false, 180_000).unwrap(),
             json!({
                 "url_change_from": "https://old.example/", "timeout_ms": 180_000
             })
         );
         assert_eq!(
-            wait_params(None, None, true, 180_000).unwrap(),
+            wait_params(None, None, None, true, 180_000).unwrap(),
             json!({
                 "media_ended": true, "selector": "video", "timeout_ms": 180_000
             })
         );
-        assert!(wait_params(None, None, false, 5_000).is_err());
+        assert!(wait_params(None, None, None, false, 5_000).is_err());
     }
 
     #[test]
