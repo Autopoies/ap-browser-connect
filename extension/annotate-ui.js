@@ -1,21 +1,23 @@
-// annotate-ui.js — in-page element annotation panel.
+// annotate-ui.js — in-page element annotation panel (inspect-style picker).
 //
 // Injected into the active tab by background.js (keyboard shortcut or
-// popup). Lets the user check one or more interactive elements; the checked
-// refs are what the agent sees as `annotated` in `state` output and as green
-// boxes in `screenshot --annotate` (red = state refs, green = user picks).
+// popup). Enters a DevTools-inspect-like picker: hovering an interactive
+// element previews it with a blue dashed outline; clicking it pins a green
+// box + ref badge (the same look as `screenshot --annotate`); clicking a
+// pinned element unpins it. Multiple elements can be pinned.
 //
-// The element enumeration is intentionally the same as state-snapshot.mjs
-// (same selector, same data-ap-ref numbering, same viewport filter), so the
-// ref the user checks is exactly the ref the agent gets from `state`.
+// Pinned refs are what the agent sees as `annotated` in `state` output and
+// as green boxes in `screenshot --annotate` (red = state refs, green =
+// user picks). The element enumeration mirrors state-snapshot.mjs (same
+// selector, same data-ap-ref numbering), so a pinned ref is exactly the
+// ref the agent gets from `state`.
 //
-// Idempotent: re-injecting (shortcut pressed again) toggles the panel
-// instead of stacking a second copy. All styles live in a shadow root, so
-// the host page is never affected.
+// Idempotent: re-injecting (shortcut pressed again) toggles the panel —
+// expanded = picker active, collapsed = picker off, page clickable again.
+// All styles live in a shadow root, so the host page is never affected.
 
 (() => {
 	const REF_ATTR = "data-ap-ref";
-	const dbg = (err) => console.error("[ap-annotate]", err?.stack || err);
 	const SEL =
 		'button, input, select, textarea, a[href], [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="radio"], [contenteditable], [tabindex]';
 	const MAX = 250;
@@ -79,16 +81,18 @@
 		return out;
 	}
 
-	// ─── highlight helpers (outline + corner badge on the live element) ───
-	function highlight(el, checked) {
-		el.style.outline = checked ? "3px solid #22c55e" : "2px dashed #3b82f6";
+	// ─── highlight helpers ───
+	// preview: hover outline (picker preview), mark: pinned green box + badge
+	function preview(el, on) {
+		if (!el) return;
+		el.style.outline = on
+			? "2px dashed #3b82f6"
+			: "";
+		el.style.outlineOffset = on ? "2px" : "";
+	}
+	function mark(el, ref) {
+		el.style.outline = "3px solid #22c55e";
 		el.style.outlineOffset = "2px";
-	}
-	function unhighlight(el) {
-		el.style.outline = "";
-		el.style.outlineOffset = "";
-	}
-	function badge(el, ref, checked) {
 		let b = el.querySelector(`[${REF_ATTR}-badge]`);
 		if (!b) {
 			b = document.createElement("span");
@@ -101,22 +105,26 @@
 				padding: "1px 4px",
 				font: "700 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace",
 				color: "#fff",
-				background: checked ? "#22c55e" : "#3b82f6",
+				background: "#22c55e",
 				borderRadius: "4px",
 				pointerEvents: "none",
 				zIndex: "2147483646",
 			});
 			el.appendChild(b);
 		}
-		b.style.background = checked ? "#22c55e" : "#3b82f6";
+		b.textContent = String(ref);
 	}
-	function clearElementMarks(el) {
-		unhighlight(el);
+	function unmark(el) {
+		el.style.outline = "";
+		el.style.outlineOffset = "";
 		const b = el.querySelector(`[${REF_ATTR}-badge]`);
 		if (b) b.remove();
 	}
+	function isMarked(el) {
+		return el.style.outline.includes("22c55e");
+	}
 
-	// ─── shadow-DOM UI (built with DOM APIs; no innerHTML) ───
+	// ─── shadow-DOM UI: small icon button + compact panel ───
 	const host = document.createElement("div");
 	host.id = "ap-annotate-root";
 	host.setAttribute("data-ap-annotate", "");
@@ -155,28 +163,30 @@
 			font-size: 13px; line-height: 1; border-radius: 5px;
 		}
 		.head button:hover { background: rgba(255,255,255,.08); color: #fff; }
+		.hint {
+			padding: 6px 9px; color: #9aa4b0; font-size: 11px;
+			border-bottom: 1px solid rgba(255,255,255,.08);
+		}
 		.list { overflow-y: auto; padding: 3px 0; }
 		.item {
 			display: flex; align-items: center; gap: 7px; padding: 3px 9px;
-			cursor: pointer; user-select: none;
+			font-size: 11px; color: #c8d1da;
 		}
-		.item:hover { background: rgba(255,255,255,.06); }
-		.item input { margin: 0; accent-color: #22c55e; flex-shrink: 0; width: 13px; height: 13px; }
 		.item .ref {
 			flex-shrink: 0; min-width: 24px; text-align: center;
-			background: rgba(255,255,255,.1); color: #9aa4b0;
+			background: rgba(34,197,94,.25); color: #4ade80;
 			border-radius: 4px; font: 600 9px/1.6 ui-monospace, Menlo, monospace;
 		}
 		.item .name {
-			white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #e6edf3;
+			white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 		}
-		.empty { padding: 10px; color: #9aa4b0; text-align: center; }
+		.empty { padding: 10px; color: #9aa4b0; text-align: center; font-size: 11px; }
 	`;
 	shadow.appendChild(css);
 	const fab = document.createElement("button");
 	fab.className = "fab";
-	fab.title = "Toggle annotation panel (Alt+Shift+A)";
-	fab.setAttribute("aria-label", "Toggle annotation panel");
+	fab.title = "Toggle annotation picker (Alt+Shift+A)";
+	fab.setAttribute("aria-label", "Toggle annotation picker");
 	fab.append("✎");
 	const countEl = document.createElement("span");
 	countEl.className = "count";
@@ -190,7 +200,7 @@
 	const title = document.createElement("span");
 	title.className = "title";
 	title.textContent = "Annotate";
-	title.title = "Check elements for the agent (green box in state/screenshot)";
+	title.title = "Hover to preview, click to pin/unpin elements (green boxes)";
 	const clearBtn = document.createElement("button");
 	clearBtn.setAttribute("data-act", "clear");
 	clearBtn.textContent = "✕";
@@ -198,71 +208,81 @@
 	const shrinkBtn = document.createElement("button");
 	shrinkBtn.setAttribute("data-act", "shrink");
 	shrinkBtn.textContent = "▾";
-	shrinkBtn.title = "Collapse panel";
+	shrinkBtn.title = "Collapse panel (picker off)";
 	head.append(title, clearBtn, shrinkBtn);
+	const hint = document.createElement("div");
+	hint.className = "hint";
+	hint.textContent = "Hover to preview · click to pin (green) · click pinned to unpin";
 	const listEl = document.createElement("div");
 	listEl.className = "list";
-	panel.append(head, listEl);
+	panel.append(head, hint, listEl);
 	shadow.append(fab, panel);
 	document.documentElement.appendChild(host);
 
+	// ─── picker state ───
 	const items = enumerate();
+	const byEl = new Map(items.map((it) => [it.el, it]));
+	let previewEl = null;
+	let tabId = null;
 
-	async function refresh() {
-		try {
-			const tabId = await tabIdOf();
-			if (tabId == null) return;
-			const stored = await loadAnnotations(tabId);
-			const checked = new Set(stored.map((a) => String(a.ref)));
-			listEl.replaceChildren();
-			for (const it of items) {
-				const row = document.createElement("label");
-				row.className = "item";
-				const cb = document.createElement("input");
-				cb.type = "checkbox";
-				cb.checked = checked.has(String(it.ref));
-				cb.addEventListener("change", async () => {
-					try {
-						const cur = await loadAnnotations(tabId);
-						const next = cur.filter((a) => String(a.ref) !== String(it.ref));
-						if (cb.checked) {
-							next.push({ ref: it.ref, name: it.name, ts: Date.now() });
-							highlight(it.el, true);
-							badge(it.el, it.ref, true);
-						} else {
-							clearElementMarks(it.el);
-						}
-						await saveAnnotations(tabId, next);
-						updateCount(next.length);
-					} catch (e) {
-						dbg(e);
-					}
-				});
-				const refSpan = document.createElement("span");
-				refSpan.className = "ref";
-				refSpan.textContent = String(it.ref);
-				const nameSpan = document.createElement("span");
-				nameSpan.className = "name";
-				nameSpan.textContent = it.name;
-				row.append(cb, refSpan, nameSpan);
-				row.addEventListener("mouseenter", () => {
-					if (!cb.checked) highlight(it.el, false);
-				});
-				row.addEventListener("mouseleave", () => {
-					if (!cb.checked) unhighlight(it.el);
-				});
-				listEl.appendChild(row);
-			}
-			if (items.length === 0) {
-				const empty = document.createElement("div");
-				empty.className = "empty";
-				empty.textContent = "No interactive elements found on this page.";
-				listEl.appendChild(empty);
-			}
-			updateCount(checked.size);
-		} catch (e) {
-			dbg(e);
+	async function setTabId() {
+		tabId = await tabIdOf();
+	}
+
+	function clearPreview() {
+		if (previewEl) {
+			preview(previewEl, false);
+			previewEl = null;
 		}
+	}
+
+	// Pinned set = storage truth; page marks mirror it.
+	async function loadChecked() {
+		if (tabId == null) return new Set();
+		const stored = await loadAnnotations(tabId);
+		return new Set(stored.map((a) => String(a.ref)));
+	}
+
+	async function setPinned(el, pinned) {
+		if (tabId == null) return;
+		const it = byEl.get(el);
+		if (!it) return;
+		const cur = await loadAnnotations(tabId);
+		const next = cur.filter((a) => String(a.ref) !== String(it.ref));
+		if (pinned) {
+			next.push({ ref: it.ref, name: it.name, ts: Date.now() });
+			mark(el, it.ref);
+		} else {
+			unmark(el);
+		}
+		await saveAnnotations(tabId, next);
+		updateCount(next.length);
+		renderList();
+	}
+
+	async function renderList() {
+		if (tabId == null) return;
+		const stored = await loadAnnotations(tabId);
+		listEl.replaceChildren();
+		for (const a of stored) {
+			const row = document.createElement("div");
+			row.className = "item";
+			const refSpan = document.createElement("span");
+			refSpan.className = "ref";
+			refSpan.textContent = String(a.ref);
+			const nameSpan = document.createElement("span");
+			nameSpan.className = "name";
+			nameSpan.textContent = a.name;
+			row.append(refSpan, nameSpan);
+			listEl.appendChild(row);
+		}
+		if (stored.length === 0) {
+			const empty = document.createElement("div");
+			empty.className = "empty";
+			empty.textContent = "No elements pinned yet.";
+			listEl.appendChild(empty);
+		}
+		updateCount(stored.length);
 	}
 
 	function updateCount(n) {
@@ -271,18 +291,67 @@
 		fab.style.background = n > 0 ? "#22c55e" : "#3b82f6";
 	}
 
+	// ─── picker events ───
+	function pickerTarget(e) {
+		// Ignore events inside our own shadow UI (fab/panel clicks).
+		if (e.composedPath().some((n) => n === host)) return null;
+		const el = e.target instanceof Element ? e.target : null;
+		return el ? el.closest(SEL) : null;
+	}
+
+	function onMove(e) {
+		const el = pickerTarget(e);
+		if (el === previewEl) return;
+		clearPreview();
+		if (el && !isMarked(el)) {
+			preview(el, true);
+			previewEl = el;
+		}
+	}
+
+	function onClick(e) {
+		const el = pickerTarget(e);
+		if (!el) return; // blank area: let the page behave normally
+		e.preventDefault();
+		e.stopPropagation();
+		e.stopImmediatePropagation();
+		clearPreview();
+		setPinned(el, !isMarked(el));
+	}
+
+	function pickerOn_() {
+		document.addEventListener("mousemove", onMove, true);
+		document.addEventListener("click", onClick, true);
+	}
+
+	function pickerOff_() {
+		document.removeEventListener("mousemove", onMove, true);
+		document.removeEventListener("click", onClick, true);
+		clearPreview();
+	}
+
 	async function clearAll() {
-		const tabId = await tabIdOf();
 		if (tabId != null) await saveAnnotations(tabId, []);
-		for (const it of items) clearElementMarks(it.el);
+		for (const it of items) unmark(it.el);
 		updateCount(0);
-		await refresh();
+		renderList();
 	}
 
 	window.__apAnnotatePanel = {
-		toggle() {
+		async toggle() {
 			panel.hidden = !panel.hidden;
-			if (!panel.hidden) refresh();
+			if (panel.hidden) {
+				pickerOff_();
+			} else {
+				await setTabId();
+				await renderList();
+				// restore pinned marks from storage (page may have re-rendered)
+				const checked = await loadChecked();
+				for (const it of items) {
+					if (checked.has(String(it.ref))) mark(it.el, it.ref);
+				}
+				pickerOn_();
+			}
 		},
 	};
 
@@ -290,9 +359,9 @@
 	shrinkBtn.addEventListener("click", () => window.__apAnnotatePanel.toggle());
 	clearBtn.addEventListener("click", clearAll);
 
-	// Opening state: panel visible on first inject (the shortcut means "start
-	// annotating"), collapsed when the page already carries annotations.
-	refresh().then(() => {
-		panel.hidden = !countEl.hidden;
+	// Opening state: expanded (the shortcut means "start annotating").
+	setTabId().then(renderList).then(() => {
+		panel.hidden = false;
+		pickerOn_();
 	});
 })();
