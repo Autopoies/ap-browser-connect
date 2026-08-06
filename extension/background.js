@@ -1747,7 +1747,10 @@ async function toggleAnnotation() {
 	if (!tab?.id) return { ok: false, error: "no active tab" };
 	const url = tab.url || "";
 	if (/^(chrome|chrome-extension|edge|about|devtools):/.test(url)) {
-		return { ok: false, error: `cannot annotate ${url.split(":")[0]}:// pages` };
+		return {
+			ok: false,
+			error: `cannot annotate ${url.split(":")[0]}:// pages`,
+		};
 	}
 	try {
 		await chrome.scripting.executeScript({
@@ -2186,7 +2189,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 		(async () => {
 			try {
 				await chrome.storage.session.set({
-					[`annotations:${msg.tab_id}`]: Array.isArray(msg.refs) ? msg.refs : [],
+					[`annotations:${msg.tab_id}`]: Array.isArray(msg.refs)
+						? msg.refs
+						: [],
 				});
 				sendResponse({ ok: true });
 			} catch (e) {

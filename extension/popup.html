@@ -13,7 +13,11 @@
         --border: color-mix(in srgb, CanvasText 12%, transparent);
       }
       body {
-        font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+        font:
+          13px/1.5 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          system-ui,
           sans-serif;
         background: var(--bg);
         color: var(--fg);
@@ -134,7 +138,14 @@
     <h1>
       <svg viewBox="0 0 16 16" aria-hidden="true">
         <defs>
-          <linearGradient id="ap-bg" x1="0" y1="0" x2="16" y2="16" gradientUnits="userSpaceOnUse">
+          <linearGradient
+            id="ap-bg"
+            x1="0"
+            y1="0"
+            x2="16"
+            y2="16"
+            gradientUnits="userSpaceOnUse"
+          >
             <stop offset="0" stop-color="#313b42" />
             <stop offset="1" stop-color="#242b30" />
           </linearGradient>
@@ -156,10 +167,15 @@
 
     <label>Annotation</label>
     <div class="row">
-      <button class="toggle-btn" id="annotateBtn" style="flex:1">
+      <button class="toggle-btn" id="annotateBtn" style="flex: 1">
         ✎ Toggle annotate (Alt+Shift+A)
       </button>
-      <span class="id" id="annotateCount" title="elements annotated on the active tab">0</span>
+      <span
+        class="id"
+        id="annotateCount"
+        title="elements annotated on the active tab"
+        >0</span
+      >
     </div>
 
     <label for="label">Profile Label</label>

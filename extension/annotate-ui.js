@@ -15,8 +15,7 @@
 
 (() => {
 	const REF_ATTR = "data-ap-ref";
-	const dbg = (err) =>
-		console.error("[ap-annotate]", err?.stack || err);
+	const dbg = (err) => console.error("[ap-annotate]", err?.stack || err);
 	const SEL =
 		'button, input, select, textarea, a[href], [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="radio"], [contenteditable], [tabindex]';
 	const MAX = 250;
@@ -57,10 +56,14 @@
 			if (el.getAttribute("role") === "presentation") continue;
 			const r = el.getBoundingClientRect();
 			if (
-				r.width < 2 || r.height < 2 ||
-				r.bottom < 0 || r.right < 0 ||
-				r.top > window.innerHeight || r.left > window.innerWidth
-			) continue;
+				r.width < 2 ||
+				r.height < 2 ||
+				r.bottom < 0 ||
+				r.right < 0 ||
+				r.top > window.innerHeight ||
+				r.left > window.innerWidth
+			)
+				continue;
 			const tag = el.tagName.toLowerCase();
 			const isField = tag === "input" || tag === "textarea" || tag === "select";
 			const raw =
@@ -78,9 +81,7 @@
 
 	// ─── highlight helpers (outline + corner badge on the live element) ───
 	function highlight(el, checked) {
-		el.style.outline = checked
-			? "3px solid #22c55e"
-			: "2px dashed #3b82f6";
+		el.style.outline = checked ? "3px solid #22c55e" : "2px dashed #3b82f6";
 		el.style.outlineOffset = "2px";
 	}
 	function unhighlight(el) {
@@ -237,28 +238,28 @@
 						dbg(e);
 					}
 				});
-			const refSpan = document.createElement("span");
-			refSpan.className = "ref";
-			refSpan.textContent = String(it.ref);
-			const nameSpan = document.createElement("span");
-			nameSpan.className = "name";
-			nameSpan.textContent = it.name;
-			row.append(cb, refSpan, nameSpan);
-			row.addEventListener("mouseenter", () => {
-				if (!cb.checked) highlight(it.el, false);
-			});
-			row.addEventListener("mouseleave", () => {
-				if (!cb.checked) unhighlight(it.el);
-			});
-			listEl.appendChild(row);
-		}
-		if (items.length === 0) {
-			const empty = document.createElement("div");
-			empty.className = "empty";
-			empty.textContent = "No interactive elements found on this page.";
-			listEl.appendChild(empty);
-		}
-		updateCount(checked.size);
+				const refSpan = document.createElement("span");
+				refSpan.className = "ref";
+				refSpan.textContent = String(it.ref);
+				const nameSpan = document.createElement("span");
+				nameSpan.className = "name";
+				nameSpan.textContent = it.name;
+				row.append(cb, refSpan, nameSpan);
+				row.addEventListener("mouseenter", () => {
+					if (!cb.checked) highlight(it.el, false);
+				});
+				row.addEventListener("mouseleave", () => {
+					if (!cb.checked) unhighlight(it.el);
+				});
+				listEl.appendChild(row);
+			}
+			if (items.length === 0) {
+				const empty = document.createElement("div");
+				empty.className = "empty";
+				empty.textContent = "No interactive elements found on this page.";
+				listEl.appendChild(empty);
+			}
+			updateCount(checked.size);
 		} catch (e) {
 			dbg(e);
 		}

@@ -12,75 +12,75 @@ const annotateBtn = document.getElementById("annotateBtn");
 const annotateCount = document.getElementById("annotateCount");
 
 annotateBtn.addEventListener("click", async () => {
-  try {
-    const r = await chrome.runtime.sendMessage({ method: "toggle-annotate" });
-    if (r && r.ok === false && r.error) annotateBtn.title = r.error;
-  } catch (_) {}
-  refreshAnnotateCount();
+	try {
+		const r = await chrome.runtime.sendMessage({ method: "toggle-annotate" });
+		if (r && r.ok === false && r.error) annotateBtn.title = r.error;
+	} catch (_) {}
+	refreshAnnotateCount();
 });
 
 async function refreshAnnotateCount() {
-  try {
-    const r = await chrome.runtime.sendMessage({ method: "annotations.count" });
-    if (r && r.ok) annotateCount.textContent = String(r.count);
-  } catch (_) {}
+	try {
+		const r = await chrome.runtime.sendMessage({ method: "annotations.count" });
+		if (r && r.ok) annotateCount.textContent = String(r.count);
+	} catch (_) {}
 }
 
 async function init() {
-  const { instance_id, label } = await chrome.storage.local.get([
-    "instance_id",
-    "label",
-  ]);
-  const idStr = instance_id || "(not set)";
-  instanceIdEl.textContent = idStr;
-  instanceIdEl.title = idStr;
-  labelInput.value = label || "";
-  labelInput.focus();
-  labelInput.select();
+	const { instance_id, label } = await chrome.storage.local.get([
+		"instance_id",
+		"label",
+	]);
+	const idStr = instance_id || "(not set)";
+	instanceIdEl.textContent = idStr;
+	instanceIdEl.title = idStr;
+	labelInput.value = label || "";
+	labelInput.focus();
+	labelInput.select();
 }
 
 async function refreshStatus() {
-  try {
-    const s = await chrome.runtime.sendMessage({ method: "status" });
-    if (!s) return;
-    if (s.native_host === "connected") {
-      hostDot.className = "dot connected";
-      hostState.textContent = "connected";
-    } else {
-      hostDot.className = "dot disconnected";
-      hostState.textContent = "offline";
-    }
-    const n = s.active_ops || 0;
-    opsCount.textContent = String(n);
-    opsDot.className = n > 0 ? "dot connected" : "dot idle";
-  } catch (_) {
-    // SW may be down; show offline until it responds.
-    hostDot.className = "dot disconnected";
-    hostState.textContent = "offline";
-  }
+	try {
+		const s = await chrome.runtime.sendMessage({ method: "status" });
+		if (!s) return;
+		if (s.native_host === "connected") {
+			hostDot.className = "dot connected";
+			hostState.textContent = "connected";
+		} else {
+			hostDot.className = "dot disconnected";
+			hostState.textContent = "offline";
+		}
+		const n = s.active_ops || 0;
+		opsCount.textContent = String(n);
+		opsDot.className = n > 0 ? "dot connected" : "dot idle";
+	} catch (_) {
+		// SW may be down; show offline until it responds.
+		hostDot.className = "dot disconnected";
+		hostState.textContent = "offline";
+	}
 }
 
 labelInput.addEventListener("input", async (e) => {
-  const value = e.target.value.trim().slice(0, 32);
-  await chrome.storage.local.set({ label: value });
+	const value = e.target.value.trim().slice(0, 32);
+	await chrome.storage.local.set({ label: value });
 });
 
 labelInput.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") window.close();
+	if (e.key === "Enter") window.close();
 });
 
 copyBtn.addEventListener("click", async () => {
-  const { instance_id } = await chrome.storage.local.get("instance_id");
-  if (instance_id) {
-    try {
-      await navigator.clipboard.writeText(instance_id);
-      copyBtn.textContent = "✓";
-      setTimeout(() => (copyBtn.textContent = "Copy"), 1000);
-    } catch (_) {
-      copyBtn.textContent = "✗";
-      setTimeout(() => (copyBtn.textContent = "Copy"), 1000);
-    }
-  }
+	const { instance_id } = await chrome.storage.local.get("instance_id");
+	if (instance_id) {
+		try {
+			await navigator.clipboard.writeText(instance_id);
+			copyBtn.textContent = "✓";
+			setTimeout(() => (copyBtn.textContent = "Copy"), 1000);
+		} catch (_) {
+			copyBtn.textContent = "✗";
+			setTimeout(() => (copyBtn.textContent = "Copy"), 1000);
+		}
+	}
 });
 
 init();
