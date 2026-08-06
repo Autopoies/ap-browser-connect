@@ -121,7 +121,8 @@
 		if (b) b.remove();
 	}
 	function isMarked(el) {
-		return el.style.outline.includes("22c55e");
+		// badge presence is the reliable marker (outline color serializes to rgb())
+		return !!el.querySelector(`[${REF_ATTR}-badge]`);
 	}
 
 	// ─── shadow-DOM UI: small icon button + compact panel ───
