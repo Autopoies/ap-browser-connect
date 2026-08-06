@@ -17,6 +17,8 @@ use serde_json::Value;
 
 const RED: Rgba<u8> = Rgba([255, 59, 48, 255]);
 const RED_FILL: Rgba<u8> = Rgba([255, 59, 48, 30]);
+const GREEN: Rgba<u8> = Rgba([34, 197, 94, 255]);
+const GREEN_FILL: Rgba<u8> = Rgba([34, 197, 94, 40]);
 const WHITE: Rgba<u8> = Rgba([255, 255, 255, 255]);
 
 /// 5x7 bitmap digits; row bitmask, MSB = leftmost pixel.
@@ -152,6 +154,13 @@ pub fn apply_annotation(png: &[u8], annotation: &Value, full: bool) -> Result<Ve
         let w = el.get("w").and_then(Value::as_i64).unwrap_or(10);
         let h = el.get("h").and_then(Value::as_i64).unwrap_or(10);
         let ref_n = el.get("ref").and_then(Value::as_u64);
+        // User-picked elements (annotation mode) render green; state refs red.
+        let user = el.get("user").and_then(Value::as_bool).unwrap_or(false);
+        let (fill_c, line_c) = if user {
+            (GREEN_FILL, GREEN)
+        } else {
+            (RED_FILL, RED)
+        };
 
         let (bx, by) = (
             (x as f64 * scale).round() as i64,
@@ -161,8 +170,8 @@ pub fn apply_annotation(png: &[u8], annotation: &Value, full: bool) -> Result<Ve
             (w as f64 * scale).round() as i64,
             (h as f64 * scale).round() as i64,
         );
-        fill_rect(&mut img, bx, by, bx + bw, by + bh, RED_FILL);
-        border_rect(&mut img, bx, by, bw, bh, thickness, RED);
+        fill_rect(&mut img, bx, by, bx + bw, by + bh, fill_c);
+        border_rect(&mut img, bx, by, bw, bh, thickness, line_c);
 
         if let Some(ref_n) = ref_n {
             let text = ref_n.to_string();
@@ -178,7 +187,7 @@ pub fn apply_annotation(png: &[u8], annotation: &Value, full: bool) -> Result<Ve
                 badge_y,
                 badge_x + badge_w,
                 badge_y + badge_h,
-                RED,
+                line_c,
             );
             draw_digits(
                 &mut img,
@@ -237,5 +246,38 @@ mod tests {
         let png = vec![1, 2, 3];
         let out = apply_annotation(&png, &json!({"elements": []}), false).unwrap();
         assert_eq!(out, png);
+    }
+
+    #[test]
+    fn user_annotated_elements_render_green() {
+        // Same fixture as draws_boxes_and_badges_at_scaled_positions, but the
+        // element carries `user: true` (annotation mode) -> green box + badge.
+        let img = RgbaImage::from_pixel(200, 100, Rgba([255, 255, 255, 255]));
+        let png = {
+            let mut buf = Vec::new();
+            image::DynamicImage::ImageRgba8(img.clone())
+                .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+                .unwrap();
+            buf
+        };
+        let annotation = json!({
+            "elements": [
+                {"ref": 7, "tag": "button", "x": 10, "y": 20, "w": 30, "h": 10, "user": true},
+                {"ref": 8, "tag": "a", "x": 60, "y": 20, "w": 20, "h": 10}
+            ],
+            "scroll": {"vw": 100, "y": 0}
+        });
+        let out = apply_annotation(&png, &annotation, false).unwrap();
+        let decoded = image::load_from_memory(&out).unwrap().to_rgba8();
+        // user element at (20, 40) scaled -> green: g channel dominant
+        let p = decoded.get_pixel(25, 45);
+        assert!(p[1] > 150 && p[0] < 150, "expected green fill, got {p:?}");
+        let p = decoded.get_pixel(25, 41);
+        assert!(p[1] > 150 && p[0] < 100, "expected green border, got {p:?}");
+        let p = decoded.get_pixel(25, 26);
+        assert!(p[1] > 150 && p[0] < 100, "expected green badge, got {p:?}");
+        // non-user element stays red
+        let p = decoded.get_pixel(135, 45);
+        assert!(p[0] > 200 && p[1] < 150, "expected red fill, got {p:?}");
     }
 }

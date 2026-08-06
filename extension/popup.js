@@ -8,6 +8,24 @@ const hostState = document.getElementById("hostState");
 const opsDot = document.getElementById("opsDot");
 const opsCount = document.getElementById("opsCount");
 
+const annotateBtn = document.getElementById("annotateBtn");
+const annotateCount = document.getElementById("annotateCount");
+
+annotateBtn.addEventListener("click", async () => {
+  try {
+    const r = await chrome.runtime.sendMessage({ method: "toggle-annotate" });
+    if (r && r.ok === false && r.error) annotateBtn.title = r.error;
+  } catch (_) {}
+  refreshAnnotateCount();
+});
+
+async function refreshAnnotateCount() {
+  try {
+    const r = await chrome.runtime.sendMessage({ method: "annotations.count" });
+    if (r && r.ok) annotateCount.textContent = String(r.count);
+  } catch (_) {}
+}
+
 async function init() {
   const { instance_id, label } = await chrome.storage.local.get([
     "instance_id",
@@ -67,4 +85,5 @@ copyBtn.addEventListener("click", async () => {
 
 init();
 refreshStatus();
+refreshAnnotateCount();
 const statusInterval = setInterval(refreshStatus, 1000);

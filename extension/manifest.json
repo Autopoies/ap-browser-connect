@@ -13,6 +13,15 @@
       "128": "icons/idle-128.png"
     }
   },
+  "commands": {
+    "toggle-annotate": {
+      "suggested_key": {
+        "default": "Alt+Shift+A",
+        "mac": "Alt+Shift+A"
+      },
+      "description": "Toggle element annotation on the active tab"
+    }
+  },
   "background": {
     "service_worker": "background.js",
     "type": "module"

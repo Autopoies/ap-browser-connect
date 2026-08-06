@@ -457,6 +457,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				if (evaluated) {
 					try {
 						annotation = JSON.parse(runtimeEvaluateValue(evaluated) || "null");
+						await attachUserAnnotations(tab.id, annotation);
 					} catch (_) {}
 				}
 			}
@@ -494,6 +495,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			try {
 				data = JSON.parse(value || "{}");
 			} catch (_) {}
+			await attachUserAnnotations(tab.id, data);
 			return {
 				ok: true,
 				data,
@@ -1722,6 +1724,42 @@ function filterDeniedError(metadata) {
 	);
 }
 
+// ─── user annotations (annotation mode) ───────────────────────────────────
+// Attach the user's checked refs (annotate-ui.js panel) to a snapshot:
+// `annotated` array for the agent + `user: true` on matching elements so
+// screenshot --annotate renders them green (cli/src/annotate.rs).
+async function attachUserAnnotations(tabId, data) {
+	if (!data || typeof data !== "object") return data;
+	const k = `annotations:${tabId}`;
+	const stored = (await chrome.storage.session.get(k))[k];
+	if (!Array.isArray(stored) || stored.length === 0) return data;
+	data.annotated = stored;
+	const refs = new Set(stored.map((a) => String(a.ref)));
+	for (const el of data.elements || []) {
+		if (refs.has(String(el.ref))) el.user = true;
+	}
+	return data;
+}
+
+// ─── annotation mode toggle (keyboard command + popup) ───────────────────
+async function toggleAnnotation() {
+	const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+	if (!tab?.id) return { ok: false, error: "no active tab" };
+	const url = tab.url || "";
+	if (/^(chrome|chrome-extension|edge|about|devtools):/.test(url)) {
+		return { ok: false, error: `cannot annotate ${url.split(":")[0]}:// pages` };
+	}
+	try {
+		await chrome.scripting.executeScript({
+			target: { tabId: tab.id },
+			files: ["annotate-ui.js"],
+		});
+		return { ok: true };
+	} catch (e) {
+		return { ok: false, error: String(e?.message || e) };
+	}
+}
+
 // Resolve target tab: explicit tab_id, else active tab of last focused window.
 async function resolveTab(params) {
 	if (params.tab_id != null) {
@@ -2104,6 +2142,63 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 		});
 		return false;
 	}
+	if (msg?.method === "toggle-annotate") {
+		toggleAnnotation().then(sendResponse);
+		return true;
+	}
+	if (msg?.method === "annotations.count") {
+		(async () => {
+			try {
+				const [tab] = await chrome.tabs.query({
+					active: true,
+					currentWindow: true,
+				});
+				if (!tab?.id) return sendResponse({ ok: true, count: 0 });
+				const k = `annotations:${tab.id}`;
+				const stored = (await chrome.storage.session.get(k))[k];
+				sendResponse({
+					ok: true,
+					count: Array.isArray(stored) ? stored.length : 0,
+				});
+			} catch (e) {
+				sendResponse({ ok: false, error: String(e?.message || e) });
+			}
+		})();
+		return true;
+	}
+	if (msg?.method === "annotations.tab") {
+		sendResponse({ ok: true, tab_id: _sender.tab?.id ?? null });
+		return false;
+	}
+	if (msg?.method === "annotations.get") {
+		(async () => {
+			try {
+				const k = `annotations:${msg.tab_id}`;
+				const stored = (await chrome.storage.session.get(k))[k];
+				sendResponse({ ok: true, refs: Array.isArray(stored) ? stored : [] });
+			} catch (e) {
+				sendResponse({ ok: false, error: String(e?.message || e) });
+			}
+		})();
+		return true;
+	}
+	if (msg?.method === "annotations.set") {
+		(async () => {
+			try {
+				await chrome.storage.session.set({
+					[`annotations:${msg.tab_id}`]: Array.isArray(msg.refs) ? msg.refs : [],
+				});
+				sendResponse({ ok: true });
+			} catch (e) {
+				sendResponse({ ok: false, error: String(e?.message || e) });
+			}
+		})();
+		return true;
+	}
+});
+
+chrome.commands.onCommand.addListener((command) => {
+	if (command === "toggle-annotate") toggleAnnotation().catch(() => {});
 });
 
 // On SW wakeup (any event), make sure we have a port.
