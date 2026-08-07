@@ -155,8 +155,8 @@
 			if (union) overlayBadge(union, info.ref);
 		}
 	}
-	function mark(el, ref) {
-		marks.set(el, { ref });
+	function mark(el, item) {
+		marks.set(el, { ref: item.ref, ts: item.ts });
 		drawOverlay();
 	}
 	function unmark(el) {
@@ -289,8 +289,14 @@
 			border-radius: 4px; font: 600 9px/1.6 ui-monospace, Menlo, monospace;
 		}
 		.item .name {
-			white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+			flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 		}
+		.item .del {
+			flex-shrink: 0; width: 16px; height: 16px; padding: 0;
+			background: transparent; color: #9aa4b0; border: none; cursor: pointer;
+			font-size: 10px; line-height: 1; border-radius: 4px;
+		}
+		.item .del:hover { background: rgba(255,255,255,.1); color: #fff; }
 		.empty { padding: 10px; color: #9aa4b0; text-align: center; font-size: 11px; }
 	`;
 	shadow.appendChild(css);
@@ -384,7 +390,7 @@
 				w: Math.round(r.width),
 				h: Math.round(r.height),
 			});
-			mark(el, info.ref);
+			mark(el, next[next.length - 1]);
 		} else {
 			unmark(el);
 		}
@@ -397,7 +403,7 @@
 		if (tabId == null) return;
 		const stored = await loadAnnotations(tabId);
 		listEl.replaceChildren();
-		for (const a of stored) {
+		stored.forEach((a, i) => {
 			const row = document.createElement("div");
 			row.className = "item";
 			const refSpan = document.createElement("span");
@@ -406,9 +412,17 @@
 			const nameSpan = document.createElement("span");
 			nameSpan.className = "name";
 			nameSpan.textContent = a.name;
-			row.append(refSpan, nameSpan);
+			const del = document.createElement("button");
+			del.className = "del";
+			del.textContent = "✕";
+			del.title = "Remove this annotation";
+			del.addEventListener("click", (e) => {
+				e.stopPropagation();
+				removePin(i);
+			});
+			row.append(refSpan, nameSpan, del);
 			listEl.appendChild(row);
-		}
+		});
 		if (stored.length === 0) {
 			const empty = document.createElement("div");
 			empty.className = "empty";
@@ -416,6 +430,30 @@
 			listEl.appendChild(empty);
 		}
 		updateCount(stored.length);
+	}
+
+	// Remove one pinned element (by list index): drop it from storage and
+	// from the overlay. Index-based — storage round-trips rebuild objects,
+	// so reference comparison never matches.
+	async function removePin(index) {
+		if (tabId == null) return;
+		const stored = await loadAnnotations(tabId);
+		const a = stored[index];
+		if (!a) return;
+		const next = stored.filter((_, i) => i !== index);
+		await saveAnnotations(tabId, next);
+		// The pinned element may not be locatable by selector (data-ap-ref
+		// attributes only exist while a snapshot runs) — drop it from the
+		// overlay by matching the stored ts instead.
+		for (const [el, v] of marks) {
+			if (v.ts === a.ts) {
+				marks.delete(el);
+				break;
+			}
+		}
+		drawOverlay();
+		updateCount(next.length);
+		renderList();
 	}
 
 	let pinCount = 0;
@@ -529,7 +567,7 @@
 							el = document.querySelector(a.selector);
 						} catch (_) {}
 					}
-					if (el) mark(el, a.ref);
+					if (el) mark(el, a);
 				}
 				pickerOn_();
 			}
