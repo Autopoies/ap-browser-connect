@@ -340,8 +340,13 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					return title === want;
 				});
 			}
+			const store = await chrome.storage.session.get(
+				tabs.map((t) => `annotations:${t.id}`),
+			);
 			const data = tabs.map((t) => {
 				const o = { id: t.id, title: t.title, url: t.url };
+				const anns = store[`annotations:${t.id}`];
+				if (anns?.length) o.annotations = anns.length;
 				if (t.active) o.active = true;
 				if (t.pinned) o.pinned = true;
 				if (t.groupId && t.groupId !== -1) {

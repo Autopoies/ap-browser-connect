@@ -290,9 +290,9 @@
 	// Shortcut differs by platform (see manifest suggested_key): mac =
 	// Command+Shift+A, elsewhere Alt+Shift+A.
 	fab.title = /Mac|iPhone|iPad/.test(navigator.platform)
-		? "Toggle annotation picker (⌘⇧A)"
-		: "Toggle annotation picker (Alt+Shift+A)";
-	fab.setAttribute("aria-label", "Toggle annotation picker");
+		? "Clear all annotations (⌘⇧A to toggle)"
+		: "Clear all annotations (Alt+Shift+A to toggle)";
+	fab.setAttribute("aria-label", "Clear all annotations");
 	fab.append("✎");
 	const countEl = document.createElement("span");
 	countEl.className = "count";
@@ -501,7 +501,16 @@
 		},
 	};
 
-	fab.addEventListener("click", () => window.__apAnnotatePanel.toggle());
+	// The pencil button means "clear": wipe pins and show the empty panel
+	// (expanding it first if collapsed, so the action always has feedback).
+	fab.addEventListener("click", async () => {
+		if (panel.hidden) {
+			panel.hidden = false;
+			await setTabId();
+			pickerOn_();
+		}
+		await clearAll();
+	});
 	shrinkBtn.addEventListener("click", () => window.__apAnnotatePanel.toggle());
 	clearBtn.addEventListener("click", clearAll);
 	exitBtn.addEventListener("click", exitMode);
