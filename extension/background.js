@@ -1804,6 +1804,10 @@ async function toggleAnnotation() {
 				func: () => {
 					const h = document.querySelector("#ap-annotate-root");
 					if (h) h.remove();
+					// Clear the singleton guard too, or the next inject hits the
+					// idempotent toggle() branch with a detached panel and the
+					// UI never comes back.
+					window.__apAnnotatePanel = null;
 				},
 			});
 			return { ok: true, toggled: false };

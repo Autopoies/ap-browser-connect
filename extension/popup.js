@@ -72,7 +72,10 @@ function withTimeout(p, ms) {
 
 async function refreshStatus() {
 	try {
-		const s = await withTimeout(chrome.runtime.sendMessage({ method: "status" }), 1200);
+		const s = await withTimeout(
+			chrome.runtime.sendMessage({ method: "status" }),
+			1200,
+		);
 		if (!s) return;
 		if (s.native_host === "connected") {
 			hostDot.className = "dot connected";

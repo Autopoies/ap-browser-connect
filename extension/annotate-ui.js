@@ -22,7 +22,14 @@
 		'button, input, select, textarea, a[href], [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="checkbox"], [role="radio"], [contenteditable], [tabindex]';
 	const MAX = 250;
 
-	if (window.__apAnnotatePanel) {
+	// Idempotent: re-injecting toggles the panel. But if the DOM was removed
+	// externally (popup toggle-off) the singleton may survive while the
+	// panel is detached — treat that as "not injected" and rebuild, so the
+	// second toggle always brings the UI back.
+	if (
+		window.__apAnnotatePanel &&
+		document.querySelector("#ap-annotate-root")
+	) {
 		window.__apAnnotatePanel.toggle();
 		return;
 	}
