@@ -9,12 +9,20 @@ const opsDot = document.getElementById("opsDot");
 const opsCount = document.getElementById("opsCount");
 
 const annotateBtn = document.getElementById("annotateBtn");
+const annotateLabel = annotateBtn.querySelector(".ab-label");
 const annotateCount = document.getElementById("annotateCount");
 
 annotateBtn.addEventListener("click", async () => {
+	const original = annotateLabel.textContent;
 	try {
 		const r = await chrome.runtime.sendMessage({ method: "toggle-annotate" });
-		if (r && r.ok === false && r.error) annotateBtn.title = r.error;
+		if (r && r.ok === false && r.error) {
+			annotateBtn.title = r.error;
+			annotateLabel.textContent = "✗ " + r.error.slice(0, 22);
+		} else {
+			annotateLabel.textContent = "✓ Toggled";
+		}
+		setTimeout(() => (annotateLabel.textContent = original), 1200);
 	} catch (_) {}
 	refreshAnnotateCount();
 });
@@ -22,7 +30,10 @@ annotateBtn.addEventListener("click", async () => {
 async function refreshAnnotateCount() {
 	try {
 		const r = await chrome.runtime.sendMessage({ method: "annotations.count" });
-		if (r && r.ok) annotateCount.textContent = String(r.count);
+		if (r && r.ok) {
+			annotateCount.textContent = String(r.count);
+			annotateCount.hidden = r.count === 0;
+		}
 	} catch (_) {}
 }
 

@@ -41,7 +41,7 @@
       label {
         display: block;
         font-size: 11px;
-        color: var(--muted);
+        color: color-mix(in srgb, CanvasText 58%, transparent);
         margin-bottom: 4px;
         text-transform: uppercase;
         letter-spacing: 0.5px;
@@ -78,22 +78,57 @@
         min-width: 0;
         user-select: all;
       }
-      button {
-        padding: 4px 10px;
+      .annotate-btn {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
         background: var(--accent);
         color: white;
         border: none;
-        border-radius: 6px;
+        border-radius: 8px;
         font: inherit;
         cursor: pointer;
+        margin-bottom: 12px;
       }
-      button:hover {
-        filter: brightness(1.1);
+      .annotate-btn:hover {
+        filter: brightness(1.08);
+      }
+      .annotate-btn .ab-icon {
+        font-size: 13px;
+        line-height: 1;
+      }
+      .annotate-btn .ab-label {
+        flex: 1;
+        text-align: left;
+        font-weight: 500;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .annotate-btn kbd {
+        font: 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: color-mix(in srgb, white 85%, transparent);
+        background: rgba(255, 255, 255, 0.18);
+        padding: 3px 5px;
+        border-radius: 4px;
+        white-space: nowrap;
+      }
+      .annotate-btn .ab-count {
+        min-width: 18px;
+        height: 18px;
+        padding: 0 5px;
+        border-radius: 9px;
+        background: #ef4444;
+        color: #fff;
+        font: 700 10px/18px ui-monospace, SFMono-Regular, Menlo, monospace;
+        text-align: center;
       }
       .status {
         margin-top: 12px;
         padding-top: 12px;
-        border-top: 1px dashed var(--border);
+        border-top: 1px solid var(--border);
         font-size: 11px;
         color: var(--muted);
         display: flex;
@@ -117,7 +152,7 @@
         flex-shrink: 0;
       }
       .dot.connected {
-        background: #4ade80;
+        background: var(--accent);
       }
       .dot.disconnected {
         background: #f87171;
@@ -131,6 +166,7 @@
         background: transparent;
         color: var(--muted);
         border: 1px solid var(--border);
+        flex-shrink: 0;
       }
     </style>
   </head>
@@ -166,17 +202,18 @@
     </h1>
 
     <label>Annotation</label>
-    <div class="row">
-      <button class="toggle-btn" id="annotateBtn" style="flex: 1">
-        ✎ Toggle annotate (Alt+Shift+A)
-      </button>
+    <button class="annotate-btn" id="annotateBtn">
+      <span class="ab-icon">✎</span>
+      <span class="ab-label">Toggle annotate</span>
+      <kbd>Alt ⇧ A</kbd>
       <span
-        class="id"
+        class="ab-count"
         id="annotateCount"
-        title="elements annotated on the active tab"
+        title="elements pinned on the active tab"
+        hidden
         >0</span
       >
-    </div>
+    </button>
 
     <label for="label">Profile Label</label>
     <input

@@ -85,9 +85,7 @@
 	// preview: hover outline (picker preview), mark: pinned green box + badge
 	function preview(el, on) {
 		if (!el) return;
-		el.style.outline = on
-			? "2px dashed #3b82f6"
-			: "";
+		el.style.outline = on ? "2px dashed #3b82f6" : "";
 		el.style.outlineOffset = on ? "2px" : "";
 	}
 	function mark(el, ref) {
@@ -213,7 +211,8 @@
 	head.append(title, clearBtn, shrinkBtn);
 	const hint = document.createElement("div");
 	hint.className = "hint";
-	hint.textContent = "Hover to preview · click to pin (green) · click pinned to unpin";
+	hint.textContent =
+		"Hover to preview · click to pin (green) · click pinned to unpin";
 	const listEl = document.createElement("div");
 	listEl.className = "list";
 	panel.append(head, hint, listEl);
@@ -361,8 +360,10 @@
 	clearBtn.addEventListener("click", clearAll);
 
 	// Opening state: expanded (the shortcut means "start annotating").
-	setTabId().then(renderList).then(() => {
-		panel.hidden = false;
-		pickerOn_();
-	});
+	setTabId()
+		.then(renderList)
+		.then(() => {
+			panel.hidden = false;
+			pickerOn_();
+		});
 })();
