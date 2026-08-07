@@ -1482,6 +1482,25 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			return { ok: true, data: { deleted: !!result, url, name } };
 		}
 
+		case "dev.annotate": {
+			// Inject the annotation picker into a specific tab (same code path
+			// as the keyboard shortcut, but targetable — used by `ap-browser
+			// dev annotate` for testing and for driving silent tabs).
+			const tab = await resolveTab(params);
+			const url = tab.url || "";
+			if (/^(chrome|chrome-extension|edge|about|devtools):/.test(url)) {
+				throw Object.assign(
+					new Error(`cannot annotate ${url.split(":")[0]}:// pages`),
+					{ code: "INTERNAL" },
+				);
+			}
+			await chrome.scripting.executeScript({
+				target: { tabId: tab.id },
+				files: ["annotate-ui.js"],
+			});
+			return { ok: true, data: { injected: tab.id } };
+		}
+
 		case "dev.extension.list": {
 			const all = await chrome.management.getAll();
 			const exts = all
@@ -1734,9 +1753,24 @@ async function attachUserAnnotations(tabId, data) {
 	const stored = (await chrome.storage.session.get(k))[k];
 	if (!Array.isArray(stored) || stored.length === 0) return data;
 	data.annotated = stored;
-	const refs = new Set(stored.map((a) => String(a.ref)));
+	const refs = new Set(
+		stored.filter((a) => a.ref != null).map((a) => String(a.ref)),
+	);
 	for (const el of data.elements || []) {
 		if (refs.has(String(el.ref))) el.user = true;
+	}
+	// Non-ref picks (any element): push their geometry so screenshot
+	// --annotate draws a green box without a ref badge.
+	for (const a of stored) {
+		if (a.ref == null && a.x != null && a.y != null) {
+			(data.elements ||= []).push({
+				x: a.x,
+				y: a.y,
+				w: a.w ?? 10,
+				h: a.h ?? 10,
+				user: true,
+			});
+		}
 	}
 	return data;
 }

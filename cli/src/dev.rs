@@ -27,18 +27,32 @@ pub fn dispatch(args: &[String]) -> Result<()> {
         "cookies" => cookies_cmd(rest),
         "storage" => storage_cmd(rest),
         "sw" => sw_cmd(rest),
+        "annotate" => annotate_cmd(rest),
         "" => {
-            eprintln!("Usage: ap-browser dev <console|network|errors|snapshot|dom|heap|perf|lighthouse|emulate|hover|drag|fill-form|upload|dialog|extension|api|cookies|storage> [...]");
+            eprintln!("Usage: ap-browser dev <console|network|errors|snapshot|dom|heap|perf|lighthouse|emulate|hover|drag|fill-form|upload|dialog|extension|api|cookies|storage|annotate> [...]");
             std::process::exit(1);
         }
         other => {
-            eprintln!("unknown dev subcommand: {other}\navailable: console, network, errors, snapshot, dom, heap, perf, lighthouse, emulate, hover, drag, fill-form, upload, dialog, extension, api, cookies, storage");
+            eprintln!("unknown dev subcommand: {other}\navailable: console, network, errors, snapshot, dom, heap, perf, lighthouse, emulate, hover, drag, fill-form, upload, dialog, extension, api, cookies, storage, annotate");
             std::process::exit(1);
         }
     }
 }
 
 // ── Shared helpers ─────────────────────────────────────────────────────────
+
+fn annotate_cmd(args: &[String]) -> Result<()> {
+    let mut params = serde_json::Map::new();
+    if let Some(t) = extract_tab(args) {
+        params.insert("tab_id".into(), t.into());
+    }
+    if let Some(p) = extract_profile(args) {
+        params.insert("profile".into(), p.into());
+    }
+    let r = rpc("dev.annotate", params.into(), args)?;
+    println!("{}", r);
+    Ok(())
+}
 
 fn extract_tab(args: &[String]) -> Option<i64> {
     args.windows(2)

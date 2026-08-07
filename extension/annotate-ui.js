@@ -81,46 +81,148 @@
 		return out;
 	}
 
-	// ─── highlight helpers ───
-	// preview: hover outline (picker preview), mark: pinned green box + badge
-	function preview(el, on) {
-		if (!el) return;
-		el.style.outline = on ? "2px dashed #3b82f6" : "";
-		el.style.outlineOffset = on ? "2px" : "";
+	// ─── highlight overlay ───
+	// CSS outline breaks on multi-line inline elements (missing edges,
+	// ladder shapes) and badges pinned to inline elements drift (absolute
+	// positioning resolves against a positioned ancestor). Instead we draw
+	// boxes in a fixed overlay inside our shadow root: getClientRects()
+	// yields one rect per line, so multi-line elements get closed per-line
+	// boxes, and badges are positioned from the union rect. Redrawn on
+	// scroll/resize/reflow.
+	const overlay = document.createElement("div");
+	overlay.style.cssText =
+		"position:fixed;inset:0;pointer-events:none;z-index:2147483646;";
+	const marks = new Map(); // el -> { ref }
+	let previewEl = null;
+
+	function rectsOf(el) {
+		const rects = [...el.getClientRects()].filter(
+			(r) => r.width > 1 && r.height > 1,
+		);
+		if (rects.length) return rects;
+		const r = el.getBoundingClientRect();
+		return r.width > 1 && r.height > 1 ? [r] : [];
+	}
+	function unionRect(rects) {
+		// DOMRect left/top/right/bottom are prototype getters — a `{...r}`
+		// spread only copies x/y/width/height, so build the union explicitly.
+		let u = null;
+		for (const r of rects) {
+			if (!u) {
+				u = { left: r.left, top: r.top, right: r.right, bottom: r.bottom };
+			} else {
+				u.left = Math.min(u.left, r.left);
+				u.top = Math.min(u.top, r.top);
+				u.right = Math.max(u.right, r.right);
+				u.bottom = Math.max(u.bottom, r.bottom);
+			}
+		}
+		return u;
+	}
+	function overlayBox(r, border) {
+		const d = document.createElement("div");
+		d.style.cssText =
+			`position:absolute;left:${r.left}px;top:${r.top}px;` +
+			`width:${r.width}px;height:${r.height}px;` +
+			`border:${border};border-radius:2px;`;
+		overlay.appendChild(d);
+	}
+	function overlayBadge(union, ref) {
+		const b = document.createElement("div");
+		b.textContent = ref != null ? String(ref) : "·";
+		b.style.cssText =
+			`position:absolute;left:${union.right - 1}px;top:${union.top - 1}px;` +
+			"transform:translateY(-100%);padding:1px 4px;" +
+			"font:700 11px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;" +
+			"color:#fff;background:#22c55e;border-radius:4px;";
+		overlay.appendChild(b);
+	}
+	function drawOverlay() {
+		overlay.replaceChildren();
+		if (previewEl && !marks.has(previewEl)) {
+			for (const r of rectsOf(previewEl)) {
+				overlayBox(r, "2px dashed #3b82f6");
+			}
+		}
+		for (const [el, info] of marks) {
+			const rects = rectsOf(el);
+			const union = unionRect(rects);
+			for (const r of rects) overlayBox(r, "3px solid #22c55e");
+			if (union) overlayBadge(union, info.ref);
+		}
 	}
 	function mark(el, ref) {
-		el.style.outline = "3px solid #22c55e";
-		el.style.outlineOffset = "2px";
-		let b = el.querySelector(`[${REF_ATTR}-badge]`);
-		if (!b) {
-			b = document.createElement("span");
-			b.setAttribute(REF_ATTR + "-badge", "");
-			b.textContent = String(ref);
-			Object.assign(b.style, {
-				position: "absolute",
-				top: "-2px",
-				right: "-2px",
-				padding: "1px 4px",
-				font: "700 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace",
-				color: "#fff",
-				background: "#22c55e",
-				borderRadius: "4px",
-				pointerEvents: "none",
-				zIndex: "2147483646",
-			});
-			el.appendChild(b);
-		}
-		b.textContent = String(ref);
+		marks.set(el, { ref });
+		drawOverlay();
 	}
 	function unmark(el) {
-		el.style.outline = "";
-		el.style.outlineOffset = "";
-		const b = el.querySelector(`[${REF_ATTR}-badge]`);
-		if (b) b.remove();
+		marks.delete(el);
+		drawOverlay();
 	}
 	function isMarked(el) {
-		// badge presence is the reliable marker (outline color serializes to rgb())
-		return !!el.querySelector(`[${REF_ATTR}-badge]`);
+		return marks.has(el);
+	}
+	function clearPreview() {
+		if (previewEl) {
+			previewEl = null;
+			drawOverlay();
+		}
+	}
+	window.addEventListener("scroll", drawOverlay, true);
+	window.addEventListener("resize", drawOverlay);
+	const ro = new ResizeObserver(drawOverlay);
+	ro.observe(document.documentElement);
+
+	// ─── any-element support ───
+	// Interactive elements get a state ref; any other visible element gets a
+	// CSS path so the agent can still locate it (state `annotated` entries
+	// carry `selector` for these).
+	function cssPath(el) {
+		if (el.id) {
+			const s = `#${CSS.escape(el.id)}`;
+			if (document.querySelectorAll(s).length === 1) return s;
+		}
+		const parts = [];
+		let node = el;
+		while (node && node.nodeType === 1 && node !== document.body) {
+			let sel = node.tagName.toLowerCase();
+			if (node.id) {
+				sel += `#${CSS.escape(node.id)}`;
+			} else {
+				const cls = [...node.classList]
+					.slice(0, 3)
+					.map((c) => CSS.escape(c));
+				if (cls.length) sel += "." + cls.join(".");
+				const parent = node.parentElement;
+				if (parent) {
+					const same = [...parent.children].filter(
+						(c) => c.tagName === node.tagName,
+					);
+					if (same.length > 1) {
+						sel += `:nth-of-type(${same.indexOf(node) + 1})`;
+					}
+				}
+			}
+			parts.unshift(sel);
+			const cand = parts.join(" > ");
+			if (document.querySelectorAll(cand).length === 1) break;
+			node = node.parentElement;
+		}
+		return parts.join(" > ");
+	}
+
+	function pinInfo(el) {
+		const it = byEl.get(el);
+		if (it) {
+			return { ref: it.ref, name: it.name, selector: cssPath(el) };
+		}
+		const tag = el.tagName.toLowerCase();
+		const text = (el.textContent || "").replace(/\s+/g, " ").trim();
+		const name = (el.getAttribute("aria-label") || text || `<${tag}>`).slice(
+			0,
+			120,
+		);
+		return { ref: null, name, selector: cssPath(el) };
 	}
 
 	// ─── shadow-DOM UI: small icon button + compact panel ───
@@ -193,8 +295,7 @@
 	fab.appendChild(countEl);
 	const panel = document.createElement("div");
 	panel.className = "panel";
-	panel.hidden = true;
-	const head = document.createElement("div");
+	panel.hidden = true;	const head = document.createElement("div");
 	head.className = "head";
 	const title = document.createElement("span");
 	title.className = "title";
@@ -207,8 +308,12 @@
 	const shrinkBtn = document.createElement("button");
 	shrinkBtn.setAttribute("data-act", "shrink");
 	shrinkBtn.textContent = "▾";
-	shrinkBtn.title = "Collapse panel (picker off)";
-	head.append(title, clearBtn, shrinkBtn);
+	shrinkBtn.title = "Collapse panel (picker off, button stays)";
+	const exitBtn = document.createElement("button");
+	exitBtn.setAttribute("data-act", "exit");
+	exitBtn.textContent = "×";
+	exitBtn.title = "Exit annotate mode (remove this UI; pinned elements stay)";
+	head.append(title, clearBtn, shrinkBtn, exitBtn);
 	const hint = document.createElement("div");
 	hint.className = "hint";
 	hint.textContent =
@@ -216,42 +321,42 @@
 	const listEl = document.createElement("div");
 	listEl.className = "list";
 	panel.append(head, hint, listEl);
-	shadow.append(fab, panel);
+	shadow.append(fab, panel, overlay);
 	document.documentElement.appendChild(host);
 
 	// ─── picker state ───
 	const items = enumerate();
 	const byEl = new Map(items.map((it) => [it.el, it]));
-	let previewEl = null;
 	let tabId = null;
 
 	async function setTabId() {
 		tabId = await tabIdOf();
 	}
 
-	function clearPreview() {
-		if (previewEl) {
-			preview(previewEl, false);
-			previewEl = null;
-		}
-	}
-
 	// Pinned set = storage truth; page marks mirror it.
-	async function loadChecked() {
-		if (tabId == null) return new Set();
-		const stored = await loadAnnotations(tabId);
-		return new Set(stored.map((a) => String(a.ref)));
-	}
 
 	async function setPinned(el, pinned) {
 		if (tabId == null) return;
-		const it = byEl.get(el);
-		if (!it) return;
+		const info = pinInfo(el);
 		const cur = await loadAnnotations(tabId);
-		const next = cur.filter((a) => String(a.ref) !== String(it.ref));
+		const next = cur.filter(
+			(a) =>
+				!(a.ref != null && info.ref != null && a.ref === info.ref) &&
+				!(a.ref == null && a.selector === info.selector),
+		);
 		if (pinned) {
-			next.push({ ref: it.ref, name: it.name, ts: Date.now() });
-			mark(el, it.ref);
+			const r = el.getBoundingClientRect();
+			next.push({
+				ref: info.ref,
+				selector: info.selector,
+				name: info.name,
+				ts: Date.now(),
+				x: Math.round(r.x),
+				y: Math.round(r.y),
+				w: Math.round(r.width),
+				h: Math.round(r.height),
+			});
+			mark(el, info.ref);
 		} else {
 			unmark(el);
 		}
@@ -269,7 +374,7 @@
 			row.className = "item";
 			const refSpan = document.createElement("span");
 			refSpan.className = "ref";
-			refSpan.textContent = String(a.ref);
+			refSpan.textContent = a.ref != null ? String(a.ref) : "·";
 			const nameSpan = document.createElement("span");
 			nameSpan.className = "name";
 			nameSpan.textContent = a.name;
@@ -292,21 +397,28 @@
 	}
 
 	// ─── picker events ───
-	function pickerTarget(e) {
-		// Ignore events inside our own shadow UI (fab/panel clicks).
+	function pickerTarget(e) {		// Ignore events inside our own shadow UI (fab/panel clicks).
 		if (e.composedPath().some((n) => n === host)) return null;
 		const el = e.target instanceof Element ? e.target : null;
-		return el ? el.closest(SEL) : null;
+		if (!el) return null;
+		// Interactive element wins (state-ref aligned); otherwise any visible
+		// element can be pinned (located by CSS path instead of ref).
+		const inter = el.closest(SEL);
+		if (inter) return inter;
+		if (
+			el === document.documentElement ||
+			el === document.body ||
+			el.getAttribute("data-ap-annotate") != null
+		)
+			return null;
+		return el;
 	}
 
 	function onMove(e) {
 		const el = pickerTarget(e);
 		if (el === previewEl) return;
-		clearPreview();
-		if (el && !isMarked(el)) {
-			preview(el, true);
-			previewEl = el;
-		}
+		previewEl = el;
+		drawOverlay();
 	}
 
 	function onClick(e) {
@@ -315,7 +427,7 @@
 		e.preventDefault();
 		e.stopPropagation();
 		e.stopImmediatePropagation();
-		clearPreview();
+		previewEl = null;
 		setPinned(el, !isMarked(el));
 	}
 
@@ -332,9 +444,18 @@
 
 	async function clearAll() {
 		if (tabId != null) await saveAnnotations(tabId, []);
-		for (const it of items) unmark(it.el);
+		marks.clear();
+		drawOverlay();
 		updateCount(0);
 		renderList();
+	}
+
+	// ─── exit: remove UI entirely, keep pins in storage (agent still sees
+	// them via state/screenshot; re-injecting with the shortcut restores) ───
+	function exitMode() {
+		pickerOff_();
+		window.__apAnnotatePanel = null;
+		host.remove();
 	}
 
 	window.__apAnnotatePanel = {
@@ -346,9 +467,17 @@
 				await setTabId();
 				await renderList();
 				// restore pinned marks from storage (page may have re-rendered)
-				const checked = await loadChecked();
-				for (const it of items) {
-					if (checked.has(String(it.ref))) mark(it.el, it.ref);
+				const stored = await loadAnnotations(tabId);
+				for (const a of stored) {
+					let el = null;
+					if (a.ref != null) {
+						el = document.querySelector(refSelector(a.ref));
+					} else if (a.selector) {
+						try {
+							el = document.querySelector(a.selector);
+						} catch (_) {}
+					}
+					if (el) mark(el, a.ref);
 				}
 				pickerOn_();
 			}
@@ -358,6 +487,7 @@
 	fab.addEventListener("click", () => window.__apAnnotatePanel.toggle());
 	shrinkBtn.addEventListener("click", () => window.__apAnnotatePanel.toggle());
 	clearBtn.addEventListener("click", clearAll);
+	exitBtn.addEventListener("click", exitMode);
 
 	// Opening state: expanded (the shortcut means "start annotating").
 	setTabId()
