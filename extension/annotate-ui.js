@@ -338,7 +338,16 @@
 
 	// Pinned set = storage truth; page marks mirror it.
 
-	async function setPinned(el, pinned) {
+	// Serialize pin writes: rapid clicks otherwise race read-modify-write on
+	// storage and one pin overwrites the other.
+	let writeChain = Promise.resolve();
+
+	function setPinned(el, pinned) {
+		writeChain = writeChain.then(() => doSetPinned(el, pinned));
+		return writeChain;
+	}
+
+	async function doSetPinned(el, pinned) {
 		if (tabId == null) return;
 		const info = pinInfo(el);
 		const cur = await loadAnnotations(tabId);
