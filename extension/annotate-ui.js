@@ -26,10 +26,7 @@
 	// externally (popup toggle-off) the singleton may survive while the
 	// panel is detached — treat that as "not injected" and rebuild, so the
 	// second toggle always brings the UI back.
-	if (
-		window.__apAnnotatePanel &&
-		document.querySelector("#ap-annotate-root")
-	) {
+	if (window.__apAnnotatePanel && document.querySelector("#ap-annotate-root")) {
 		window.__apAnnotatePanel.toggle();
 		return;
 	}
@@ -512,6 +509,10 @@
 	window.__apAnnotatePanel = {
 		async toggle() {
 			panel.hidden = !panel.hidden;
+			// Badge flips synchronously — the async restore below (storage
+			// round-trips) would otherwise leave the ✕ visible on an expanded
+			// panel for the whole await window.
+			syncFabBadge();
 			if (panel.hidden) {
 				pickerOff_();
 			} else {
@@ -532,7 +533,6 @@
 				}
 				pickerOn_();
 			}
-			syncFabBadge();
 		},
 	};
 
