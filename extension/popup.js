@@ -36,7 +36,10 @@ annotateBtn.addEventListener("click", async () => {
 
 async function refreshAnnotateCount() {
 	try {
-		const r = await chrome.runtime.sendMessage({ method: "annotations.count" });
+		const r = await withTimeout(
+			chrome.runtime.sendMessage({ method: "annotations.count" }),
+			1200,
+		);
 		if (r && r.ok) {
 			annotateCount.textContent = String(r.count);
 			annotateCount.hidden = r.count === 0;
@@ -57,9 +60,19 @@ async function init() {
 	labelInput.select();
 }
 
+// Popup UI must render instantly even when the SW is cold-starting: bound
+// every background round-trip with a timeout and show offline until it
+// answers (next 1s tick retries).
+function withTimeout(p, ms) {
+	return Promise.race([
+		p,
+		new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms)),
+	]);
+}
+
 async function refreshStatus() {
 	try {
-		const s = await chrome.runtime.sendMessage({ method: "status" });
+		const s = await withTimeout(chrome.runtime.sendMessage({ method: "status" }), 1200);
 		if (!s) return;
 		if (s.native_host === "connected") {
 			hostDot.className = "dot connected";

@@ -1792,11 +1792,27 @@ async function toggleAnnotation() {
 		};
 	}
 	try {
+		// True toggle: if the picker is already injected, remove it (pins
+		// stay in storage); otherwise inject.
+		const probe = await chrome.scripting.executeScript({
+			target: { tabId: tab.id },
+			func: () => !!document.querySelector("#ap-annotate-root"),
+		});
+		if (probe?.[0]?.result) {
+			await chrome.scripting.executeScript({
+				target: { tabId: tab.id },
+				func: () => {
+					const h = document.querySelector("#ap-annotate-root");
+					if (h) h.remove();
+				},
+			});
+			return { ok: true, toggled: false };
+		}
 		await chrome.scripting.executeScript({
 			target: { tabId: tab.id },
 			files: ["annotate-ui.js"],
 		});
-		return { ok: true };
+		return { ok: true, toggled: true };
 	} catch (e) {
 		return { ok: false, error: String(e?.message || e) };
 	}

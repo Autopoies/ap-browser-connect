@@ -227,6 +227,11 @@
 	const host = document.createElement("div");
 	host.id = "ap-annotate-root";
 	host.setAttribute("data-ap-annotate", "");
+	// Host must own the top stacking layer itself: z-index inside the shadow
+	// tree only orders elements within the shadow root; the host's own
+	// position/z-index decides whether page modals (blurred backdrops with
+	// their own z-index) can cover the whole UI.
+	host.style.cssText = "position:fixed;z-index:2147483647;";
 	const shadow = host.attachShadow({ mode: "open" });
 	const css = document.createElement("style");
 	css.textContent = `
