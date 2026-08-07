@@ -11,6 +11,13 @@ const opsCount = document.getElementById("opsCount");
 const annotateBtn = document.getElementById("annotateBtn");
 const annotateLabel = annotateBtn.querySelector(".ab-label");
 const annotateCount = document.getElementById("annotateCount");
+// Shortcut differs by platform: mac uses Command+Shift+A (Option+Shift is
+// swallowed by input-method switching), everything else Alt+Shift+A.
+document.getElementById("annotateKbd").textContent = /Mac|iPhone|iPad/.test(
+	navigator.platform,
+)
+	? "⌘⇧A"
+	: "Alt⇧A";
 
 annotateBtn.addEventListener("click", async () => {
 	const original = annotateLabel.textContent;

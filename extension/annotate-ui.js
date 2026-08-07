@@ -189,9 +189,7 @@
 			if (node.id) {
 				sel += `#${CSS.escape(node.id)}`;
 			} else {
-				const cls = [...node.classList]
-					.slice(0, 3)
-					.map((c) => CSS.escape(c));
+				const cls = [...node.classList].slice(0, 3).map((c) => CSS.escape(c));
 				if (cls.length) sel += "." + cls.join(".");
 				const parent = node.parentElement;
 				if (parent) {
@@ -286,7 +284,11 @@
 	shadow.appendChild(css);
 	const fab = document.createElement("button");
 	fab.className = "fab";
-	fab.title = "Toggle annotation picker (Alt+Shift+A)";
+	// Shortcut differs by platform (see manifest suggested_key): mac =
+	// Command+Shift+A, elsewhere Alt+Shift+A.
+	fab.title = /Mac|iPhone|iPad/.test(navigator.platform)
+		? "Toggle annotation picker (⌘⇧A)"
+		: "Toggle annotation picker (Alt+Shift+A)";
 	fab.setAttribute("aria-label", "Toggle annotation picker");
 	fab.append("✎");
 	const countEl = document.createElement("span");
@@ -295,7 +297,8 @@
 	fab.appendChild(countEl);
 	const panel = document.createElement("div");
 	panel.className = "panel";
-	panel.hidden = true;	const head = document.createElement("div");
+	panel.hidden = true;
+	const head = document.createElement("div");
 	head.className = "head";
 	const title = document.createElement("span");
 	title.className = "title";
@@ -397,7 +400,8 @@
 	}
 
 	// ─── picker events ───
-	function pickerTarget(e) {		// Ignore events inside our own shadow UI (fab/panel clicks).
+	function pickerTarget(e) {
+		// Ignore events inside our own shadow UI (fab/panel clicks).
 		if (e.composedPath().some((n) => n === host)) return null;
 		const el = e.target instanceof Element ? e.target : null;
 		if (!el) return null;
