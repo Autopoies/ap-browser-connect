@@ -261,6 +261,9 @@
 			background: transparent; color: #9aa4b0; border: none; cursor: pointer;
 			font-size: 13px; line-height: 1; border-radius: 5px;
 		}
+		.head button.wide {
+			width: auto; padding: 0 6px; font-size: 11px; font-weight: 500;
+		}
 		.head button:hover { background: rgba(255,255,255,.08); color: #fff; }
 		.hint {
 			padding: 6px 9px; color: #9aa4b0; font-size: 11px;
@@ -306,7 +309,8 @@
 	title.title = "Hover to preview, click to pin/unpin elements (green boxes)";
 	const clearBtn = document.createElement("button");
 	clearBtn.setAttribute("data-act", "clear");
-	clearBtn.textContent = "✕";
+	clearBtn.className = "wide";
+	clearBtn.textContent = "Clear";
 	clearBtn.title = "Clear all annotations";
 	const shrinkBtn = document.createElement("button");
 	shrinkBtn.setAttribute("data-act", "shrink");
