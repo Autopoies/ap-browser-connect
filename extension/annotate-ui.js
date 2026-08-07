@@ -289,10 +289,13 @@
 	fab.className = "fab";
 	// Shortcut differs by platform (see manifest suggested_key): mac =
 	// Command+Shift+A, elsewhere Alt+Shift+A.
+	// Pencil button toggles collapse/expand. Collapsed = not annotating
+	// (picker off); expanded = annotating. While collapsed the badge on the
+	// button's top-right corner becomes a round ✕ that exits the mode.
 	fab.title = /Mac|iPhone|iPad/.test(navigator.platform)
-		? "Clear all annotations (⌘⇧A to toggle)"
-		: "Clear all annotations (Alt+Shift+A to toggle)";
-	fab.setAttribute("aria-label", "Clear all annotations");
+		? "Toggle annotation picker (⌘⇧A)"
+		: "Toggle annotation picker (Alt+Shift+A)";
+	fab.setAttribute("aria-label", "Toggle annotation picker");
 	fab.append("✎");
 	const countEl = document.createElement("span");
 	countEl.className = "count";
@@ -406,10 +409,29 @@
 		updateCount(stored.length);
 	}
 
+	let pinCount = 0;
+
 	function updateCount(n) {
+		pinCount = n;
+		if (panel.hidden) return; // collapsed: badge shows the exit ✕ instead
 		countEl.textContent = String(n);
 		countEl.hidden = n === 0;
 		fab.style.background = n > 0 ? "#22c55e" : "#3b82f6";
+	}
+
+	function syncFabBadge() {
+		if (panel.hidden) {
+			countEl.hidden = false;
+			countEl.textContent = "✕";
+			countEl.style.background = "#ef4444";
+			countEl.title = "Exit annotation mode";
+			countEl.style.cursor = "pointer";
+		} else {
+			countEl.title = "";
+			countEl.style.cursor = "default";
+			countEl.style.background = "";
+			updateCount(pinCount);
+		}
 	}
 
 	// ─── picker events ───
@@ -498,18 +520,17 @@
 				}
 				pickerOn_();
 			}
+			syncFabBadge();
 		},
 	};
 
-	// The pencil button means "clear": wipe pins and show the empty panel
-	// (expanding it first if collapsed, so the action always has feedback).
-	fab.addEventListener("click", async () => {
-		if (panel.hidden) {
-			panel.hidden = false;
-			await setTabId();
-			pickerOn_();
-		}
-		await clearAll();
+	// The pencil button toggles collapse/expand (collapsed = picker off,
+	// expanded = picker on).
+	fab.addEventListener("click", () => window.__apAnnotatePanel.toggle());
+	// The round ✕ badge (shown only while collapsed) exits annotation mode.
+	countEl.addEventListener("click", (e) => {
+		e.stopPropagation();
+		if (panel.hidden) exitMode();
 	});
 	shrinkBtn.addEventListener("click", () => window.__apAnnotatePanel.toggle());
 	clearBtn.addEventListener("click", clearAll);
