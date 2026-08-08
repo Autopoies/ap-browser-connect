@@ -16,8 +16,8 @@ const annotateCount = document.getElementById("annotateCount");
 document.getElementById("annotateKbd").textContent = /Mac|iPhone|iPad/.test(
 	navigator.platform,
 )
-	? "⌘⇧A"
-	: "Alt⇧A";
+	? "⌘⇧E"
+	: "Alt⇧E";
 
 annotateBtn.addEventListener("click", async () => {
 	const original = annotateLabel.textContent;

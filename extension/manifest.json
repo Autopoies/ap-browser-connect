@@ -16,10 +16,10 @@
   "commands": {
     "toggle-annotate": {
       "suggested_key": {
-        "default": "Alt+Shift+A",
-        "mac": "Command+Shift+A"
+        "default": "Alt+Shift+E",
+        "mac": "Command+Shift+E"
       },
-      "description": "Toggle element annotation on the active tab (mac: Cmd+Shift+A)"
+      "description": "Toggle element annotation on the active tab (mac: Cmd+Shift+E)"
     }
   },
   "background": {

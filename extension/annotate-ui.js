@@ -308,8 +308,8 @@
 	// (picker off); expanded = annotating. While collapsed the badge on the
 	// button's top-right corner becomes a round ✕ that exits the mode.
 	fab.title = /Mac|iPhone|iPad/.test(navigator.platform)
-		? "Toggle annotation picker (⌘⇧A)"
-		: "Toggle annotation picker (Alt+Shift+A)";
+		? "Toggle annotation picker (⌘⇧E)"
+		: "Toggle annotation picker (Alt+Shift+E)";
 	fab.setAttribute("aria-label", "Toggle annotation picker");
 	fab.append("✎");
 	const countEl = document.createElement("span");
