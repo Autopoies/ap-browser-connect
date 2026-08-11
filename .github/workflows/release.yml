@@ -128,11 +128,11 @@ jobs:
           VERSION: ${{ needs.meta.outputs.tag }}
         run: |
           $STAGE = "ap-browser-$env:VERSION-${{ matrix.target }}"
-          New-Item -ItemType Directory -Force -Path "$STAGE/bin","$STAGE/extension","$STAGE/install" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$STAGE/bin","$STAGE/install" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/ap-browser.exe" "$STAGE/bin/"
           Copy-Item "target/${{ matrix.target }}/release/ap-browser-host.exe" "$STAGE/bin/"
           Copy-Item "target/${{ matrix.target }}/release/ap-browser-bridge.exe" "$STAGE/bin/"
-          Copy-Item -Recurse "extension" "$STAGE/"
+          Copy-Item -Recurse "extension" "$STAGE/extension"
           Copy-Item "install/com.apbrowser.connect.json" "$STAGE/install/"
           Copy-Item "install/install.ps1" "$STAGE/install/"
           Copy-Item "README.md" "$STAGE/"
