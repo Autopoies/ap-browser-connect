@@ -986,6 +986,13 @@ pub fn print_human(resp: &Value) {
 /// valueless `--human/--read-stdin`. Returns None when the first token is not
 /// a flag or argv[1] is not a site.
 fn reorder_leading_flags(raw: &[String]) -> Option<Vec<String>> {
+    reorder_leading_flags_against(raw, &sites::Registry::load())
+}
+
+fn reorder_leading_flags_against(
+    raw: &[String],
+    registry: &sites::Registry,
+) -> Option<Vec<String>> {
     let first = raw.first()?;
     if !first.starts_with("--") || raw.len() < 2 {
         return None;
@@ -1008,7 +1015,6 @@ fn reorder_leading_flags(raw: &[String]) -> Option<Vec<String>> {
     if i >= raw.len() {
         return None;
     }
-    let registry = sites::Registry::load();
     if sites::RESERVED.contains(&raw[i].as_str()) || registry.match_site(&raw[i]).is_some() {
         let mut reordered: Vec<String> = raw[i..].to_vec();
         reordered.extend(leading);
@@ -1021,17 +1027,37 @@ fn reorder_leading_flags(raw: &[String]) -> Option<Vec<String>> {
 #[cfg(test)]
 mod flag_reorder_tests {
     use super::reorder_leading_flags;
+    use super::reorder_leading_flags_against;
+    use crate::sites::{Registry, SiteEntry};
+    use std::collections::HashMap;
+
+    fn registry_with_site(name: &str) -> Registry {
+        let mut sites = HashMap::new();
+        sites.insert(
+            name.to_string(),
+            SiteEntry {
+                meta: None,
+                adapters: HashMap::new(),
+            },
+        );
+        Registry { sites }
+    }
 
     #[test]
     fn moves_leading_global_flags_to_tail_for_site_commands() {
-        let reordered = reorder_leading_flags(&[
-            "--tab".into(),
-            "5".into(),
-            "hackernews".into(),
-            "top".into(),
-            "--limit".into(),
-            "3".into(),
-        ])
+        // Must not depend on ~/.ap-browser/sites (absent on CI runners).
+        let registry = registry_with_site("hackernews");
+        let reordered = reorder_leading_flags_against(
+            &[
+                "--tab".into(),
+                "5".into(),
+                "hackernews".into(),
+                "top".into(),
+                "--limit".into(),
+                "3".into(),
+            ],
+            &registry,
+        )
         .expect("reorder should match hackernews");
         assert_eq!(
             reordered,
@@ -1079,6 +1105,14 @@ mod flag_reorder_tests {
             reordered,
             vec!["goto".to_string(), "--tab".to_string(), "5".to_string()]
         );
+        // Unknown site name without local adapters must not reorder.
+        assert!(reorder_leading_flags_against(
+            &["--tab".into(), "5".into(), "not-a-real-site".into(), "top".into()],
+            &Registry {
+                sites: HashMap::new()
+            },
+        )
+        .is_none());
     }
 }
 
