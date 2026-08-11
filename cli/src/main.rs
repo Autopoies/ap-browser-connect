@@ -1107,7 +1107,12 @@ mod flag_reorder_tests {
         );
         // Unknown site name without local adapters must not reorder.
         assert!(reorder_leading_flags_against(
-            &["--tab".into(), "5".into(), "not-a-real-site".into(), "top".into()],
+            &[
+                "--tab".into(),
+                "5".into(),
+                "not-a-real-site".into(),
+                "top".into()
+            ],
             &Registry {
                 sites: HashMap::new()
             },
