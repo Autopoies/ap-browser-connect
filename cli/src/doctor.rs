@@ -888,8 +888,8 @@ fn native_messaging_manifest_path() -> PathBuf {
     #[cfg(target_os = "linux")]
     {
         dirs::config_dir()
-            .or_else(|| dirs::home_dir())
-            .unwrap_or_else(|| std::env::temp_dir())
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(std::env::temp_dir)
             .join("google-chrome/NativeMessagingHosts/com.apbrowser.connect.json")
     }
     #[cfg(windows)]
@@ -900,8 +900,8 @@ fn native_messaging_manifest_path() -> PathBuf {
         // For the file-existence checks we still need *a* path; use the conventional
         // install location written by install.ps1.
         dirs::data_dir()
-            .or_else(|| dirs::home_dir())
-            .unwrap_or_else(|| std::env::temp_dir())
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(std::env::temp_dir)
             .join("ap-browser-connect")
             .join("com.apbrowser.connect.json")
     }

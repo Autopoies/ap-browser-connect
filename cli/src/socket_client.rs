@@ -74,7 +74,7 @@ fn format_online_profiles(ids: &[String]) -> String {
         .map(|id| match probe_info(id) {
             Ok(info) => format!(
                 "  {}  {}  {}",
-                &info.instance_id.get(..8).unwrap_or(&info.instance_id),
+                info.instance_id.get(..8).unwrap_or(&info.instance_id),
                 info.label.as_deref().unwrap_or("(no label)"),
                 info.active_tab_url.as_deref().unwrap_or("(no tab)")
             ),
