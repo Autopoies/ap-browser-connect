@@ -130,7 +130,7 @@ security rules cannot remain active.
 )
 ```
 
-After this, `ap-browser sites list` should print ~42 sites (arxiv, bilibili,
+After this, `ap-browser sites list` should print ~43 sites (arxiv, bilibili,
 github, hackernews, ...), and `~/.ap-browser/filters/` should contain the
 official site-specific content filters.
 

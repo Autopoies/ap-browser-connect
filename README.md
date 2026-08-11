@@ -7,7 +7,7 @@
 In one surface:
 
 - **Drive** — tabs, navigation, click / fill / wait, `eval`, screenshots
-- **Adapters** — 42 sites, 200+ named commands (`ap-browser hackernews top`)
+- **Adapters** — 43 sites, 200+ named commands (`ap-browser hackernews top`)
 - **Batch** — multi-step flows in one round-trip
 - **Annotate** — visual ref map (`screenshot --annotate`) and in-page pin picker for agents
 - **Dev** — CDP console, network, errors, snapshot, perf, lighthouse, emulate
@@ -138,7 +138,7 @@ ap-browser dev errors
 ap-browser dev network list --status failed
 ```
 
-## Site adapters (42 sites, 200+ commands)
+## Site adapters (43 sites, 200+ commands)
 
 Adapters are YAML (+ optional JS) loaded at runtime from `~/.ap-browser/sites/`. They are not compiled into the CLI.
 

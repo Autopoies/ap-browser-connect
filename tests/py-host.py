@@ -1,4 +1,4 @@
-#!/opt/homebrew/bin/python3
+#!/usr/bin/env python3
 """Throwaway native host for verifying Chrome native messaging framing.
 
 Run as the `path` of `com.apbrowser.connect.json` while developing.
