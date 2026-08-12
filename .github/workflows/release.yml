@@ -214,10 +214,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          # NOTE: no registry-url — setup-node would write GITHUB_TOKEN as the
-          # npm auth token into .npmrc, which shadows OIDC trusted publishing
-          # and makes npm publish fail with E404.
+          node-version: 24
+          # npm trusted publishing requires Node >= 22.14.0 (docs.npmjs.com/
+          # trusted-publishers). NOTE: no registry-url — setup-node would write
+          # GITHUB_TOKEN as the npm auth token into .npmrc, which shadows OIDC
+          # trusted publishing and makes npm publish fail with E404.
 
       - name: Upgrade npm (OIDC trusted publishing needs npm >= 11.5.1)
         run: npm install -g npm@latest --force
