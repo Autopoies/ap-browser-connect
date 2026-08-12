@@ -19,8 +19,9 @@ except (OSError, ValueError, KeyError) as e:
 
 exchange = urllib.request.Request(
     "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/ap-browser-connect",
-    data=json.dumps({"id_token": jwt, "name": "ap-browser-connect"}).encode(),
-    headers={"Content-Type": "application/json"},
+    data=b"",
+    method="POST",
+    headers={"Authorization": f"Bearer {jwt}"},
 )
 try:
     resp = urllib.request.urlopen(exchange)
