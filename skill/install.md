@@ -41,16 +41,27 @@ performs the steps.
 
 ### Step 1 — CLI + native host binaries
 
-Download the prebuilt binary tarball for your OS+arch from the latest release:
+The quickest way is npm (ships prebuilt binaries for all platforms, no build):
+
+```bash
+npm install -g ap-browser-connect
+```
+
+This installs three commands: `ap-browser` (CLI), `ap-browser-host` (native
+host), and `ap-browser-bridge` (TCP bridge).
+
+Alternatively, download the prebuilt binary tarball for your OS+arch from the
+latest release:
 
 <https://github.com/autopoies/ap-browser-connect/releases/latest>
 
-Tarballs are named `ap-browser-<version>-<target>.tar.gz` and ship two
-binaries: `ap-browser` (the CLI) and `ap-browser-host` (the native messaging
-bridge). Targets shipped per release:
+Tarballs are named `ap-browser-<version>-<target>.tar.gz` and ship three
+binaries: `ap-browser` (the CLI), `ap-browser-host` (the native messaging
+bridge), and `ap-browser-bridge` (TCP bridge for containerized testing).
+Targets shipped per release:
 
 | Target | OS |
-|---|---|
+| --- | --- |
 | `x86_64-apple-darwin` | macOS Intel |
 | `aarch64-apple-darwin` | macOS Apple Silicon |
 | `x86_64-unknown-linux-gnu` | Linux x86_64 |
@@ -73,11 +84,14 @@ is already installed.
 
 Chrome does not allow scripting the load-unpacked step. Do it by hand once:
 
-1. Download `extension.zip` from the latest release.
-2. Unzip it somewhere stable (e.g. `~/ap-browser-extension/`).
+1. Download `ap-browser-extension-<version>.zip` from the latest release.
+2. Unzip it somewhere stable (e.g. `~/ap-browser-extension/`). The zip
+extracts the extension files at its root — the unzipped directory itself is
+the extension folder (the tarball's `extension/` subdirectory holds the same
+content).
 3. Open `chrome://extensions`.
 4. Toggle **Developer mode** (top-right).
-5. Click **Load unpacked** → select the unzipped `extension/` directory.
+5. Click **Load unpacked** → select that unzipped directory.
 6. (Optional) Pin the extension for visibility.
 
 Repeat the load-unpacked step in every Chrome profile you want `ap-browser` to
@@ -105,7 +119,13 @@ checkout with no installed host, it builds and links one. It then writes
 `~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.apbrowser.connect.json`
 (macOS) or `~/.config/google-chrome/NativeMessagingHosts/com.apbrowser.connect.json`
 (Linux). If it cannot find the loaded **AP Browser Connect** Extension, it
-fails without writing a placeholder manifest.
+copies the extension + `install_guide.pdf` into `~/ap-browser-extension/`,
+opens that folder in your file manager, and fails without writing a placeholder
+manifest — it stages the extension + `install_guide.pdf` into
+`~/ap-browser-extension/`, opens that folder in your file manager, and waits
+(up to 3 min, `AP_BROWSER_WAIT_SECONDS` to override) for you to load the
+extension per the guide — no re-run needed. It only fails without writing a
+placeholder manifest if the wait times out.
 
 ### Step 4 — Site adapters + filters
 
@@ -143,6 +163,7 @@ ap-browser hackernews top 2>/dev/null | head -5  # adapter command
 ```
 
 If `ap-browser ping` fails:
+
 - `ECONNREFUSED` → extension not loaded; reload `chrome://extensions` and check the toolbar icon
 - `no profile` → open the extension popup and set a label
 - `permission denied on /usr/local/bin` → re-run install with sudo
@@ -157,7 +178,7 @@ If `ap-browser ping` fails:
 ## Platform support
 
 | OS | Status |
-|---|---|
+| --- | --- |
 | macOS (arm64, x86_64) | Tested |
 | Linux (x86_64, arm64) | Tested |
 | Windows | Experimental — compiles, untested. Try `cargo install` from source. |
@@ -165,7 +186,7 @@ If `ap-browser ping` fails:
 ## Reference URLs
 
 | Resource | URL |
-|---|---|
+| --- | --- |
 | Skill (this file) | <https://github.com/autopoies/ap-browser-connect/blob/main/skill/install.md> |
 | Product repo (CLI, extension, skill) | <https://github.com/autopoies/ap-browser-connect> |
 | Adapters repo (sites) | <https://github.com/autopoies/ap-browser-connect-adapters> |

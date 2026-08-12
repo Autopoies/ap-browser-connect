@@ -1,0 +1,32 @@
+{
+  "name": "ap-browser-connect",
+  "version": "0.1.1",
+  "description": "Drive your logged-in Chrome from any agent — CLI, native messaging host, and bridge",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/autopoies/ap-browser-connect.git"
+  },
+  "bin": {
+    "ap-browser": "shims/ap-browser.js",
+    "ap-browser-host": "shims/ap-browser.js",
+    "ap-browser-bridge": "shims/ap-browser.js"
+  },
+  "files": [
+    "bin",
+    "shims",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

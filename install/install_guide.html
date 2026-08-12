@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>AP Browser Connect — Extension Install Guide</title>
+    <style>
+      @page {
+        margin: 18mm 16mm;
+      }
+      body {
+        font-family:
+          -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+        font-size: 10.5pt;
+        line-height: 1.5;
+        color: #1c1c1e;
+        max-width: 170mm;
+      }
+      h1 {
+        font-size: 17pt;
+        margin: 0 0 2mm;
+      }
+      h2 {
+        font-size: 12.5pt;
+        margin: 6mm 0 2mm;
+        color: #0a5c36;
+      }
+      .subtitle {
+        color: #6e6e73;
+        margin-bottom: 6mm;
+      }
+      ol {
+        padding-left: 6mm;
+      }
+      li {
+        margin-bottom: 2.5mm;
+      }
+      code,
+      kbd {
+        font-family: "SF Mono", Menlo, Consolas, monospace;
+        font-size: 9pt;
+        background: #f2f2f7;
+        padding: 0.5mm 1.5mm;
+        border-radius: 2mm;
+      }
+      .tip {
+        background: #f0f7f3;
+        border-left: 3px solid #0a5c36;
+        padding: 3mm 4mm;
+        margin: 4mm 0;
+        border-radius: 1mm;
+      }
+      .footer {
+        margin-top: 8mm;
+        font-size: 8.5pt;
+        color: #8e8e93;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>AP Browser Connect — Extension Installation</h1>
+    <div class="subtitle">
+      One-time manual step (Chrome requires it). Everything else is handled by
+      the installer.
+    </div>
+
+    <h2>Step 1 — Open the extensions page</h2>
+    <ol>
+      <li>Open Google Chrome.</li>
+      <li>
+        Type <code>chrome://extensions</code> in the address bar and press
+        Enter.
+      </li>
+    </ol>
+
+    <h2>Step 2 — Enable Developer mode</h2>
+    <ol>
+      <li>
+        Toggle <strong>Developer mode</strong> (top-right corner of the page).
+      </li>
+      <li>
+        The toolbar row with <strong>Load unpacked</strong>,
+        <strong>Pack extension</strong>, and <strong>Update</strong> buttons
+        appears.
+      </li>
+    </ol>
+
+    <h2>Step 3 — Load the extension</h2>
+    <ol>
+      <li>Click <strong>Load unpacked</strong>.</li>
+      <li>
+        In the file picker, select the <code>extension</code> folder that ships
+        next to this PDF.
+      </li>
+      <li>
+        The <strong>AP Browser Connect</strong> card appears in the list.
+        (Optional) Pin it to the toolbar via the puzzle icon.
+      </li>
+    </ol>
+
+    <div class="tip">
+      <strong>Multiple profiles:</strong> repeat Step 3 in every Chrome profile
+      you want <code>ap-browser</code> to control. The installer detects the
+      extension across all profiles automatically.
+    </div>
+
+    <h2>Step 4 — Done</h2>
+    <ol>
+      <li>
+        That's it. The installer you launched is watching for the extension and
+        continues automatically the moment it appears — no need to re-run it.
+      </li>
+      <li>
+        If the installer already timed out, just run
+        <kbd>bash install/install.sh</kbd> again; it will pick up the extension
+        immediately.
+      </li>
+    </ol>
+
+    <h2>Step 5 — Verify</h2>
+    <ol>
+      <li>
+        Run <code>ap-browser ping</code>. Success looks like:
+        <kbd>{"ok":true,"data":{"pong":true},...}</kbd>
+      </li>
+      <li>
+        If prompted, open the extension popup and set a profile label (e.g.
+        <em>Personal</em>, <em>Work</em>).
+      </li>
+    </ol>
+
+    <div class="footer">
+      AP Browser Connect · github.com/autopoies/ap-browser-connect · Apache-2.0
+    </div>
+  </body>
+</html>

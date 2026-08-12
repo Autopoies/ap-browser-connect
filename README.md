@@ -19,7 +19,7 @@ The CLI uses the open Chrome session. It does not include a headless browser, No
 ## Measured results
 
 | | Measured result |
-|---|---|
+| --- | --- |
 | **Footprint** | The CLI is 2.05 MiB. Peak CLI RSS is 4.3–5.3 MiB. Native host RSS is 2–3 MiB. |
 | **Latency** | Common operations take 26–47 ms. A three-step batch takes 80 ms. |
 | **Agent use** | One tool call and about 2.3K tokens for each steady-state adapter or batch task. |
@@ -36,7 +36,7 @@ Paste this prompt into Claude Code, Cursor, Codex, or another coding agent:
 ```
 Install the skill with: npx skills add autopoies/ap-browser-connect/skill
 Read that skill's install.md.
-Follow its steps for release binaries, the unpacked extension, the native-host manifest, and adapters.
+Follow its steps for the CLI (npm install -g ap-browser-connect), the unpacked extension, the native-host manifest, and adapters.
 Verify with: `ap-browser ping`
 ```
 
@@ -47,10 +47,20 @@ After those steps, the agent can drive your logged-in Chrome.
 Install the release binaries, extension, native-host manifest, and site adapters.
 Humans do not need the skill. Install it only when an agent must install or run `ap-browser`.
 
-**1. Install the release binaries**
+**1. Install the CLI + native host**
 
 ```bash
-# Download the matching tarball from:
+npm install -g ap-browser-connect
+```
+
+The npm package ships prebuilt binaries for macOS (arm64/x64), Linux (arm64/x64),
+and Windows x64 — no install scripts, no extra steps. It installs three
+commands: `ap-browser` (CLI), `ap-browser-host` (native host), and
+`ap-browser-bridge` (TCP bridge).
+
+No npm? Download the matching tarball instead:
+
+```bash
 # https://github.com/autopoies/ap-browser-connect/releases/latest
 tar xzf ap-browser-*-<target>.tar.gz
 sudo cp ap-browser-*-<target>/bin/ap-browser* /usr/local/bin/
@@ -246,7 +256,7 @@ Full reference: [`skill/references/capture-download.md`](./skill/references/capt
 ## Commands
 
 | Group | Commands | Description |
-|-------|----------|-------------|
+| ------- | ---------- | ------------- |
 | **Meta** | `ping`, `status`, `profiles`, `use`, `current`, `info`, `doctor` | Connection, profiles, health check |
 | **Tabs** | `tabs list`, `tabs new`, `tabs close`, `tabs activate`, `tabs get` | Tab lifecycle |
 | **Navigation** | `goto`, `back`, `forward`, `reload` | Page navigation |

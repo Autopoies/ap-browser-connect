@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write # npm trusted publishing via OIDC
 
 concurrency:
   group: release-${{ github.event.workflow_run.head_branch || github.ref }}
@@ -33,7 +34,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          ref: >-
+            ${{ github.event_name == 'workflow_run' &&
+            github.event.workflow_run.head_sha || github.sha }}
 
       - name: Resolve tag + sha
         id: resolve
@@ -44,7 +47,8 @@ jobs:
             SHA="${GITHUB_SHA}"
           else
             SHA="${{ github.event.workflow_run.head_sha }}"
-            VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+            VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' \
+              Cargo.toml | head -1)
             if [ -z "$VERSION" ]; then
               echo "could not read workspace version from Cargo.toml" >&2
               exit 1
@@ -98,7 +102,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" \
+            >> "$GITHUB_ENV"
 
       - name: Build release
         run: cargo build --workspace --release --target ${{ matrix.target }}
@@ -113,10 +118,12 @@ jobs:
           mkdir -p "${STAGE}/bin" "${STAGE}/extension" "${STAGE}/install"
           cp "target/${{ matrix.target }}/release/ap-browser" "${STAGE}/bin/"
           cp "target/${{ matrix.target }}/release/ap-browser-host" "${STAGE}/bin/"
-          cp "target/${{ matrix.target }}/release/ap-browser-bridge" "${STAGE}/bin/"
+          cp "target/${{ matrix.target }}/release/ap-browser-bridge" \
+            "${STAGE}/bin/"
           cp -R extension "${STAGE}/"
           cp install/com.apbrowser.connect.json "${STAGE}/install/"
           cp install/install.sh "${STAGE}/install/"
+          cp install/install_guide.pdf "${STAGE}/install/"
           cp README.md LICENSE "${STAGE}/"
           tar czf "${STAGE}.tar.gz" "${STAGE}"
           shasum -a 256 "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256"
@@ -128,13 +135,16 @@ jobs:
           VERSION: ${{ needs.meta.outputs.tag }}
         run: |
           $STAGE = "ap-browser-$env:VERSION-${{ matrix.target }}"
-          New-Item -ItemType Directory -Force -Path "$STAGE/bin","$STAGE/install" | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/ap-browser.exe" "$STAGE/bin/"
-          Copy-Item "target/${{ matrix.target }}/release/ap-browser-host.exe" "$STAGE/bin/"
-          Copy-Item "target/${{ matrix.target }}/release/ap-browser-bridge.exe" "$STAGE/bin/"
+          $SRC = "target/${{ matrix.target }}/release"
+          New-Item -ItemType Directory -Force -Path "$STAGE/bin" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$STAGE/install" | Out-Null
+          Copy-Item "$SRC/ap-browser.exe" "$STAGE/bin/"
+          Copy-Item "$SRC/ap-browser-host.exe" "$STAGE/bin/"
+          Copy-Item "$SRC/ap-browser-bridge.exe" "$STAGE/bin/"
           Copy-Item -Recurse "extension" "$STAGE/extension"
           Copy-Item "install/com.apbrowser.connect.json" "$STAGE/install/"
           Copy-Item "install/install.ps1" "$STAGE/install/"
+          Copy-Item "install/install_guide.pdf" "$STAGE/install/"
           Copy-Item "README.md" "$STAGE/"
           Copy-Item "LICENSE" "$STAGE/"
           Compress-Archive -Path "$STAGE/*" -DestinationPath "$STAGE.zip"
@@ -189,3 +199,41 @@ jobs:
             artifacts/*.zip
             artifacts/*.zip.sha256
             ap-browser-extension-*.zip
+
+  npm-publish:
+    name: Publish to npm
+    if: >
+      github.event_name == 'push'
+      || github.event.workflow_run.conclusion == 'success'
+    needs: [meta, release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Assemble binaries + publish
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          BASE="${TAG#v}"
+          # npm versions are immutable: bump patch if the tag version is taken.
+          VERSION="$BASE"
+          i=1
+          while npm view ap-browser-connect@"${VERSION}" version \
+            >/dev/null 2>&1; do
+            VERSION="${BASE%.*}.$(( ${BASE##*.} + i ))"
+            i=$((i + 1))
+          done
+          (cd npm && npm pkg set version="${VERSION}")
+          bash npm/build.sh "$BASE"
+          # OIDC trusted publishing: no NODE_AUTH_TOKEN, requires the npm
+          # Trusted Publisher configured for this repo (id-token: write).
+          (cd npm && npm publish)
+          echo "✓ Published ap-browser-connect@${VERSION}"
