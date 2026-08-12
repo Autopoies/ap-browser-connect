@@ -219,6 +219,9 @@ jobs:
           # npm auth token into .npmrc, which shadows OIDC trusted publishing
           # and makes npm publish fail with E404.
 
+      - name: Upgrade npm (OIDC trusted publishing needs npm >= 11.5.1)
+        run: npm install -g npm@latest --force
+
       - name: Assemble binaries + publish
         env:
           TAG: ${{ needs.meta.outputs.tag }}
