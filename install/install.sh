@@ -59,6 +59,10 @@ uninstall() {
 # ─── 1. Ensure host binary exists ─────────────────────────────────────────
 if [[ -x "$HOST_BIN_INSTALL" ]]; then
 	echo "→ Reusing installed host binary: ${HOST_BIN_INSTALL}"
+elif command -v "${HOST_BIN_NAME}" >/dev/null 2>&1; then
+	# npm install -g puts the host on PATH (e.g. /opt/homebrew/bin).
+	HOST_BIN_INSTALL="$(command -v "${HOST_BIN_NAME}")"
+	echo "→ Using ${HOST_BIN_NAME} from PATH: ${HOST_BIN_INSTALL}"
 elif [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/Cargo.toml" && -f "$REPO_ROOT/host/Cargo.toml" ]]; then
 	if ! command -v cargo >/dev/null 2>&1; then
 		echo "cargo is required to build ap-browser-host from this source checkout." >&2
