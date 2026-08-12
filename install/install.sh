@@ -60,9 +60,31 @@ uninstall() {
 if [[ -x "$HOST_BIN_INSTALL" ]]; then
 	echo "→ Reusing installed host binary: ${HOST_BIN_INSTALL}"
 elif command -v "${HOST_BIN_NAME}" >/dev/null 2>&1; then
-	# npm install -g puts the host on PATH (e.g. /opt/homebrew/bin).
-	HOST_BIN_INSTALL="$(command -v "${HOST_BIN_NAME}")"
-	echo "→ Using ${HOST_BIN_NAME} from PATH: ${HOST_BIN_INSTALL}"
+	# npm install -g puts the host on PATH (e.g. /opt/homebrew/bin). The npm
+	# bin entry is a Node shim (#!/usr/bin/env node); Chrome spawns the host
+	# from the manifest path under launchd's minimal PATH, which has no
+	# Homebrew dir, so the shim dies with "node: No such file or directory".
+	# Resolve the real bundled Rust binary when we can; it needs no runtime.
+	PATH_HOST="$(command -v "${HOST_BIN_NAME}")"
+	HOST_BIN_INSTALL="$PATH_HOST"
+	if [[ -L "$PATH_HOST" ]]; then
+		TARGET="$(readlink "$PATH_HOST")"
+		[[ "$TARGET" != /* ]] && TARGET="$(dirname "$PATH_HOST")/$TARGET"
+		PKG_DIR="$(cd "$(dirname "$TARGET")/.." 2>/dev/null && pwd)" || PKG_DIR=""
+		if [[ -n "$PKG_DIR" ]]; then
+			case "$(uname -s)-$(uname -m)" in
+			Darwin-arm64) TRIPLE="aarch64-apple-darwin" ;;
+			Darwin-x86_64) TRIPLE="x86_64-apple-darwin" ;;
+			Linux-aarch64) TRIPLE="aarch64-unknown-linux-gnu" ;;
+			Linux-x86_64) TRIPLE="x86_64-unknown-linux-gnu" ;;
+			*) TRIPLE="" ;;
+			esac
+			if [[ -n "$TRIPLE" && -x "$PKG_DIR/bin/$TRIPLE/${HOST_BIN_NAME}" ]]; then
+				HOST_BIN_INSTALL="$PKG_DIR/bin/$TRIPLE/${HOST_BIN_NAME}"
+			fi
+		fi
+	fi
+	echo "→ Using ${HOST_BIN_NAME}: ${HOST_BIN_INSTALL}"
 elif [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/Cargo.toml" && -f "$REPO_ROOT/host/Cargo.toml" ]]; then
 	if ! command -v cargo >/dev/null 2>&1; then
 		echo "cargo is required to build ap-browser-host from this source checkout." >&2
