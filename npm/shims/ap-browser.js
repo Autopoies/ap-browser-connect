@@ -15,7 +15,7 @@ const arch =
 			: process.arch;
 const osName = {
 	darwin: "apple-darwin",
-	linux: "unknown-linux-gnu",
+	linux: "unknown-linux-musl",
 	win32: "pc-windows-msvc",
 }[process.platform];
 const target = `${arch}-${osName}`;

@@ -75,8 +75,8 @@ elif command -v "${HOST_BIN_NAME}" >/dev/null 2>&1; then
 			case "$(uname -s)-$(uname -m)" in
 			Darwin-arm64) TRIPLE="aarch64-apple-darwin" ;;
 			Darwin-x86_64) TRIPLE="x86_64-apple-darwin" ;;
-			Linux-aarch64) TRIPLE="aarch64-unknown-linux-gnu" ;;
-			Linux-x86_64) TRIPLE="x86_64-unknown-linux-gnu" ;;
+			Linux-aarch64) TRIPLE="aarch64-unknown-linux-musl" ;;
+			Linux-x86_64) TRIPLE="x86_64-unknown-linux-musl" ;;
 			*) TRIPLE="" ;;
 			esac
 			if [[ -n "$TRIPLE" && -x "$PKG_DIR/bin/$TRIPLE/${HOST_BIN_NAME}" ]]; then

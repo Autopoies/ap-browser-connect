@@ -72,12 +72,14 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             archive: tar.gz
-          - target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             archive: tar.gz
-          - target: aarch64-unknown-linux-gnu
+            zig: true
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             archive: tar.gz
+            zig: true
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             archive: zip
@@ -97,16 +99,19 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
-      - name: Install aarch64 Linux linker
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Install zig + cargo-zigbuild (Linux musl)
+        if: matrix.zig == true
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" \
-            >> "$GITHUB_ENV"
+          curl -fsSL https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz \
+            -o /tmp/zig.tar.xz
+          tar -C /opt -xf /tmp/zig.tar.xz
+          echo "/opt/zig-x86_64-linux-0.14.1" >> "$GITHUB_PATH"
+          cargo install cargo-zigbuild --locked
 
       - name: Build release
-        run: cargo build --workspace --release --target ${{ matrix.target }}
+        run: >
+          cargo ${{ matrix.zig && 'zigbuild' || 'build' }}
+          --workspace --release --target ${{ matrix.target }}
 
       - name: Package (Unix)
         if: matrix.archive == 'tar.gz'
@@ -117,7 +122,8 @@ jobs:
           STAGE="ap-browser-${VERSION}-${{ matrix.target }}"
           mkdir -p "${STAGE}/bin" "${STAGE}/extension" "${STAGE}/install"
           cp "target/${{ matrix.target }}/release/ap-browser" "${STAGE}/bin/"
-          cp "target/${{ matrix.target }}/release/ap-browser-host" "${STAGE}/bin/"
+          cp "target/${{ matrix.target }}/release/ap-browser-host" \
+            "${STAGE}/bin/"
           cp "target/${{ matrix.target }}/release/ap-browser-bridge" \
             "${STAGE}/bin/"
           cp -R extension "${STAGE}/"

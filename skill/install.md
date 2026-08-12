@@ -64,8 +64,8 @@ Targets shipped per release:
 | --- | --- |
 | `x86_64-apple-darwin` | macOS Intel |
 | `aarch64-apple-darwin` | macOS Apple Silicon |
-| `x86_64-unknown-linux-gnu` | Linux x86_64 |
-| `aarch64-unknown-linux-gnu` | Linux arm64 |
+| `x86_64-unknown-linux-musl` | Linux x86_64 (static) |
+| `aarch64-unknown-linux-musl` | Linux arm64 (static) |
 | `x86_64-pc-windows-msvc` | Windows (experimental) |
 
 Install:
