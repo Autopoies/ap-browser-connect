@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/autopoies/ap-browser-connect.git"
+    "url": "https://github.com/Autopoies/ap-browser-connect.git"
   },
   "bin": {
     "ap-browser": "shims/ap-browser.js",
