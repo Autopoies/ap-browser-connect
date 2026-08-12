@@ -228,10 +228,6 @@ jobs:
           TAG: ${{ needs.meta.outputs.tag }}
         run: |
           set -euo pipefail
-          # Diagnose the OIDC subject npm will match against the Trusted
-          # Publisher config (owner/repo/ref/environment).
-          python3 npm/scripts/oidc-subject.py
-          python3 npm/scripts/oidc-exchange-diagnose.py
           BASE="${TAG#v}"
           # npm versions are immutable: bump patch if the tag version is taken.
           VERSION="$BASE"
