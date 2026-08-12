@@ -215,7 +215,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: https://registry.npmjs.org
+          # NOTE: no registry-url — setup-node would write GITHUB_TOKEN as the
+          # npm auth token into .npmrc, which shadows OIDC trusted publishing
+          # and makes npm publish fail with E404.
 
       - name: Assemble binaries + publish
         env:
