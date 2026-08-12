@@ -19,7 +19,7 @@ Drive the user's **already-logged-in** Chrome — real cookies, real sessions, r
 
 ## Adapter-first rule
 
-**Every task starts the same way: identify the current/target site, then check for a matching adapter — before any generic `tabs`/`goto`/`text` command.** 200+ adapters across 40+ sites are preinstalled; they encode selectors, pagination, SPA waits, and ad filtering in one command. Generic tab primitives are the **fallback**, never the default.
+**Every task starts the same way: identify the current/target site, then check for a matching adapter — before any generic `tabs`/`goto`/`text` command.** 159 adapters across 43 sites are preinstalled; they encode selectors, pagination, SPA waits, and ad filtering in one command. Generic tab primitives are the **fallback**, never the default.
 
 **Step 0 — what site is this task about?**
 

@@ -2,25 +2,36 @@
 
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg) ![Language](https://img.shields.io/badge/language-Rust-orange.svg) ![Extension](https://img.shields.io/badge/extension-Chrome-green.svg) ![Platform](https://img.shields.io/badge/platform-macOS_|_Linux-lightgrey.svg) ![Platform](https://img.shields.io/badge/platform-Windows_(experimental)-yellow.svg)
 
-**All-in-one agent browser connector.** One Rust CLI attaches any AI agent to the Chrome profile you already use. That profile keeps your cookies, logins, and open tabs.
+**Small. Fast. Efficient.** The native Rust CLI connects an AI agent to your open Chrome session.
+The agent can use the profile's cookies and logins. It can also use the open tabs.
 
-In one surface:
+The CLI provides these functions:
 
-- **Drive** — tabs, navigation, click / fill / wait, `eval`, screenshots
-- **Adapters** — 43 sites, 200+ named commands (`ap-browser hackernews top`)
-- **Batch** — multi-step flows in one round-trip
-- **Annotate** — visual ref map (`screenshot --annotate`) and in-page pin picker for agents
-- **Dev** — CDP console, network, errors, snapshot, perf, lighthouse, emulate
-- **Capture** — `download` (session cookies / yt-dlp), `pdf`, `mhtml`, `har`, `media`
-- **Filters** — site policies that omit/redact injection-prone nodes and can deny risky `click` / `fill` targets
+- **Drive**: Control tabs, navigate, click, fill, wait, run `eval`, and take screenshots.
+- **Adapters**: Run 159 named commands for 43 sites (`ap-browser hackernews top`).
+- **Annotate**: Map screenshot markers to element references and user-selected elements.
+- **Dev**: Inspect the console, network, errors, DOM, performance, and emulation state.
+- **Capture**: Download files and export PDF, MHTML, HAR, and media files.
+- **Filters**: Omit or redact untrusted content and deny configured `click` or `fill` targets.
 
-Agents do not need a headless browser, a fresh login, a Node runtime, or a single vendor.
+The CLI uses the open Chrome session. It does not include a headless browser, Node.js, or an LLM runtime.
+
+## Measured results
+
+| | Measured result |
+|---|---|
+| **Footprint** | The CLI is 2.05 MiB. Peak CLI RSS is 4.3–5.3 MiB. Native host RSS is 2–3 MiB. |
+| **Latency** | Common operations take 26–47 ms. A three-step batch takes 80 ms. |
+| **Agent use** | One tool call and about 2.3K tokens for each steady-state adapter or batch task. |
+
+Measurements used a stripped v0.1.0 release on Apple Silicon and macOS, 10 warm local runs, and Pi 0.84.1 with `opencode-go/deepseek-v4-flash`.
+Thinking was off. We excluded the first skill load. Results vary by workload.
 
 ---
 
 # Agent Quickstart
 
-Paste this into Claude Code, Cursor, Codex, or any coding agent:
+Paste this prompt into Claude Code, Cursor, Codex, or another coding agent:
 
 ```
 Install the skill with: npx skills add autopoies/ap-browser-connect/skill
@@ -33,7 +44,8 @@ After those steps, the agent can drive your logged-in Chrome.
 
 # Human Quickstart
 
-Install four parts: release binaries, the unpacked extension, the native-host manifest, and site adapters. The skill is optional for humans. Install the skill when an agent must set up and run `ap-browser` for you.
+Install the release binaries, extension, native-host manifest, and site adapters.
+Humans do not need the skill. Install it only when an agent must install or run `ap-browser`.
 
 **1. Install the release binaries**
 
@@ -66,7 +78,7 @@ For source development:
 2. Load this checkout's `extension/`.
 3. Run `bash install/install.sh`.
 
-The script builds `ap-browser-host` when no release host is installed.
+If the release host is not installed, the script builds `ap-browser-host`.
 
 **4. Install site adapters**
 
@@ -89,15 +101,12 @@ ap-browser text
 
 # Why this exists
 
-Agents that act on the open web usually hit one of two gaps:
+Autopoies Browser Connect gives an agent a deterministic interface to your Chrome session.
+The calling agent makes task decisions.
+The CLI operates the browser, debugs pages, captures files, and runs named site commands.
 
-- **Headless stacks** (Playwright, browser-use, and similar tools) start a clean browser and lose your logins.
-- **Fetch-only / site-CLI tools** ship many named commands, but they do not cover a full operate, debug, and capture loop on the live tab.
-
-Autopoies Browser Connect sits in the middle. It is one Rust CLI on **your** Chrome.
-
-- Use an **adapter** when the site is known — or **create your own** (`skill/references/create-site.md`) for a new site.
-- Use **`batch`** for multi-step work in one round-trip — fewer agent turns, lower token cost.
+- Use an **adapter** when one is available. Create an adapter (`skill/references/create-site.md`) for a new site.
+- Use **`batch`** to run multiple steps in one round-trip. This reduces agent turns and token use.
 - Use **`dev`** for live-page web development: console, network, errors, snapshot, perf, lighthouse, emulate.
 - Use **`download` / `pdf` / `mhtml`** when you need an artifact.
 
@@ -138,9 +147,9 @@ ap-browser dev errors
 ap-browser dev network list --status failed
 ```
 
-## Site adapters (43 sites, 200+ commands)
+## Site adapters (43 sites, 159 commands)
 
-Adapters are YAML (+ optional JS) loaded at runtime from `~/.ap-browser/sites/`. They are not compiled into the CLI.
+The CLI loads YAML adapters from `~/.ap-browser/sites/` at runtime. An adapter can use an optional JavaScript file. The adapters are not compiled into the CLI.
 
 ```bash
 ap-browser --help                 # lists installed sites + commands
@@ -155,7 +164,9 @@ Authoring guide: [`skill/references/create-site.md`](./skill/references/create-s
 
 ## Site filters (reduce injection risk)
 
-Page text is untrusted. Site filters add a narrower, deterministic layer on top of that warning. Policies load from `~/.ap-browser/filters/<site>/<name>.yaml` (shipped with the adapters repo). A policy matches on origin, path, and command.
+Page text is untrusted. Site filters apply deterministic rules to that text.
+The CLI loads each policy from `~/.ap-browser/filters/<site>/<name>.yaml`.
+The adapters repository includes these policies. A policy matches an origin, path, and command.
 
 A filter can:
 
@@ -163,12 +174,14 @@ A filter can:
 - redact configured literal blocks from returned strings
 - deny a configured `click` or `fill` target (`FILTER_DENIED`)
 
-Filters do not rewrite the live DOM. They are not a universal prompt-injection detector. Do not bypass a denial with `eval`.  
+Site filters do not change the live DOM. Site filters do not detect all prompt injections.
+Do not bypass a denial with `eval`.
+
 Details: [`skill/references/safety.md`](./skill/references/safety.md).
 
 ## Batch (multi-step, one round-trip)
 
-Deterministic sequences belong in `batch`. The CLI sends one RPC, returns one `meta` block, and stops on the first failed step.
+Use `batch` for a deterministic sequence. The CLI sends one RPC and returns one `meta` block. The CLI stops when a step fails.
 
 ```bash
 echo '[
@@ -186,7 +199,7 @@ Patterns: [`skill/references/patterns.md`](./skill/references/patterns.md).
 
 Agents need a stable map from what they see to what they click. Annotate mode provides that.
 
-**Screenshot overlay** — draw numbered badges that match `state` refs 1:1:
+**Screenshot overlay**: Draw numbered badges that match `state` references:
 
 ```bash
 ap-browser state
@@ -195,18 +208,20 @@ ap-browser screenshot --annotate --out /tmp/page.png
 
 Red boxes are interactive `state` refs. Green boxes are elements the user pinned.
 
-**In-page picker** — pin elements on the live tab:
+**In-page picker**: Pin elements on the live tab:
 
 - Shortcut: `Cmd+Shift+A` (macOS) / `Alt+Shift+A` (other)
 - Extension popup button
 - `ap-browser dev annotate` for a specific tab
 
-Pinned elements appear in `state` as `annotated: [{ref|null, selector, name, ...}]`. Prefer those picks over guessing.  
+Pinned elements appear in `state` as `annotated: [{ref|null, selector, name, ...}]`.
+Use the pinned elements. Do not guess which element to select.
+
 Details: [`skill/references/commands.md`](./skill/references/commands.md).
 
 ## Capture & download
 
-Download files with the **logged-in** browser session. Site cookies apply. You do not copy tokens by hand.
+Download files with the logged-in browser session. The download uses the site's cookies. You do not need to copy authentication tokens.
 
 ```bash
 # File / document (uses the live Chrome session)
@@ -222,7 +237,10 @@ ap-browser har --out network.har
 ap-browser media --type video
 ```
 
-`download` selects a method automatically (`fetch` / browser download / yt-dlp). Discovery heuristics live in `~/.ap-browser/download-config.yml` (copied with the adapters install).  
+The `download` command selects `fetch`, browser download, or yt-dlp.
+The file `~/.ap-browser/download-config.yml` contains the selection rules.
+The adapter installation copies this file.
+
 Full reference: [`skill/references/capture-download.md`](./skill/references/capture-download.md).
 
 ## Commands
@@ -246,7 +264,7 @@ When an agent controls a tab, the extension swaps the favicon, updates the toolb
 
 ## Dev mode (debug the live page)
 
-Debug the same logged-in tab the agent already drives:
+Use the `dev` commands to debug the current logged-in tab:
 
 ```bash
 ap-browser dev errors
@@ -258,16 +276,18 @@ ap-browser dev lighthouse --categories accessibility
 ap-browser dev emulate viewport 375x667 --mobile
 ```
 
-Also covered: DOM inspection, cookies, storage, service workers, page-context API calls with real cookies, and extension reload.  
+The commands also inspect the DOM, cookies, storage, and service workers.
+They call page APIs with the current cookies. They can also reload the extension.
+
 Full tree: [`skill/references/dev/README.md`](./skill/references/dev/README.md).
 
 ## Architecture
 
-1. **CLI (`ap-browser`)** — agent entry point (drive, adapters, batch, annotate, dev, capture, filters)
-2. **Native host (`ap-browser-host`)** — links the local socket to the Chrome extension (no separate daemon)
-3. **Extension** — Chrome extension that runs commands in the browser
-4. **Adapters repo** — runtime YAML/JS data under `~/.ap-browser/` (zero build-time coupling)
-5. **TCP bridge (`ap-browser-bridge`)** — optional tunnel for container or remote CLI tests; not part of the normal install
+1. **CLI (`ap-browser`)**: Provides drive, adapter, batch, annotate, development, capture, and filter commands.
+2. **Native host (`ap-browser-host`)**: Connects the local socket to the Chrome extension. It does not require a separate daemon.
+3. **Extension**: Runs commands in Chrome.
+4. **Adapters repository**: Stores runtime YAML and JavaScript files under `~/.ap-browser/`. The CLI has no build-time dependency on these files.
+5. **TCP bridge (`ap-browser-bridge`)**: Connects a container or remote test client to the CLI. A normal installation does not use the bridge.
 
 ## Skill (for agents)
 
@@ -275,28 +295,29 @@ Full tree: [`skill/references/dev/README.md`](./skill/references/dev/README.md).
 npx skills add autopoies/ap-browser-connect/skill
 ```
 
-The skill lives in [`skill/`](./skill/). It documents how agents install and operate `ap-browser`. It is not the CLI binary.
+The [`skill/`](./skill/) directory contains the skill. The skill tells agents how to install and operate `ap-browser`. The skill is not the CLI binary.
 
 ## Platforms
 
 - **macOS**: Supported and tested
 - **Linux**: Supported and tested
-- **Windows**: Experimental (CI compiles; runtime may fail)
+- **Windows**: Experimental. CI compiles the code, but the runtime can fail.
 
 ## FAQ
 
 **Q:** What is the security model?  
-**A:** `eval` and DOM commands are unrestricted. Any agent with access to the `ap-browser` CLI can run JavaScript in your logged-in browser. Grant access only to agents you trust.
-
-**Q:** How is this different from browser-use / Playwright?  
-**A:** Those tools usually start a new headless browser and require a new login. This attaches to the Chrome profile you already use.
+**A:** The CLI does not restrict `eval` or DOM commands.
+An agent that can run `ap-browser` can run JavaScript in your logged-in browser.
+Give CLI access only to agents that you trust.
 
 **Q:** Does it support multiple Chrome profiles?  
 **A:** Yes. Use `ap-browser profiles` and `ap-browser use <profile>`.
 
 ## Contributing
 
-We follow GitHub Flow. For command-surface changes, read [`skill/SKILL.md`](./skill/SKILL.md) first. For per-site YAML adapters, see [ap-browser-connect-adapters](https://github.com/autopoies/ap-browser-connect-adapters).
+We follow GitHub Flow.
+For command-surface changes, read [`skill/SKILL.md`](./skill/SKILL.md) first.
+For per-site YAML adapters, see [ap-browser-connect-adapters](https://github.com/autopoies/ap-browser-connect-adapters).
 
 ## License
 
@@ -304,6 +325,6 @@ Apache-2.0
 
 ---
 
-**Give your agent a browser that already knows who you are.**
+**Connect your agent to your current Chrome session.**
 
 [![GitHub Stars](https://img.shields.io/github/stars/autopoies/ap-browser-connect.svg?style=social)](https://github.com/autopoies/ap-browser-connect)
