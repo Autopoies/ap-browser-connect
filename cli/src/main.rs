@@ -460,16 +460,16 @@ fn main() -> Result<()> {
             interval_ms,
             timeout_ms,
         } => {
-            let params = wait_params(
-                selector.as_deref(),
-                url_change_from.as_deref(),
-                xhr.as_deref(),
-                *media_ended,
-                until_eval.as_deref(),
-                gone.as_deref(),
-                *interval_ms,
-                *timeout_ms,
-            )?;
+            let params = wait_params(WaitOptions {
+                selector: selector.as_deref(),
+                url: url_change_from.as_deref(),
+                xhr: xhr.as_deref(),
+                media: *media_ended,
+                until_eval: until_eval.as_deref(),
+                gone: gone.as_deref(),
+                interval_ms: *interval_ms,
+                timeout_ms: *timeout_ms,
+            })?;
             rpc(&cli, "wait", params, human, |_| {})?
         }
         Cmd::Eval { expression } => rpc(
@@ -753,23 +753,25 @@ fn render_state_tree(resp: &mut Value) {
     }
 }
 
-fn wait_params(
-    selector: Option<&str>,
-    url: Option<&str>,
-    xhr: Option<&str>,
+struct WaitOptions<'a> {
+    selector: Option<&'a str>,
+    url: Option<&'a str>,
+    xhr: Option<&'a str>,
     media: bool,
-    until_eval: Option<&str>,
-    gone: Option<&str>,
+    until_eval: Option<&'a str>,
+    gone: Option<&'a str>,
     interval_ms: u64,
     timeout_ms: u64,
-) -> Result<Value> {
+}
+
+fn wait_params(opts: WaitOptions<'_>) -> Result<Value> {
     let mode_count = [
-        url.is_some(),
-        xhr.is_some(),
-        media,
-        until_eval.is_some(),
-        gone.is_some(),
-        selector.is_some() && !media,
+        opts.url.is_some(),
+        opts.xhr.is_some(),
+        opts.media,
+        opts.until_eval.is_some(),
+        opts.gone.is_some(),
+        opts.selector.is_some() && !opts.media,
     ]
     .iter()
     .filter(|&&b| b)
@@ -780,33 +782,35 @@ fn wait_params(
             "wait accepts only one target mode (selector, --url-change-from, --xhr, --media-ended, --until-eval, or --gone)"
         ));
     }
-    if let Some(from) = url {
-        return Ok(json!({"url_change_from": from, "timeout_ms": timeout_ms}));
+    if let Some(from) = opts.url {
+        return Ok(json!({"url_change_from": from, "timeout_ms": opts.timeout_ms}));
     }
-    if let Some(sub) = xhr {
-        return Ok(json!({"xhr": sub, "timeout_ms": timeout_ms}));
+    if let Some(sub) = opts.xhr {
+        return Ok(json!({"xhr": sub, "timeout_ms": opts.timeout_ms}));
     }
-    if media {
+    if opts.media {
         return Ok(
-            json!({"media_ended": true, "selector": selector.unwrap_or("video"), "timeout_ms": timeout_ms}),
+            json!({"media_ended": true, "selector": opts.selector.unwrap_or("video"), "timeout_ms": opts.timeout_ms}),
         );
     }
-    if let Some(expr) = until_eval {
+    if let Some(expr) = opts.until_eval {
         return Ok(
-            json!({"until_eval": expr, "interval_ms": interval_ms, "timeout_ms": timeout_ms}),
+            json!({"until_eval": expr, "interval_ms": opts.interval_ms, "timeout_ms": opts.timeout_ms}),
         );
     }
-    if let Some(g) = gone {
-        return Ok(json!({"gone": g, "interval_ms": interval_ms, "timeout_ms": timeout_ms}));
+    if let Some(g) = opts.gone {
+        return Ok(
+            json!({"gone": g, "interval_ms": opts.interval_ms, "timeout_ms": opts.timeout_ms}),
+        );
     }
-    let selector = selector.ok_or_else(|| {
+    let selector = opts.selector.ok_or_else(|| {
         anyhow!("wait requires a selector, --url-change-from, --xhr, --media-ended, --until-eval, or --gone")
     })?;
     if let Ok(n) = selector.parse::<u64>() {
         // Numeric target = state ref (opencli target contract).
-        return Ok(json!({"ref": n, "timeout_ms": timeout_ms}));
+        return Ok(json!({"ref": n, "timeout_ms": opts.timeout_ms}));
     }
-    Ok(json!({"selector": selector, "timeout_ms": timeout_ms}))
+    Ok(json!({"selector": selector, "timeout_ms": opts.timeout_ms}))
 }
 
 fn save_screenshot(resp: &mut Value, out: &str, annotate: bool, full: bool) {
@@ -1493,66 +1497,96 @@ mod tests {
     #[test]
     fn wait_modes_build_distinct_rpc_params() {
         assert_eq!(
-            wait_params(Some(".done"), None, None, false, None, None, 1000, 5_000).unwrap(),
+            wait_params(WaitOptions {
+                selector: Some(".done"),
+                url: None,
+                xhr: None,
+                media: false,
+                until_eval: None,
+                gone: None,
+                interval_ms: 1000,
+                timeout_ms: 5_000,
+            })
+            .unwrap(),
             json!({
                 "selector": ".done", "timeout_ms": 5_000
             })
         );
         assert_eq!(
-            wait_params(
-                None,
-                Some("https://old.example/"),
-                None,
-                false,
-                None,
-                None,
-                1000,
-                180_000
-            )
+            wait_params(WaitOptions {
+                selector: None,
+                url: Some("https://old.example/"),
+                xhr: None,
+                media: false,
+                until_eval: None,
+                gone: None,
+                interval_ms: 1000,
+                timeout_ms: 180_000,
+            })
             .unwrap(),
             json!({
                 "url_change_from": "https://old.example/", "timeout_ms": 180_000
             })
         );
         assert_eq!(
-            wait_params(
-                Some("audio.preview"),
-                None,
-                None,
-                true,
-                None,
-                None,
-                1000,
-                60_000
-            )
+            wait_params(WaitOptions {
+                selector: Some("audio.preview"),
+                url: None,
+                xhr: None,
+                media: true,
+                until_eval: None,
+                gone: None,
+                interval_ms: 1000,
+                timeout_ms: 60_000,
+            })
             .unwrap(),
             json!({
                 "media_ended": true, "selector": "audio.preview", "timeout_ms": 60_000
             })
         );
         assert_eq!(
-            wait_params(
-                None,
-                None,
-                None,
-                false,
-                Some("!isGenerating"),
-                None,
-                500,
-                60_000
-            )
+            wait_params(WaitOptions {
+                selector: None,
+                url: None,
+                xhr: None,
+                media: false,
+                until_eval: Some("!isGenerating"),
+                gone: None,
+                interval_ms: 500,
+                timeout_ms: 60_000,
+            })
             .unwrap(),
             json!({
                 "until_eval": "!isGenerating", "interval_ms": 500, "timeout_ms": 60_000
             })
         );
         assert_eq!(
-            wait_params(None, None, None, false, None, Some(".spinner"), 500, 60_000).unwrap(),
+            wait_params(WaitOptions {
+                selector: None,
+                url: None,
+                xhr: None,
+                media: false,
+                until_eval: None,
+                gone: Some(".spinner"),
+                interval_ms: 500,
+                timeout_ms: 60_000,
+            })
+            .unwrap(),
             json!({
                 "gone": ".spinner", "interval_ms": 500, "timeout_ms": 60_000
             })
         );
-        assert!(wait_params(None, None, None, false, None, None, 1000, 5_000).is_err());
+        assert!(wait_params(WaitOptions {
+            selector: None,
+            url: None,
+            xhr: None,
+            media: false,
+            until_eval: None,
+            gone: None,
+            interval_ms: 1000,
+            timeout_ms: 5_000,
+        })
+        .is_err());
     }
 
     #[test]

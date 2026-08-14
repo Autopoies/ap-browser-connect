@@ -388,16 +388,16 @@ pub fn dispatch_site(
                     iter_args.insert("_input".into(), line_data.clone());
                 }
             }
-            let mut resp = send_adapter_batch(
+            let mut resp = send_adapter_batch(AdapterBatchRequest {
                 adapter,
-                &iter_args,
-                tab_override,
-                profile_override.as_deref(),
-                &filter_registry,
+                args: &iter_args,
+                tab: tab_override,
+                profile: profile_override.as_deref(),
+                filter_registry: &filter_registry,
                 timeout_override,
-                auto_tab_domain.as_deref(),
+                auto_tab_domain: auto_tab_domain.as_deref(),
                 want_wait,
-            )?;
+            })?;
             if resp
                 .get("data")
                 .and_then(|d| d.get("completed"))
@@ -422,16 +422,16 @@ pub fn dispatch_site(
         }
         Ok(())
     } else {
-        let mut resp = send_adapter_batch(
+        let mut resp = send_adapter_batch(AdapterBatchRequest {
             adapter,
-            &parsed,
-            tab_override,
-            profile_override.as_deref(),
-            &filter_registry,
+            args: &parsed,
+            tab: tab_override,
+            profile: profile_override.as_deref(),
+            filter_registry: &filter_registry,
             timeout_override,
-            auto_tab_domain.as_deref(),
+            auto_tab_domain: auto_tab_domain.as_deref(),
             want_wait,
-        )?;
+        })?;
         if resp
             .get("data")
             .and_then(|d| d.get("completed"))
@@ -490,19 +490,21 @@ fn estimate_batch_timeout(steps: &[Value]) -> std::time::Duration {
     std::time::Duration::from_secs(secs.max(30))
 }
 
-fn send_adapter_batch(
-    adapter: &Adapter,
-    args: &HashMap<String, Value>,
+struct AdapterBatchRequest<'a> {
+    adapter: &'a Adapter,
+    args: &'a HashMap<String, Value>,
     tab: Option<i64>,
-    profile: Option<&str>,
-    filter_registry: &crate::filters::Registry,
+    profile: Option<&'a str>,
+    filter_registry: &'a crate::filters::Registry,
     timeout_override: Option<u64>,
-    auto_tab_domain: Option<&str>,
+    auto_tab_domain: Option<&'a str>,
     want_wait: bool,
-) -> Result<Value> {
-    let mut raw_steps = adapter.steps.clone();
-    if want_wait {
-        if let Some(ref ws) = adapter.wait_strategy {
+}
+
+fn send_adapter_batch(req: AdapterBatchRequest<'_>) -> Result<Value> {
+    let mut raw_steps = req.adapter.steps.clone();
+    if req.want_wait {
+        if let Some(ref ws) = req.adapter.wait_strategy {
             let mut wait_step = HashMap::new();
             let mut map = serde_json::Map::new();
             for (k, v) in ws {
@@ -512,12 +514,13 @@ fn send_adapter_batch(
             raw_steps.push(wait_step);
         }
     }
-    let steps = expand_steps(&raw_steps, args)?;
+    let steps = expand_steps(&raw_steps, req.args)?;
     // Precedence: agent --timeout > adapter `timeout` > step estimate (30s floor).
-    let timeout = timeout_override
+    let timeout = req
+        .timeout_override
         .map(|t| std::time::Duration::from_secs(t.saturating_add(5).min(MAX_ADAPTER_TIMEOUT_SECS)))
         .or_else(|| {
-            adapter
+            req.adapter
                 .timeout
                 .map(|t| std::time::Duration::from_secs(t.min(MAX_ADAPTER_TIMEOUT_SECS)))
         })
@@ -525,14 +528,14 @@ fn send_adapter_batch(
     let timeout_secs = timeout.as_secs();
     let mut params =
         json!({"steps": steps, "stop_on_error": true, "_timeout_hint_secs": timeout_secs});
-    if let Some(t) = tab {
+    if let Some(t) = req.tab {
         params["tab_id"] = json!(t);
     }
-    if let Some(d) = auto_tab_domain {
+    if let Some(d) = req.auto_tab_domain {
         params["_auto_tab"] = json!({ "domain": d });
     }
-    filter_registry.attach_to(&mut params);
-    let socket = crate::socket_client::resolve_socket(profile)?;
+    req.filter_registry.attach_to(&mut params);
+    let socket = crate::socket_client::resolve_socket(req.profile)?;
     let request = json!({"jsonrpc":"2.0","method":"batch","params":params});
     let bytes = crate::cli_frame::encode(&request)?;
     let mut stream =
