@@ -1,14 +1,9 @@
 name: Release
 
-# Production release channel = main.
-# After CI succeeds on main, publish/update GitHub Release tagged v{Cargo.toml version}.
-# Explicit v* tag pushes still build and publish that tag.
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: [main]
   push:
+    branches:
+      - main
     tags:
       - "v*"
 
@@ -17,15 +12,12 @@ permissions:
   id-token: write # npm trusted publishing via OIDC
 
 concurrency:
-  group: release-${{ github.event.workflow_run.head_branch || github.ref }}
+  group: release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   meta:
     name: Resolve version
-    if: >
-      github.event_name == 'push' ||
-      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
@@ -33,20 +25,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: >-
-            ${{ github.event_name == 'workflow_run' &&
-            github.event.workflow_run.head_sha || github.sha }}
 
       - name: Resolve tag + sha
         id: resolve
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF_NAME}"
-            SHA="${GITHUB_SHA}"
           else
-            SHA="${{ github.event.workflow_run.head_sha }}"
             VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' \
               Cargo.toml | head -1)
             if [ -z "$VERSION" ]; then
@@ -55,6 +41,7 @@ jobs:
             fi
             TAG="v${VERSION}"
           fi
+          SHA="${GITHUB_SHA}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
           echo "Publishing ${TAG} @ ${SHA}"
@@ -102,8 +89,8 @@ jobs:
       - name: Install zig + cargo-zigbuild (Linux musl)
         if: matrix.zig == true
         run: |
-          curl -fsSL https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz \
-            -o /tmp/zig.tar.xz
+          ZIG_URL="https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz"
+          curl -fsSL "$ZIG_URL" -o /tmp/zig.tar.xz
           tar -C /opt -xf /tmp/zig.tar.xz
           echo "/opt/zig-x86_64-linux-0.14.1" >> "$GITHUB_PATH"
           cargo install cargo-zigbuild --locked
@@ -208,9 +195,6 @@ jobs:
 
   npm-publish:
     name: Publish to npm
-    if: >
-      github.event_name == 'push'
-      || github.event.workflow_run.conclusion == 'success'
     needs: [meta, release]
     runs-on: ubuntu-latest
     steps:
