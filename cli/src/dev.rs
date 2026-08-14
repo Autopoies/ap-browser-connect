@@ -978,7 +978,7 @@ fn flag_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
 
 fn extension_cmd(args: &[String]) -> Result<()> {
     let sub = args.first().map(|s| s.as_str()).unwrap_or("");
-    let rest = &args[1..];
+    let rest = args.get(1..).unwrap_or(&[]);
     match sub {
         "list" => {
             let r = rpc("dev.extension.list", json!({}), rest)?;

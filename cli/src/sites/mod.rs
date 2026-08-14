@@ -60,6 +60,12 @@ pub struct Adapter {
     /// estimate (30s floor); the host caps hints at 3600.
     #[serde(default)]
     pub timeout: Option<u64>,
+    #[serde(default)]
+    pub long_running: Option<bool>,
+    #[serde(default)]
+    pub wait_strategy: Option<HashMap<String, Value>>,
+    #[serde(default)]
+    pub hints: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -261,15 +267,37 @@ fn load_site_dir(dir: &Path, site_name: &str) -> (Option<SiteMeta>, HashMap<Stri
 fn resolve_js_refs(adapter: &mut Adapter, site_dir: &Path) -> Result<()> {
     for step in &mut adapter.steps {
         if let Some(val) = step.get_mut("eval") {
-            if let Some(s) = val.as_str() {
-                if s.ends_with(".js") && !s.contains('\n') && s.len() < 200 {
-                    let p = site_dir.join(s);
-                    let content = std::fs::read_to_string(&p).with_context(|| {
-                        format!("eval references .js file not found: {}", p.display())
-                    })?;
-                    *val = Value::String(content);
+            resolve_one_js_val(val, site_dir)?;
+        }
+        if let Some(wait_val) = step.get_mut("wait") {
+            if let Some(obj) = wait_val.as_object_mut() {
+                if let Some(val) = obj.get_mut("eval") {
+                    resolve_one_js_val(val, site_dir)?;
+                }
+                if let Some(val) = obj.get_mut("until_eval") {
+                    resolve_one_js_val(val, site_dir)?;
                 }
             }
+        }
+    }
+    if let Some(ref mut ws) = adapter.wait_strategy {
+        if let Some(val) = ws.get_mut("eval") {
+            resolve_one_js_val(val, site_dir)?;
+        }
+        if let Some(val) = ws.get_mut("until_eval") {
+            resolve_one_js_val(val, site_dir)?;
+        }
+    }
+    Ok(())
+}
+
+fn resolve_one_js_val(val: &mut Value, site_dir: &Path) -> Result<()> {
+    if let Some(s) = val.as_str() {
+        if s.ends_with(".js") && !s.contains('\n') && s.len() < 200 {
+            let p = site_dir.join(s);
+            let content = std::fs::read_to_string(&p)
+                .with_context(|| format!("eval references .js file not found: {}", p.display()))?;
+            *val = Value::String(content);
         }
     }
     Ok(())
@@ -332,6 +360,8 @@ pub fn dispatch_site(
             .and_then(|m| m.domain.clone())
     });
 
+    let want_wait = raw_args.iter().any(|a| a == "--wait");
+
     if read_stdin && adapter.input.is_none() {
         bail!(
             "adapter '{}::{}' has no `input` declaration; cannot receive piped input",
@@ -358,7 +388,7 @@ pub fn dispatch_site(
                     iter_args.insert("_input".into(), line_data.clone());
                 }
             }
-            let resp = send_adapter_batch(
+            let mut resp = send_adapter_batch(
                 adapter,
                 &iter_args,
                 tab_override,
@@ -366,12 +396,33 @@ pub fn dispatch_site(
                 &filter_registry,
                 timeout_override,
                 auto_tab_domain.as_deref(),
+                want_wait,
             )?;
+            if resp
+                .get("data")
+                .and_then(|d| d.get("completed"))
+                .and_then(Value::as_bool)
+                == Some(false)
+            {
+                if let Some(meta) = resp.get_mut("meta").and_then(Value::as_object_mut) {
+                    meta.insert(
+                        "hint".into(),
+                        json!(resolve_adapter_hint(adapter, site, "in_flight")),
+                    );
+                }
+            } else if adapter.long_running == Some(true) && !want_wait {
+                if let Some(meta) = resp.get_mut("meta").and_then(Value::as_object_mut) {
+                    meta.insert(
+                        "hint".into(),
+                        json!(resolve_adapter_hint(adapter, site, "long_running")),
+                    );
+                }
+            }
             print_response(resp, want_ndjson, human);
         }
         Ok(())
     } else {
-        let resp = send_adapter_batch(
+        let mut resp = send_adapter_batch(
             adapter,
             &parsed,
             tab_override,
@@ -379,7 +430,28 @@ pub fn dispatch_site(
             &filter_registry,
             timeout_override,
             auto_tab_domain.as_deref(),
+            want_wait,
         )?;
+        if resp
+            .get("data")
+            .and_then(|d| d.get("completed"))
+            .and_then(Value::as_bool)
+            == Some(false)
+        {
+            if let Some(meta) = resp.get_mut("meta").and_then(Value::as_object_mut) {
+                meta.insert(
+                    "hint".into(),
+                    json!(resolve_adapter_hint(adapter, site, "in_flight")),
+                );
+            }
+        } else if adapter.long_running == Some(true) && !want_wait {
+            if let Some(meta) = resp.get_mut("meta").and_then(Value::as_object_mut) {
+                meta.insert(
+                    "hint".into(),
+                    json!(resolve_adapter_hint(adapter, site, "long_running")),
+                );
+            }
+        }
         print_response(resp, want_ndjson, human);
         Ok(())
     }
@@ -426,11 +498,24 @@ fn send_adapter_batch(
     filter_registry: &crate::filters::Registry,
     timeout_override: Option<u64>,
     auto_tab_domain: Option<&str>,
+    want_wait: bool,
 ) -> Result<Value> {
-    let steps = expand_steps(&adapter.steps, args)?;
+    let mut raw_steps = adapter.steps.clone();
+    if want_wait {
+        if let Some(ref ws) = adapter.wait_strategy {
+            let mut wait_step = HashMap::new();
+            let mut map = serde_json::Map::new();
+            for (k, v) in ws {
+                map.insert(k.clone(), v.clone());
+            }
+            wait_step.insert("wait".to_string(), Value::Object(map));
+            raw_steps.push(wait_step);
+        }
+    }
+    let steps = expand_steps(&raw_steps, args)?;
     // Precedence: agent --timeout > adapter `timeout` > step estimate (30s floor).
     let timeout = timeout_override
-        .map(|t| std::time::Duration::from_secs(t.min(MAX_ADAPTER_TIMEOUT_SECS)))
+        .map(|t| std::time::Duration::from_secs(t.saturating_add(5).min(MAX_ADAPTER_TIMEOUT_SECS)))
         .or_else(|| {
             adapter
                 .timeout
@@ -537,9 +622,11 @@ fn expand_value(value: &Value, method: &str, args: &HashMap<String, Value>) -> R
         Value::Object(map) => {
             let mut out = serde_json::Map::new();
             for (k, v) in map {
+                let js_ctx =
+                    is_js_context || (method == "wait" && (k == "eval" || k == "until_eval"));
                 let ev = match v {
                     Value::String(s) => {
-                        Value::String(expand_template(s, args, is_url_context, is_js_context)?)
+                        Value::String(expand_template(s, args, is_url_context, js_ctx)?)
                     }
                     other => other.clone(),
                 };
@@ -693,15 +780,21 @@ fn build_step_obj(method: &str, expanded: &Value) -> Result<Value> {
             Ok(json!({"method": "goto", "params": {"url": url}}))
         }
         "wait" => {
-            let selector = expanded
-                .as_str()
-                .or_else(|| expanded.get("selector").and_then(|v| v.as_str()))
-                .ok_or_else(|| anyhow!("wait step needs a selector"))?;
-            let timeout = expanded
-                .get("timeout_ms")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(5000);
-            Ok(json!({"method": "wait", "params": {"selector": selector, "timeout_ms": timeout}}))
+            let mut p = serde_json::Map::new();
+            if let Some(s) = expanded.as_str() {
+                p.insert("selector".into(), json!(s));
+                p.insert("timeout_ms".into(), json!(5000));
+            } else if let Some(obj) = expanded.as_object() {
+                for (k, v) in obj {
+                    p.insert(k.clone(), v.clone());
+                }
+                if !p.contains_key("timeout_ms") {
+                    p.insert("timeout_ms".into(), json!(5000));
+                }
+            } else {
+                bail!("wait step must be a selector string or an object");
+            }
+            Ok(json!({"method": "wait", "params": Value::Object(p)}))
         }
         "select" => {
             let selector = expanded
@@ -928,6 +1021,35 @@ pub fn enhance_chrome_error(resp: &mut Value) {
     }
 }
 
+fn resolve_adapter_hint(adapter: &Adapter, site: &str, kind: &str) -> String {
+    // 1. Check top-level adapter.hints
+    if let Some(ref h) = adapter.hints {
+        if let Some(custom) = h.get(kind) {
+            return custom.clone();
+        }
+    }
+    // 2. Check adapter.wait_strategy.hints
+    if let Some(ref ws) = adapter.wait_strategy {
+        if let Some(hints_val) = ws.get("hints") {
+            if let Some(custom) = hints_val.get(kind).and_then(Value::as_str) {
+                return custom.to_string();
+            }
+        }
+    }
+    // 3. Fallback defaults
+    match kind {
+        "in_flight" => format!(
+            "Wait deadline reached while operation is still in-flight. You can continue waiting with 'ap-browser {} wait', check back later, or read partial response with 'ap-browser {} read'.",
+            site, site
+        ),
+        "long_running" => format!(
+            "This is a long-running operation. Pass --wait to wait until completion, or run 'ap-browser {} wait'.",
+            site
+        ),
+        _ => format!("Operation on site '{}'.", site),
+    }
+}
+
 fn print_response(mut resp: Value, ndjson: bool, human: bool) {
     enhance_chrome_error(&mut resp);
     super::tag_untrusted(&mut resp);
@@ -965,6 +1087,13 @@ fn emit_security_metadata(resp: &Value) {
             "[filters] {}",
             serde_json::to_string(filters).unwrap_or_else(|_| "{}".into())
         );
+    }
+    if let Some(hint) = resp
+        .get("meta")
+        .and_then(|m| m.get("hint"))
+        .and_then(Value::as_str)
+    {
+        eprintln!("[hint] {hint}");
     }
 }
 
@@ -1150,6 +1279,56 @@ mod tests {
         assert_eq!(
             expand_template("items.slice(0, {{args.limit}})", &args, false, true).unwrap(),
             "items.slice(0, 25)"
+        );
+    }
+
+    #[test]
+    fn wait_step_expands_object_conditions() {
+        let step = HashMap::from([(
+            "wait".to_string(),
+            json!({
+                "eval": "status.js",
+                "when": {"isGenerating": false},
+                "timeout_ms": 300000,
+                "interval_ms": 1000
+            }),
+        )]);
+        let args = HashMap::new();
+        let expanded = expand_steps(&[step], &args).unwrap();
+        assert_eq!(
+            expanded[0],
+            json!({
+                "method": "wait",
+                "params": {
+                    "eval": "status.js",
+                    "when": {"isGenerating": false},
+                    "timeout_ms": 300000,
+                    "interval_ms": 1000
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn wait_step_expands_gone_selector() {
+        let step = HashMap::from([(
+            "wait".to_string(),
+            json!({
+                "gone": ".loading-spinner",
+                "timeout_ms": 60000
+            }),
+        )]);
+        let args = HashMap::new();
+        let expanded = expand_steps(&[step], &args).unwrap();
+        assert_eq!(
+            expanded[0],
+            json!({
+                "method": "wait",
+                "params": {
+                    "gone": ".loading-spinner",
+                    "timeout_ms": 60000
+                }
+            })
         );
     }
 }

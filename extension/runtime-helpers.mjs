@@ -51,8 +51,7 @@ export async function ensureAttachedOnce(tabId, state, initialize) {
 	if (!pending) {
 		pending = (async () => {
 			await initialize();
-			if (state.attachingTabs.get(tabId) === pending)
-				state.attachedTabs.add(tabId);
+			if (state.attachingTabs.get(tabId) === pending) state.attachedTabs.add(tabId);
 		})();
 		state.attachingTabs.set(tabId, pending);
 	}
@@ -91,14 +90,141 @@ export function buildBatchStepParams(step, inheritedTabId) {
 		"count",
 		"pause_ms",
 		"active",
+		"eval",
+		"until_eval",
+		"when",
+		"gone",
+		"interval_ms",
+		"initial_delay_ms",
+		"progress",
 	]) {
 		if (step[key] !== undefined) params[key] = step[key];
 	}
-	if (step.tab_id !== null && step.tab_id !== undefined)
-		params.tab_id = step.tab_id;
-	else if (inheritedTabId !== null && inheritedTabId !== undefined)
-		params.tab_id = inheritedTabId;
+	if (step.tab_id !== null && step.tab_id !== undefined) params.tab_id = step.tab_id;
+	else if (inheritedTabId !== null && inheritedTabId !== undefined) params.tab_id = inheritedTabId;
 	return params;
+}
+
+export function evaluateDoneCondition(value, when) {
+	if (typeof value === "boolean") {
+		return value === true;
+	}
+	if (when && typeof when === "object") {
+		if (value == null || typeof value !== "object") return false;
+		for (const [k, expected] of Object.entries(when)) {
+			if (value[k] !== expected) {
+				return false;
+			}
+		}
+		return true;
+	}
+	if (value && typeof value === "object") {
+		if ("isGenerating" in value) {
+			return !value.isGenerating;
+		}
+		if ("isDone" in value) {
+			return Boolean(value.isDone);
+		}
+		if ("completed" in value) {
+			return Boolean(value.completed);
+		}
+		if ("status" in value && typeof value.status === "string") {
+			const s = value.status.toLowerCase();
+			return ["done", "completed", "success", "succeeded", "idle", "ready"].includes(s);
+		}
+		return true;
+	}
+	return !!value;
+}
+
+export async function waitForCondition(
+	tab,
+	params,
+	timeoutMs,
+	evaluate,
+	getTab,
+	sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+) {
+	const started = Date.now();
+	const interval = Math.max(params.interval_ms || 1000, 50);
+	const evalExpr = params.eval || params.until_eval;
+	let lastValue;
+
+	const initialDelay = params.initial_delay_ms !== undefined ? params.initial_delay_ms : 500;
+	if (initialDelay > 0) {
+		await sleep(initialDelay);
+	}
+
+	while (Date.now() - started < timeoutMs) {
+		if (params.gone) {
+			const expr = `!document.querySelector(${JSON.stringify(params.gone)})`;
+			let exists;
+			try {
+				exists = await evaluate(expr);
+			} catch (e) {
+				const current = await getTab().catch(() => null);
+				if (current?.url && current.url !== tab.url) {
+					return {
+						matched: true,
+						completed: true,
+						reason: "url_changed",
+						from_url: tab.url,
+						url: current.url,
+						waited_ms: Date.now() - started,
+					};
+				}
+				throw e;
+			}
+			if (exists === true) {
+				return {
+					matched: true,
+					completed: true,
+					reason: "element_gone",
+					gone: params.gone,
+					waited_ms: Date.now() - started,
+				};
+			}
+		} else if (evalExpr) {
+			try {
+				lastValue = await evaluate(evalExpr);
+			} catch (e) {
+				const current = await getTab().catch(() => null);
+				if (current?.url && current.url !== tab.url) {
+					return {
+						matched: true,
+						completed: true,
+						reason: "url_changed",
+						from_url: tab.url,
+						url: current.url,
+						waited_ms: Date.now() - started,
+					};
+				}
+				throw e;
+			}
+			if (evaluateDoneCondition(lastValue, params.when)) {
+				return {
+					matched: true,
+					completed: true,
+					reason: "condition_met",
+					waited_ms: Date.now() - started,
+					current_status: lastValue,
+					value: lastValue,
+				};
+			}
+		}
+		const remaining = timeoutMs - (Date.now() - started);
+		if (remaining <= 0) break;
+		await sleep(Math.min(interval, remaining));
+	}
+
+	return {
+		matched: false,
+		completed: false,
+		reason: "deadline_reached",
+		waited_ms: Date.now() - started,
+		current_status: lastValue !== undefined ? lastValue : null,
+		value: lastValue !== undefined ? lastValue : null,
+	};
 }
 
 export function waitForUrlChange(tabId, fromUrl, timeoutMs, tabs) {
@@ -116,6 +242,7 @@ export function waitForUrlChange(tabId, fromUrl, timeoutMs, tabs) {
 			if (id === tabId && url && url !== fromUrl) {
 				finish({
 					matched: true,
+					completed: true,
 					reason: "url_changed",
 					from_url: fromUrl,
 					url,
@@ -125,11 +252,13 @@ export function waitForUrlChange(tabId, fromUrl, timeoutMs, tabs) {
 		};
 		tabs.onUpdated.addListener(listener);
 		timer = setTimeout(() => {
-			const error = new Error(
-				`timeout waiting for URL to change from ${fromUrl}`,
-			);
-			error.code = "TIMEOUT";
-			finish(null, error);
+			finish({
+				matched: false,
+				completed: false,
+				reason: "deadline_reached",
+				from_url: fromUrl,
+				waited_ms: timeoutMs,
+			});
 		}, timeoutMs);
 		tabs.get(tabId).then(
 			(tab) => listener(tabId, {}, tab),
@@ -138,13 +267,7 @@ export function waitForUrlChange(tabId, fromUrl, timeoutMs, tabs) {
 	});
 }
 
-export async function waitForMediaEnd(
-	tab,
-	selector,
-	timeoutMs,
-	evaluate,
-	getTab,
-) {
+export async function waitForMediaEnd(tab, selector, timeoutMs, evaluate, getTab) {
 	const started = Date.now();
 	const expression = `new Promise(resolve=>{const m=document.querySelector(${JSON.stringify(selector)});if(!m)return resolve({missing:true});if(m.ended)return resolve({ended:true});let t;const done=()=>{clearTimeout(t);resolve({ended:true})};m.addEventListener('ended',done,{once:true});t=setTimeout(()=>{m.removeEventListener('ended',done);resolve({timeout:true})},${timeoutMs})})`;
 	let result;
@@ -155,6 +278,7 @@ export async function waitForMediaEnd(
 		if (current.url && current.url !== tab.url) {
 			return {
 				matched: true,
+				completed: true,
 				reason: "url_changed",
 				from_url: tab.url,
 				url: current.url,
@@ -166,16 +290,25 @@ export async function waitForMediaEnd(
 	if (result?.ended) {
 		return {
 			matched: true,
+			completed: true,
 			reason: "media_ended",
 			selector,
 			waited_ms: Date.now() - started,
 		};
 	}
+	if (result?.timeout) {
+		return {
+			matched: false,
+			completed: false,
+			reason: "deadline_reached",
+			selector,
+			waited_ms: timeoutMs,
+		};
+	}
 	let code = "JS_EXCEPTION";
 	if (result?.missing) code = "SELECTOR_NO_MATCH";
-	else if (result?.timeout) code = "TIMEOUT";
 	const message = result?.missing
 		? `media not found: ${selector}`
-		: `timeout waiting for media to end: ${selector}`;
+		: `error waiting for media to end: ${selector}`;
 	throw Object.assign(new Error(message), { code });
 }

@@ -196,3 +196,26 @@ ap-browser download "https://example.com/video.mp4" --video   # yt-dlp for media
 
 `download` saves to the current directory and reports the file path. Fall back to `eval` fetch only when `download` fails on a specific endpoint (some sites validate referer — open the page first, then `download` the file's own URL from the page's DOM).
 
+## 14. Wait for generation, async jobs, or condition without shell polling
+
+Never write Python/bash sleep loops to poll page status. The extension handles long waits in-browser with hardlimit timeout protection:
+
+**Generic JS condition wait:**
+
+```bash
+ap-browser wait --until-eval "document.title.includes('Complete')" --timeout-ms 60000
+```
+
+**Wait for loading spinner or stop-button removal:**
+
+```bash
+ap-browser wait --gone "button[data-testid='stop-button']" --timeout-ms 300000
+```
+
+**Site adapter automatic wait:**
+
+```bash
+ap-browser chatgpt send "Write a comprehensive report..." --wait
+# Or explicitly:
+ap-browser chatgpt wait --timeout 300
+```

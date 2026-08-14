@@ -106,7 +106,7 @@ The generic flow (goto → text → click) only runs when **no adapter exists** 
 | | `fill <target> <value>` | type into inputs, textareas, contenteditable (real keystrokes) |
 | | `select <target> <option>` | pick a `<select>` option by value or label |
 | | `press <key>` | keyboard (Enter, Tab, Control+a) |
-| | `wait <CSS>` / `wait --url-change-from URL` / `wait --media-ended` | event-driven page/media waits |
+| | `wait <CSS>` / `wait --until-eval JS` / `wait --gone CSS` / `wait --url-change-from URL` / `wait --media-ended` | wait for element, removal, JS condition, URL or media |
 | | `scroll [--count N] [--selector CSS]` | scroll page or element into view |
 | **Power** | `eval "<js>"` | scripted extraction / page-state reads / escape hatch when semantic commands fail |
 | | `cdp <method>` | raw DevTools Protocol call |

@@ -26,6 +26,7 @@ import {
 	runtimeEvaluateValue,
 	scheduleExtensionReload,
 	settleWithin,
+	waitForCondition,
 	waitForMediaEnd,
 	waitForUrlChange,
 	withFocusEmulation,
@@ -105,10 +106,7 @@ function postToNative(port, payload) {
 
 // ─── instance_id bootstrap ───────────────────────────────────────────────
 async function ensureInstanceId() {
-	const { instance_id, label } = await chrome.storage.local.get([
-		"instance_id",
-		"label",
-	]);
+	const { instance_id, label } = await chrome.storage.local.get(["instance_id", "label"]);
 	if (!instance_id) {
 		const newId = crypto.randomUUID();
 		await chrome.storage.local.set({ instance_id: newId, label: "" });
@@ -122,9 +120,7 @@ async function ensureInstanceId() {
 // ─── Native port lifecycle ───────────────────────────────────────────────
 async function buildHelloWithTabs(instance_id, label) {
 	const [activeTab, allTabs] = await Promise.all([
-		chrome.tabs
-			.query({ active: true, currentWindow: true })
-			.then((t) => t[0] || null),
+		chrome.tabs.query({ active: true, currentWindow: true }).then((t) => t[0] || null),
 		chrome.tabs.query({}),
 	]);
 	const mapTab = (t) => ({
@@ -281,11 +277,7 @@ async function dispatch(method, params, operatedTab) {
 	if (!shouldFilterOuterResponse(method)) {
 		return dispatchUnfiltered(method, params, operatedTab);
 	}
-	const activePolicies = await activeFilterPolicies(
-		method,
-		params,
-		operatedTab,
-	);
+	const activePolicies = await activeFilterPolicies(method, params, operatedTab);
 	const response = await dispatchUnfiltered(method, params, operatedTab);
 	if (activePolicies.length === 0 || !response?.data) return response;
 
@@ -320,9 +312,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			let tabs = await chrome.tabs.query(query);
 			if (params.filter) {
 				const re = new RegExp(params.filter, "i");
-				tabs = tabs.filter(
-					(t) => re.test(t.url || "") || re.test(t.title || ""),
-				);
+				tabs = tabs.filter((t) => re.test(t.url || "") || re.test(t.title || ""));
 			}
 			let groups = [];
 			try {
@@ -331,8 +321,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				groups = await chrome.tabGroups.query(q);
 			} catch (_) {}
 			const groupMap = new Map();
-			for (const g of groups)
-				groupMap.set(`${g.windowId}:${g.id}`, g.title || null);
+			for (const g of groups) groupMap.set(`${g.windowId}:${g.id}`, g.title || null);
 			if (params.group) {
 				const want = params.group;
 				tabs = tabs.filter((t) => {
@@ -340,9 +329,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					return title === want;
 				});
 			}
-			const store = await chrome.storage.session.get(
-				tabs.map((t) => `annotations:${t.id}`),
-			);
+			const store = await chrome.storage.session.get(tabs.map((t) => `annotations:${t.id}`));
 			const data = tabs.map((t) => {
 				const o = { id: t.id, title: t.title, url: t.url };
 				const anns = store[`annotations:${t.id}`];
@@ -401,14 +388,10 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				dropRules.length > 0
 					? buildDomReadExpression(selector, "text", dropRules)
 					: `String(document.querySelector(${JSON.stringify(selector)})?.innerText ?? "")`;
-			const evaluated = await chrome.debugger.sendCommand(
-				{ tabId: tab.id },
-				"Runtime.evaluate",
-				{
-					expression,
-					returnByValue: true,
-				},
-			);
+			const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+				expression,
+				returnByValue: true,
+			});
 			const value = runtimeEvaluateValue(evaluated);
 			const filteredRead =
 				dropRules.length > 0
@@ -490,11 +473,10 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 		case "state.snapshot": {
 			const tab = await resolveTab(params);
 			await ensureDebugger(tab.id);
-			const evaluated = await chrome.debugger.sendCommand(
-				{ tabId: tab.id },
-				"Runtime.evaluate",
-				{ expression: buildSnapshotExpression(), returnByValue: true },
-			);
+			const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+				expression: buildSnapshotExpression(),
+				returnByValue: true,
+			});
 			const value = runtimeEvaluateValue(evaluated);
 			let data = {};
 			try {
@@ -513,18 +495,13 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			await ensureDebugger(tab.id);
 			const policies = await activeFilterPolicies("click", params, tab);
 			const denyRules = interactionDenyRules(policies);
-			const query =
-				params.ref != null ? refSelector(params.ref) : params.selector;
+			const query = params.ref != null ? refSelector(params.ref) : params.selector;
 			// Phase 1: resolve + filter guard + scrollIntoView, returning the
 			// element's viewport rect (see resolveForNativeClick).
-			const evaluated = await chrome.debugger.sendCommand(
-				{ tabId: tab.id },
-				"Runtime.evaluate",
-				{
-					expression: buildNativeClickResolveExpression(query, denyRules),
-					returnByValue: true,
-				},
-			);
+			const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+				expression: buildNativeClickResolveExpression(query, denyRules),
+				returnByValue: true,
+			});
 			const interaction = runtimeEvaluateValue(evaluated);
 			const outcome = interactionOutcome(interaction, denyRules.length > 0);
 			if (outcome === "denied") {
@@ -533,16 +510,13 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			if (outcome !== "ok") {
 				if (params.ref != null) {
 					throw Object.assign(
-						new Error(
-							`ref ${params.ref} not found — page changed? run state again`,
-						),
+						new Error(`ref ${params.ref} not found — page changed? run state again`),
 						{ code: "STALE_REF" },
 					);
 				}
-				throw Object.assign(
-					new Error(`selector not found: ${params.selector}`),
-					{ code: "SELECTOR_NO_MATCH" },
-				);
+				throw Object.assign(new Error(`selector not found: ${params.selector}`), {
+					code: "SELECTOR_NO_MATCH",
+				});
 			}
 			// Phase 2: real input events at the element center — SPA custom
 			// controls (Reddit, Radix/MUI) react to pointer/mouse events that
@@ -553,14 +527,10 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const cy = interaction.y + interaction.h / 2;
 			let method = "native-input";
 			if (!interaction.hitOk) {
-				await chrome.debugger.sendCommand(
-					{ tabId: tab.id },
-					"Runtime.evaluate",
-					{
-						expression: `(() => { const el = document.querySelector(${JSON.stringify(query)}); if (!el) return false; el.click(); return true; })()`,
-						returnByValue: true,
-					},
-				);
+				await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+					expression: `(() => { const el = document.querySelector(${JSON.stringify(query)}); if (!el) return false; el.click(); return true; })()`,
+					returnByValue: true,
+				});
 				method = "js-click";
 			} else {
 				const events = [
@@ -584,19 +554,11 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				];
 				// CDP input events don't route to background tabs; focus
 				// emulation makes the page accept them without stealing focus.
-				await withFocusEmulation(
-					tab.id,
-					chrome.debugger.sendCommand,
-					async () => {
-						for (const ev of events) {
-							await chrome.debugger.sendCommand(
-								{ tabId: tab.id },
-								"Input.dispatchMouseEvent",
-								ev,
-							);
-						}
-					},
-				);
+				await withFocusEmulation(tab.id, chrome.debugger.sendCommand, async () => {
+					for (const ev of events) {
+						await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchMouseEvent", ev);
+					}
+				});
 			}
 			return attachFilterMetadata(
 				{
@@ -613,18 +575,13 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			await ensureDebugger(tab.id);
 			const policies = await activeFilterPolicies("fill", params, tab);
 			const denyRules = interactionDenyRules(policies);
-			const query =
-				params.ref != null ? refSelector(params.ref) : params.selector;
+			const query = params.ref != null ? refSelector(params.ref) : params.selector;
 			// Phase 1: resolve + filter guard + scrollIntoView + focus + select
 			// existing content (see resolveForNativeFill).
-			const evaluated = await chrome.debugger.sendCommand(
-				{ tabId: tab.id },
-				"Runtime.evaluate",
-				{
-					expression: buildNativeFillResolveExpression(query, denyRules),
-					returnByValue: true,
-				},
-			);
+			const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+				expression: buildNativeFillResolveExpression(query, denyRules),
+				returnByValue: true,
+			});
 			const interaction = runtimeEvaluateValue(evaluated);
 			const outcome = interactionOutcome(interaction, denyRules.length > 0);
 			if (outcome === "denied") {
@@ -633,52 +590,35 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			if (outcome !== "ok") {
 				if (params.ref != null) {
 					throw Object.assign(
-						new Error(
-							`ref ${params.ref} not found — page changed? run state again`,
-						),
+						new Error(`ref ${params.ref} not found — page changed? run state again`),
 						{ code: "STALE_REF" },
 					);
 				}
-				throw Object.assign(
-					new Error(`selector not found: ${params.selector}`),
-					{ code: "SELECTOR_NO_MATCH" },
-				);
+				throw Object.assign(new Error(`selector not found: ${params.selector}`), {
+					code: "SELECTOR_NO_MATCH",
+				});
 			}
 			// Phase 2: real keystrokes — Backspace clears the selection, then
 			// insertText types the value. Works for <input>/<textarea> AND
 			// contenteditable (Reddit comment boxes, rich editors), which
 			// el.value assignment can't touch.
-			await withFocusEmulation(
-				tab.id,
-				chrome.debugger.sendCommand,
-				async () => {
-					await chrome.debugger.sendCommand(
-						{ tabId: tab.id },
-						"Input.dispatchKeyEvent",
-						{
-							type: "keyDown",
-							key: "Backspace",
-							code: "Backspace",
-							windowsVirtualKeyCode: 8,
-						},
-					);
-					await chrome.debugger.sendCommand(
-						{ tabId: tab.id },
-						"Input.dispatchKeyEvent",
-						{
-							type: "keyUp",
-							key: "Backspace",
-							code: "Backspace",
-							windowsVirtualKeyCode: 8,
-						},
-					);
-					await chrome.debugger.sendCommand(
-						{ tabId: tab.id },
-						"Input.insertText",
-						{ text: params.value },
-					);
-				},
-			);
+			await withFocusEmulation(tab.id, chrome.debugger.sendCommand, async () => {
+				await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
+					type: "keyDown",
+					key: "Backspace",
+					code: "Backspace",
+					windowsVirtualKeyCode: 8,
+				});
+				await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
+					type: "keyUp",
+					key: "Backspace",
+					code: "Backspace",
+					windowsVirtualKeyCode: 8,
+				});
+				await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.insertText", {
+					text: params.value,
+				});
+			});
 			// Phase 3: read back what landed — React controlled inputs and
 			// masked fields can silently eat characters (opencli rule).
 			const verify = await chrome.debugger
@@ -703,20 +643,11 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			await ensureDebugger(tab.id);
 			const policies = await activeFilterPolicies("select", params, tab);
 			const denyRules = interactionDenyRules(policies);
-			const query =
-				params.ref != null ? refSelector(params.ref) : params.selector;
-			const evaluated = await chrome.debugger.sendCommand(
-				{ tabId: tab.id },
-				"Runtime.evaluate",
-				{
-					expression: buildNativeSelectExpression(
-						query,
-						denyRules,
-						params.option,
-					),
-					returnByValue: true,
-				},
-			);
+			const query = params.ref != null ? refSelector(params.ref) : params.selector;
+			const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+				expression: buildNativeSelectExpression(query, denyRules, params.option),
+				returnByValue: true,
+			});
 			const interaction = runtimeEvaluateValue(evaluated);
 			const status = interaction?.status;
 			if (status === "denied") {
@@ -730,25 +661,20 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			}
 			if (status === "not_a_select") {
 				throw Object.assign(
-					new Error(
-						"target is not a <select> — custom dropdowns need click/eval",
-					),
+					new Error("target is not a <select> — custom dropdowns need click/eval"),
 					{ code: "NOT_A_SELECT" },
 				);
 			}
 			if (status !== "ok") {
 				if (params.ref != null) {
 					throw Object.assign(
-						new Error(
-							`ref ${params.ref} not found — page changed? run state again`,
-						),
+						new Error(`ref ${params.ref} not found — page changed? run state again`),
 						{ code: "STALE_REF" },
 					);
 				}
-				throw Object.assign(
-					new Error(`selector not found: ${params.selector}`),
-					{ code: "SELECTOR_NO_MATCH" },
-				);
+				throw Object.assign(new Error(`selector not found: ${params.selector}`), {
+					code: "SELECTOR_NO_MATCH",
+				});
 			}
 			return attachFilterMetadata(
 				{
@@ -843,22 +769,16 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				dropRules.length > 0
 					? buildDomReadExpression(selector, "html", dropRules)
 					: `String(document.querySelector(${JSON.stringify(selector)})?.outerHTML ?? "")`;
-			const evaluated = await chrome.debugger.sendCommand(
-				{ tabId: tab.id },
-				"Runtime.evaluate",
-				{ expression, returnByValue: true },
-			);
+			const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+				expression,
+				returnByValue: true,
+			});
 			const value = runtimeEvaluateValue(evaluated);
 			const filteredRead =
 				dropRules.length > 0
 					? value || { value: "", metadata: null }
 					: { value: value || "", metadata: null };
-			const response = await truncateOutput(
-				filteredRead.value || "",
-				params,
-				tab,
-				"html",
-			);
+			const response = await truncateOutput(filteredRead.value || "", params, tab, "html");
 			return attachFilterMetadata(response, filteredRead.metadata);
 		}
 
@@ -868,11 +788,9 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const keyInput = params.keys || params.key || "";
 			// CDP input events don't route to background tabs; focus emulation
 			// makes the page accept them without stealing focus.
-			await chrome.debugger.sendCommand(
-				{ tabId: tab.id },
-				"Emulation.setFocusEmulationEnabled",
-				{ enabled: true },
-			);
+			await chrome.debugger.sendCommand({ tabId: tab.id }, "Emulation.setFocusEmulationEnabled", {
+				enabled: true,
+			});
 			try {
 				const SPECIAL_KEYS = {
 					Enter: { code: "Enter", key: "Enter", vk: 13, text: "\r" },
@@ -900,35 +818,25 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 
 				if (SPECIAL_KEYS[keyInput]) {
 					const k = SPECIAL_KEYS[keyInput];
-					await chrome.debugger.sendCommand(
-						{ tabId: tab.id },
-						"Input.dispatchKeyEvent",
-						{
-							type: "keyDown",
-							code: k.code,
-							key: k.key,
-							windowsVirtualKeyCode: k.vk,
-							text: k.text || undefined,
-						},
-					);
-					await chrome.debugger.sendCommand(
-						{ tabId: tab.id },
-						"Input.dispatchKeyEvent",
-						{
-							type: "keyUp",
-							code: k.code,
-							key: k.key,
-							windowsVirtualKeyCode: k.vk,
-						},
-					);
+					await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
+						type: "keyDown",
+						code: k.code,
+						key: k.key,
+						windowsVirtualKeyCode: k.vk,
+						text: k.text || undefined,
+					});
+					await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
+						type: "keyUp",
+						code: k.code,
+						key: k.key,
+						windowsVirtualKeyCode: k.vk,
+					});
 				} else if (keyInput.includes("+")) {
 					const parts = keyInput.split("+").map((s) => s.trim());
 					const mainKey = parts[parts.length - 1];
 					const modifiers = parts.slice(0, -1);
 					const mainVK =
-						mainKey.length === 1
-							? mainKey.toUpperCase().charCodeAt(0)
-							: MODIFIER_VK[mainKey] || 0;
+						mainKey.length === 1 ? mainKey.toUpperCase().charCodeAt(0) : MODIFIER_VK[mainKey] || 0;
 
 					const modParams = {};
 					for (const m of modifiers) {
@@ -938,60 +846,38 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 						else if (m === "Meta") modParams.metaKey = true;
 					}
 
-					await chrome.debugger.sendCommand(
-						{ tabId: tab.id },
-						"Input.dispatchKeyEvent",
-						{
-							type: "keyDown",
-							code: "Key" + mainKey.toUpperCase()[0],
-							key: mainKey,
-							windowsVirtualKeyCode: mainVK,
-							...modParams,
-						},
-					);
-					await chrome.debugger.sendCommand(
-						{ tabId: tab.id },
-						"Input.dispatchKeyEvent",
-						{
-							type: "keyUp",
-							code: "Key" + mainKey.toUpperCase()[0],
-							key: mainKey,
-							windowsVirtualKeyCode: mainVK,
-							...modParams,
-						},
-					);
+					await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
+						type: "keyDown",
+						code: "Key" + mainKey.toUpperCase()[0],
+						key: mainKey,
+						windowsVirtualKeyCode: mainVK,
+						...modParams,
+					});
+					await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
+						type: "keyUp",
+						code: "Key" + mainKey.toUpperCase()[0],
+						key: mainKey,
+						windowsVirtualKeyCode: mainVK,
+						...modParams,
+					});
 				} else if (keyInput.length === 1) {
-					await chrome.debugger.sendCommand(
-						{ tabId: tab.id },
-						"Input.dispatchKeyEvent",
-						{
-							type: "keyDown",
-							key: keyInput,
-							text: keyInput,
-						},
-					);
-					await chrome.debugger.sendCommand(
-						{ tabId: tab.id },
-						"Input.dispatchKeyEvent",
-						{
-							type: "keyUp",
-							key: keyInput,
-						},
-					);
+					await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
+						type: "keyDown",
+						key: keyInput,
+						text: keyInput,
+					});
+					await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
+						type: "keyUp",
+						key: keyInput,
+					});
 				} else {
-					await chrome.debugger.sendCommand(
-						{ tabId: tab.id },
-						"Input.insertText",
-						{ text: keyInput },
-					);
+					await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.insertText", {
+						text: keyInput,
+					});
 				}
 			} finally {
 				await chrome.debugger
-					.sendCommand(
-						{ tabId: tab.id },
-						"Emulation.setFocusEmulationEnabled",
-						{ enabled: false },
-					)
+					.sendCommand({ tabId: tab.id }, "Emulation.setFocusEmulationEnabled", { enabled: false })
 					.catch(() => {});
 			}
 			return {
@@ -1006,60 +892,58 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const timeout = params.timeout_ms || 5000;
 			let data;
 			if (params.url_change_from != null) {
-				data = await waitForUrlChange(
-					tab.id,
-					params.url_change_from,
-					timeout,
-					chrome.tabs,
-				);
+				data = await waitForUrlChange(tab.id, params.url_change_from, timeout, chrome.tabs);
 			} else if (params.media_ended) {
 				await ensureDebugger(tab.id);
 				const evaluate = async (expression) =>
 					runtimeEvaluateValue(
-						await chrome.debugger.sendCommand(
-							{ tabId: tab.id },
-							"Runtime.evaluate",
-							{ expression, returnByValue: true, awaitPromise: true },
-						),
+						await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+							expression,
+							returnByValue: true,
+							awaitPromise: true,
+						}),
 					);
-				data = await waitForMediaEnd(
-					tab,
-					params.selector || "video",
-					timeout,
-					evaluate,
-					() => chrome.tabs.get(tab.id),
+				data = await waitForMediaEnd(tab, params.selector || "video", timeout, evaluate, () =>
+					chrome.tabs.get(tab.id),
+				);
+			} else if (params.until_eval != null || params.eval != null || params.gone != null) {
+				await ensureDebugger(tab.id);
+				const evaluate = async (expression) =>
+					runtimeEvaluateValue(
+						await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+							expression,
+							returnByValue: true,
+							awaitPromise: true,
+						}),
+					);
+				data = await waitForCondition(tab, params, timeout, evaluate, () =>
+					chrome.tabs.get(tab.id),
 				);
 			} else if (params.xhr) {
 				// Match an XHR/fetch by URL substring. First check resource timing
 				// history (covers requests that already completed, e.g. a click in
 				// an earlier batch step), then watch Network events for new ones.
 				await ensureDebugger(tab.id);
-				const evaluated = await chrome.debugger.sendCommand(
-					{ tabId: tab.id },
-					"Runtime.evaluate",
-					{
-						expression: `performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes(${JSON.stringify(params.xhr)}))`,
-						returnByValue: true,
-					},
-				);
+				const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+					expression: `performance.getEntriesByType('resource').map(e => e.name).filter(n => n.includes(${JSON.stringify(params.xhr)}))`,
+					returnByValue: true,
+				});
 				const hits = runtimeEvaluateValue(evaluated);
 				if (Array.isArray(hits) && hits.length > 0) {
 					data = {
 						matched: true,
+						completed: true,
+						reason: "history_hit",
 						url: hits[0],
 						waited_ms: 0,
 						source: "history",
 					};
 				} else {
-					await chrome.debugger.sendCommand(
-						{ tabId: tab.id },
-						"Network.enable",
-					);
+					await chrome.debugger.sendCommand({ tabId: tab.id }, "Network.enable");
 					data = await waitForXhr(tab.id, params.xhr, timeout);
 				}
 			} else {
-				const query =
-					params.ref != null ? refSelector(params.ref) : params.selector;
+				const query = params.ref != null ? refSelector(params.ref) : params.selector;
 				const start = Date.now();
 				while (Date.now() - start < timeout) {
 					await ensureDebugger(tab.id);
@@ -1072,15 +956,25 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 						},
 					);
 					if (runtimeEvaluateValue(evaluated) === true) {
-						data = { matched: true, waited_ms: Date.now() - start };
+						data = {
+							matched: true,
+							completed: true,
+							reason: "selector_matched",
+							waited_ms: Date.now() - start,
+						};
 						break;
 					}
 					await new Promise((r) => setTimeout(r, 200));
 				}
-				if (!data)
-					throw Object.assign(new Error(`timeout waiting for ${query}`), {
-						code: "TIMEOUT",
-					});
+				if (!data) {
+					data = {
+						matched: false,
+						completed: false,
+						reason: "deadline_reached",
+						waited_ms: Date.now() - start,
+						target: query,
+					};
+				}
 			}
 			return {
 				ok: true,
@@ -1109,39 +1003,25 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					);
 					moved = runtimeEvaluateValue(evaluated) === true;
 				} else {
-					const before = await chrome.debugger.sendCommand(
-						{ tabId: tab.id },
-						"Runtime.evaluate",
-						{
-							expression:
-								"JSON.stringify({y: window.scrollY, h: document.body.scrollHeight})",
-							returnByValue: true,
-						},
-					);
+					const before = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+						expression: "JSON.stringify({y: window.scrollY, h: document.body.scrollHeight})",
+						returnByValue: true,
+					});
 					const beforeState = safeJsonParse(runtimeEvaluateValue(before));
 					await withFocusEmulation(tab.id, chrome.debugger.sendCommand, () =>
-						chrome.debugger.sendCommand(
-							{ tabId: tab.id },
-							"Input.dispatchMouseEvent",
-							{
-								type: "mouseWheel",
-								x: 400,
-								y: 300,
-								deltaX: 0,
-								deltaY: 5000,
-							},
-						),
+						chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchMouseEvent", {
+							type: "mouseWheel",
+							x: 400,
+							y: 300,
+							deltaX: 0,
+							deltaY: 5000,
+						}),
 					);
 					await new Promise((r) => setTimeout(r, 100));
-					const after = await chrome.debugger.sendCommand(
-						{ tabId: tab.id },
-						"Runtime.evaluate",
-						{
-							expression:
-								"JSON.stringify({y: window.scrollY, h: document.body.scrollHeight})",
-							returnByValue: true,
-						},
-					);
+					const after = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+						expression: "JSON.stringify({y: window.scrollY, h: document.body.scrollHeight})",
+						returnByValue: true,
+					});
 					const afterState = safeJsonParse(runtimeEvaluateValue(after));
 					moved = afterState.y > beforeState.y || afterState.h > beforeState.h;
 				}
@@ -1183,10 +1063,9 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				},
 			);
 			if (exceptionDetails) {
-				throw Object.assign(
-					new Error(exceptionDetails.text || "JS exception"),
-					{ code: "JS_EXCEPTION" },
-				);
+				throw Object.assign(new Error(exceptionDetails.text || "JS exception"), {
+					code: "JS_EXCEPTION",
+				});
 			}
 			return {
 				ok: true,
@@ -1203,8 +1082,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			// adapter's canonical domain and run the steps there. Same-host
 			// tabs keep the "adapter reads the current page" contract.
 			if (params._auto_tab && params.tab_id == null) {
-				const current =
-					operatedTab || (await resolveTab(params).catch(() => null));
+				const current = operatedTab || (await resolveTab(params).catch(() => null));
 				const host = current?.url ? safeHostOf(current.url) : null;
 				const want = normalizeHost(params._auto_tab.domain || "");
 				if (!host || !want || host !== want) {
@@ -1226,20 +1104,14 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				download: "download.browser",
 			};
 			for (const step of steps) {
-				const stepMethod =
-					METHOD_ALIASES[step.method || step.cmd] || step.method || step.cmd;
+				const stepMethod = METHOD_ALIASES[step.method || step.cmd] || step.method || step.cmd;
 				var stepParams = buildBatchStepParams(step, params.tab_id);
-				if (Array.isArray(params._filters))
-					stepParams._filters = params._filters;
+				if (Array.isArray(params._filters)) stepParams._filters = params._filters;
 				try {
 					const isMeta = stepMethod === "ping" || stepMethod === "info";
 					if (!isMeta) {
 						lastTab = null;
-						lastTab = await resolveBatchStepTab(
-							stepMethod,
-							stepParams,
-							resolveTab,
-						);
+						lastTab = await resolveBatchStepTab(stepMethod, stepParams, resolveTab);
 						if (lastTab) {
 							cancelPendingRestore(lastTab.id);
 							await ensureDebugger(lastTab.id);
@@ -1248,18 +1120,11 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 							} catch (_) {}
 						}
 					}
-					const r = await dispatch(
-						stepMethod,
-						stepParams,
-						lastTab || operatedTab,
-					);
+					const r = await dispatch(stepMethod, stepParams, lastTab || operatedTab);
 					const stepResult = { ok: true, data: r.data };
 					if (r.meta?.filters) {
 						stepResult.meta = { filters: r.meta.filters };
-						batchFilterMetadata = mergeFilterMetadata(
-							batchFilterMetadata,
-							r.meta.filters,
-						);
+						batchFilterMetadata = mergeFilterMetadata(batchFilterMetadata, r.meta.filters);
 					}
 					results.push(stepResult);
 				} catch (e) {
@@ -1272,10 +1137,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					};
 					if (e.filterMeta) {
 						stepResult.meta = { filters: e.filterMeta };
-						batchFilterMetadata = mergeFilterMetadata(
-							batchFilterMetadata,
-							e.filterMeta,
-						);
+						batchFilterMetadata = mergeFilterMetadata(batchFilterMetadata, e.filterMeta);
 					}
 					results.push(stepResult);
 					if (params.stop_on_error !== false) break;
@@ -1284,10 +1146,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const meta = lastTab
 				? await buildMeta({ window_id: lastTab.windowId, tab_id: lastTab.id })
 				: await buildMeta(null);
-			return attachFilterMetadata(
-				{ ok: true, data: { results }, meta },
-				batchFilterMetadata,
-			);
+			return attachFilterMetadata({ ok: true, data: { results }, meta }, batchFilterMetadata);
 		}
 
 		case "dev.console.list": {
@@ -1296,10 +1155,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			let msgs = consoleBuffers.get(tab.id) || [];
 			if (params.type) msgs = msgs.filter((m) => m.type === params.type);
 			if (params.since) {
-				const sinceMs =
-					typeof params.since === "number"
-						? params.since
-						: Date.parse(params.since);
+				const sinceMs = typeof params.since === "number" ? params.since : Date.parse(params.since);
 				msgs = msgs.filter((m) => m.ts >= sinceMs);
 			}
 			return {
@@ -1343,18 +1199,15 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const buf = networkBuffers.get(tab.id) || new Map();
 			const entry = buf.get(params.request_id);
 			if (!entry) {
-				throw Object.assign(
-					new Error(`no network request with id ${params.request_id}`),
-					{ code: "NOT_FOUND" },
-				);
+				throw Object.assign(new Error(`no network request with id ${params.request_id}`), {
+					code: "NOT_FOUND",
+				});
 			}
 			let body = null;
 			try {
-				const r = await chrome.debugger.sendCommand(
-					{ tabId: tab.id },
-					"Network.getResponseBody",
-					{ requestId: params.request_id },
-				);
+				const r = await chrome.debugger.sendCommand({ tabId: tab.id }, "Network.getResponseBody", {
+					requestId: params.request_id,
+				});
 				body = r.body ?? null;
 			} catch (_) {}
 			return {
@@ -1448,10 +1301,9 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 		case "dev.cookies.set": {
 			const url = params.url;
 			if (!url)
-				throw Object.assign(
-					new Error("dev.cookies.set requires url + name + value"),
-					{ code: "BAD_PARAMS" },
-				);
+				throw Object.assign(new Error("dev.cookies.set requires url + name + value"), {
+					code: "BAD_PARAMS",
+				});
 			const details = {
 				url,
 				name: params.name || "",
@@ -1462,8 +1314,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			if (params.secure != null) details.secure = params.secure;
 			if (params.httpOnly != null) details.httpOnly = params.httpOnly;
 			if (params.sameSite) details.sameSite = params.sameSite;
-			if (params.expirationDate != null)
-				details.expirationDate = params.expirationDate;
+			if (params.expirationDate != null) details.expirationDate = params.expirationDate;
 			const cookie = await chrome.cookies.set(details);
 			return {
 				ok: true,
@@ -1479,10 +1330,9 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const url = params.url;
 			const name = params.name;
 			if (!url || !name)
-				throw Object.assign(
-					new Error("dev.cookies.delete requires url + name"),
-					{ code: "BAD_PARAMS" },
-				);
+				throw Object.assign(new Error("dev.cookies.delete requires url + name"), {
+					code: "BAD_PARAMS",
+				});
 			const result = await chrome.cookies.remove({ url, name });
 			return { ok: true, data: { deleted: !!result, url, name } };
 		}
@@ -1494,10 +1344,9 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const tab = await resolveTab(params);
 			const url = tab.url || "";
 			if (/^(chrome|chrome-extension|edge|about|devtools):/.test(url)) {
-				throw Object.assign(
-					new Error(`cannot annotate ${url.split(":")[0]}:// pages`),
-					{ code: "INTERNAL" },
-				);
+				throw Object.assign(new Error(`cannot annotate ${url.split(":")[0]}:// pages`), {
+					code: "INTERNAL",
+				});
 			}
 			await chrome.scripting.executeScript({
 				target: { tabId: tab.id },
@@ -1591,10 +1440,9 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					code: "BAD_PARAMS",
 				});
 			if (id === chrome.runtime.id)
-				throw Object.assign(
-					new Error("cannot disable self; use reload instead"),
-					{ code: "BAD_PARAMS" },
-				);
+				throw Object.assign(new Error("cannot disable self; use reload instead"), {
+					code: "BAD_PARAMS",
+				});
 			await chrome.management.setEnabled(id, false);
 			const e = await chrome.management.get(id);
 			return { ok: true, data: { id, enabled: e.enabled } };
@@ -1607,10 +1455,9 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					code: "BAD_PARAMS",
 				});
 			if (id === chrome.runtime.id)
-				throw Object.assign(
-					new Error("cannot uninstall self; use chrome://extensions UI"),
-					{ code: "BAD_PARAMS" },
-				);
+				throw Object.assign(new Error("cannot uninstall self; use chrome://extensions UI"), {
+					code: "BAD_PARAMS",
+				});
 			await chrome.management.uninstall(id, { showConfirmDialog: false });
 			return { ok: true, data: { uninstalled: id } };
 		}
@@ -1640,15 +1487,11 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const downloadPath = params.download_path || null;
 			const landscape = params.landscape || false;
 			const paperFormat = params.format || "A4";
-			const { data } = await chrome.debugger.sendCommand(
-				{ tabId: tab.id },
-				"Page.printToPDF",
-				{
-					landscape,
-					paperFormat,
-					printBackground: true,
-				},
-			);
+			const { data } = await chrome.debugger.sendCommand({ tabId: tab.id }, "Page.printToPDF", {
+				landscape,
+				paperFormat,
+				printBackground: true,
+			});
 			if (downloadPath) {
 				const fs = await import("fs").catch(() => null);
 				if (fs) {
@@ -1717,11 +1560,7 @@ async function activeFilterPolicies(method, params, operatedTab) {
 	if (!Array.isArray(policies) || policies.length === 0) return [];
 	const methodEligible = policies.some((policy) => {
 		const methods = policy?.match?.methods;
-		return (
-			!Array.isArray(methods) ||
-			methods.length === 0 ||
-			methods.includes(method)
-		);
+		return !Array.isArray(methods) || methods.length === 0 || methods.includes(method);
 	});
 	if (!methodEligible) return [];
 
@@ -1739,13 +1578,10 @@ function attachFilterMetadata(response, metadata) {
 function filterDeniedError(metadata) {
 	const policyIds = metadata?.matched_policy_ids || [];
 	const suffix = policyIds.length > 0 ? `: ${policyIds.join(", ")}` : "";
-	return Object.assign(
-		new Error(`interaction denied by site filter${suffix}`),
-		{
-			code: "FILTER_DENIED",
-			filterMeta: metadata,
-		},
-	);
+	return Object.assign(new Error(`interaction denied by site filter${suffix}`), {
+		code: "FILTER_DENIED",
+		filterMeta: metadata,
+	});
 }
 
 // ─── user annotations (annotation mode) ───────────────────────────────────
@@ -1758,9 +1594,7 @@ async function attachUserAnnotations(tabId, data) {
 	const stored = (await chrome.storage.session.get(k))[k];
 	if (!Array.isArray(stored) || stored.length === 0) return data;
 	data.annotated = stored;
-	const refs = new Set(
-		stored.filter((a) => a.ref != null).map((a) => String(a.ref)),
-	);
+	const refs = new Set(stored.filter((a) => a.ref != null).map((a) => String(a.ref)));
 	for (const el of data.elements || []) {
 		if (refs.has(String(el.ref))) el.user = true;
 	}
@@ -1830,8 +1664,7 @@ async function resolveTab(params) {
 	}
 	const win = await chrome.windows.getLastFocused();
 	const tabs = await chrome.tabs.query({ active: true, windowId: win.id });
-	if (!tabs[0])
-		throw Object.assign(new Error("no active tab"), { code: "TAB_NOT_FOUND" });
+	if (!tabs[0]) throw Object.assign(new Error("no active tab"), { code: "TAB_NOT_FOUND" });
 	return tabs[0];
 }
 
@@ -1853,7 +1686,7 @@ function normalizeHost(domain) {
 
 // Wait until an XHR/fetch whose URL contains `urlSubstr` completes.
 function waitForXhr(tabId, urlSubstr, timeoutMs) {
-	return new Promise((resolve, reject) => {
+	return new Promise((resolve) => {
 		const start = Date.now();
 		let done = false;
 		const finish = (fn, value) => {
@@ -1864,12 +1697,13 @@ function waitForXhr(tabId, urlSubstr, timeoutMs) {
 			fn(value);
 		};
 		const listener = (source, method, params) => {
-			if (source.tabId !== tabId || method !== "Network.responseReceived")
-				return;
+			if (source.tabId !== tabId || method !== "Network.responseReceived") return;
 			const url = params.response && params.response.url;
 			if (url && url.includes(urlSubstr)) {
 				finish(resolve, {
 					matched: true,
+					completed: true,
+					reason: "xhr_completed",
 					url,
 					waited_ms: Date.now() - start,
 					source: "network",
@@ -1877,12 +1711,13 @@ function waitForXhr(tabId, urlSubstr, timeoutMs) {
 			}
 		};
 		const timer = setTimeout(() => {
-			finish(
-				reject,
-				Object.assign(new Error(`timeout waiting for xhr ${urlSubstr}`), {
-					code: "TIMEOUT",
-				}),
-			);
+			finish(resolve, {
+				matched: false,
+				completed: false,
+				reason: "deadline_reached",
+				xhr: urlSubstr,
+				waited_ms: timeoutMs,
+			});
 		}, timeoutMs);
 		chrome.debugger.onEvent.addListener(listener);
 	});
@@ -1931,9 +1766,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 		case "Runtime.consoleAPICalled":
 			pushConsole(tabId, {
 				type: params.type || "log",
-				text: (params.args || [])
-					.map((a) => a.value ?? a.description ?? "")
-					.join(" "),
+				text: (params.args || []).map((a) => a.value ?? a.description ?? "").join(" "),
 				url: params.stackTrace?.[0]?.url || null,
 				line: params.stackTrace?.[0]?.lineNumber ?? null,
 				column: params.stackTrace?.[0]?.columnNumber ?? null,
@@ -1985,9 +1818,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 		case "Network.loadingFinished":
 			upsertNetwork(tabId, params.requestId, {
 				finished: true,
-				duration_ms: params.timestamp
-					? Math.round(params.timestamp * 1000)
-					: null,
+				duration_ms: params.timestamp ? Math.round(params.timestamp * 1000) : null,
 			});
 			break;
 		case "Network.loadingFailed":
@@ -2017,8 +1848,8 @@ async function ensureDebugger(tabId) {
 			}
 		}
 		await Promise.allSettled(
-			["Runtime.enable", "Log.enable", "Network.enable", "Page.enable"].map(
-				(method) => chrome.debugger.sendCommand({ tabId }, method),
+			["Runtime.enable", "Log.enable", "Network.enable", "Page.enable"].map((method) =>
+				chrome.debugger.sendCommand({ tabId }, method),
 			),
 		);
 	});
@@ -2057,9 +1888,7 @@ async function releaseTab(tabId) {
 }
 
 async function unlockOtherTabs(keepTabId) {
-	await Promise.all(
-		[...lockedTabs].filter((id) => id !== keepTabId).map(releaseTab),
-	);
+	await Promise.all([...lockedTabs].filter((id) => id !== keepTabId).map(releaseTab));
 }
 
 async function unlockAllTabs() {
@@ -2248,9 +2077,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 		(async () => {
 			try {
 				await chrome.storage.session.set({
-					[`annotations:${msg.tab_id}`]: Array.isArray(msg.refs)
-						? msg.refs
-						: [],
+					[`annotations:${msg.tab_id}`]: Array.isArray(msg.refs) ? msg.refs : [],
 				});
 				sendResponse({ ok: true });
 			} catch (e) {

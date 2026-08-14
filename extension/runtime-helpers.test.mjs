@@ -10,9 +10,11 @@ import {
 	runtimeEvaluateValue,
 	scheduleExtensionReload,
 	settleWithin,
+	waitForCondition,
 	waitForMediaEnd,
 	waitForUrlChange,
 	withFocusEmulation,
+	evaluateDoneCondition,
 } from "./runtime-helpers.mjs";
 
 test("focus emulation wraps work and always restores", async () => {
@@ -69,13 +71,9 @@ test("self-reload is deferred until its response can be sent", () => {
 
 test("cleanup wait is bounded when Chrome never settles", async () => {
 	let scheduled;
-	const pending = settleWithin(
-		new Promise(() => {}),
-		500,
-		(resolve, delayMs) => {
-			scheduled = { resolve, delayMs };
-		},
-	);
+	const pending = settleWithin(new Promise(() => {}), 500, (resolve, delayMs) => {
+		scheduled = { resolve, delayMs };
+	});
 	assert.equal(scheduled.delayMs, 500);
 	scheduled.resolve();
 	await pending;
@@ -159,8 +157,7 @@ test("tab cleanup removes attachment, lock, timer, and dev buffers", () => {
 	clearTabRuntimeState(7, state, (value) => cleared.push(value));
 
 	assert.deepEqual(cleared, [timer]);
-	for (const collection of Object.values(state))
-		assert.equal(collection.has(7), false);
+	for (const collection of Object.values(state)) assert.equal(collection.has(7), false);
 	for (const [name, collection] of Object.entries(state)) {
 		if (name !== "attachingTabs") assert.equal(collection.has(8), true);
 	}
@@ -210,10 +207,11 @@ test("batch forwards flattened interaction params (ref/option/scroll)", () => {
 		),
 		{ selector: "#c", option: "us" },
 	);
-	assert.deepEqual(
-		buildBatchStepParams({ method: "scroll", count: 3, pause_ms: 200 }, 5),
-		{ count: 3, pause_ms: 200, tab_id: 5 },
-	);
+	assert.deepEqual(buildBatchStepParams({ method: "scroll", count: 3, pause_ms: 200 }, 5), {
+		count: 3,
+		pause_ms: 200,
+		tab_id: 5,
+	});
 });
 
 test("URL-change wait uses the tab event instead of polling", async () => {
@@ -234,6 +232,7 @@ test("URL-change wait uses the tab event instead of polling", async () => {
 	listener(7, { url: "https://new.example/" }, { url: "https://new.example/" });
 	const result = await pending;
 
+	assert.equal(result.completed, true);
 	assert.equal(result.reason, "url_changed");
 	assert.equal(result.url, "https://new.example/");
 	assert.equal(listener, undefined);
@@ -251,6 +250,7 @@ test("media wait treats navigation during playback as success", async () => {
 		async () => ({ url: "https://new.example/lesson" }),
 	);
 
+	assert.equal(result.completed, true);
 	assert.equal(result.reason, "url_changed");
 	assert.equal(result.url, "https://new.example/lesson");
 });
@@ -271,18 +271,108 @@ test("media wait is one event-driven evaluation", async () => {
 	);
 
 	assert.equal(calls, 1);
+	assert.equal(result.completed, true);
 	assert.equal(result.reason, "media_ended");
 });
 
-test("media wait fails closed without an ended result", async () => {
+test("media wait returns completed false on deadline", async () => {
+	const result = await waitForMediaEnd(
+		{ id: 7, url: "https://example.test/lesson" },
+		"video",
+		100,
+		async () => ({ timeout: true }),
+		async () => ({ url: "https://example.test/lesson" }),
+	);
+	assert.equal(result.completed, false);
+	assert.equal(result.reason, "deadline_reached");
+});
+
+test("media wait fails closed when selector missing", async () => {
 	await assert.rejects(
 		waitForMediaEnd(
 			{ id: 7, url: "https://example.test/lesson" },
 			"video",
 			100,
-			async () => undefined,
+			async () => ({ missing: true }),
 			async () => ({ url: "https://example.test/lesson" }),
 		),
-		{ code: "JS_EXCEPTION" },
+		{ code: "SELECTOR_NO_MATCH" },
 	);
+});
+
+test("evaluateDoneCondition evaluates boolean, when-object, and heuristic status", () => {
+	assert.equal(evaluateDoneCondition(true), true);
+	assert.equal(evaluateDoneCondition(false), false);
+
+	// when object matching
+	assert.equal(
+		evaluateDoneCondition({ isGenerating: false, mode: "chat" }, { isGenerating: false }),
+		true,
+	);
+	assert.equal(
+		evaluateDoneCondition({ isGenerating: true, mode: "chat" }, { isGenerating: false }),
+		false,
+	);
+
+	// heuristic fallback
+	assert.equal(evaluateDoneCondition({ isGenerating: false }), true);
+	assert.equal(evaluateDoneCondition({ isGenerating: true }), false);
+	assert.equal(evaluateDoneCondition({ isDone: true }), true);
+	assert.equal(evaluateDoneCondition({ isDone: false }), false);
+	assert.equal(evaluateDoneCondition({ status: "completed" }), true);
+	assert.equal(evaluateDoneCondition({ status: "running" }), false);
+});
+
+test("waitForCondition resolves when eval condition becomes met", async () => {
+	let count = 0;
+	const result = await waitForCondition(
+		{ id: 7, url: "https://chatgpt.com/" },
+		{ eval: "status.js", when: { isGenerating: false }, interval_ms: 10 },
+		1000,
+		async () => {
+			count += 1;
+			return { isGenerating: count < 3 };
+		},
+		async () => ({ url: "https://chatgpt.com/" }),
+		async () => {},
+	);
+	assert.equal(result.matched, true);
+	assert.equal(result.reason, "condition_met");
+	assert.equal(result.value.isGenerating, false);
+});
+
+test("waitForCondition resolves when gone selector disappears", async () => {
+	let exists = true;
+	const result = await waitForCondition(
+		{ id: 7, url: "https://example.com" },
+		{ gone: ".spinner", interval_ms: 10 },
+		500,
+		async () => {
+			const res = !exists;
+			exists = false;
+			return res;
+		},
+		async () => ({ url: "https://example.com" }),
+		async () => {},
+	);
+	assert.equal(result.matched, true);
+	assert.equal(result.reason, "element_gone");
+});
+
+test("waitForCondition returns completed false with deadline_reached when time budget ends", async () => {
+	const result = await waitForCondition(
+		{ id: 7, url: "https://example.com" },
+		{ eval: "false", interval_ms: 10, initial_delay_ms: 0 },
+		50,
+		async () => ({ isGenerating: true, currentActivity: "thinking" }),
+		async () => ({ url: "https://example.com" }),
+		async () => {},
+	);
+	assert.equal(result.matched, false);
+	assert.equal(result.completed, false);
+	assert.equal(result.reason, "deadline_reached");
+	assert.deepEqual(result.current_status, {
+		isGenerating: true,
+		currentActivity: "thinking",
+	});
 });

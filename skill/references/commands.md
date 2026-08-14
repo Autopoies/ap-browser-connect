@@ -268,23 +268,40 @@ ap-browser press "Control+a"
 
 ### `wait [<CSS>]`
 
-Wait for a selector, URL navigation, or media completion. URL and media modes are event-driven, so agents do not need shell polling loops.
+Wait for a selector, element disappearance, JavaScript condition, URL navigation, or media completion. All modes run inside the browser extension with hardlimit timeout protection, so agents never need shell sleep loops.
 
 | Flag | Description |
 | ------ | ------------- |
 | `--timeout-ms <ms>` | Max wait (default 5000); the RPC timeout is extended automatically |
+| `--interval-ms <ms>` | Polling interval for condition checks (default 1000) |
+| `--until-eval <JS>` | Wait until JavaScript expression returns truthy (e.g. `!document.querySelector('.loading')`) |
+| `--gone <CSS>` | Wait until the matching element is removed from the DOM (e.g. spinner/stop-button disappearance) |
 | `--url-change-from <URL>` | Wait until the tab leaves this URL, across page execution contexts |
 | `--media-ended` | Wait for the selected media element (default `video`) to end; navigation after playback also succeeds |
 
 ```bash
 ap-browser wait ".results"
 ap-browser wait ".loaded" --timeout-ms 10000
+ap-browser wait --gone "button[data-testid='stop-button']" --timeout-ms 300000
+ap-browser wait --until-eval "document.title.includes('Done')" --timeout-ms 60000
 ap-browser wait --url-change-from "https://example.com/lesson/1" --timeout-ms 180000
 ap-browser wait --media-ended --timeout-ms 180000
 ap-browser wait "audio.preview" --media-ended --timeout-ms 60000
 ```
 
-Returns `{matched: true, reason?, waited_ms}`. Throws `TIMEOUT` (exit 5) when the condition is not met.
+Returns `{matched: bool, completed: bool, reason, waited_ms, current_status?}`.
+
+When the target condition is met within the time budget, it returns `completed: true` with `reason: "condition_met" | "element_gone" | "selector_matched" | "url_changed" | "media_ended" | "xhr_completed"`.
+
+When the wait deadline is reached while an operation is still in-flight, it returns `completed: false, reason: "deadline_reached"` along with the intermediate state in `current_status` and `meta.hint` — allowing the Agent to decide next steps (continue waiting, read partial progress, or check back later) without raising errors.
+
+#### Adapter wait-until-done
+
+For long-running site operations (like ChatGPT, Deep Research, generation tasks):
+
+- Pass `--wait` directly to the adapter command: `ap-browser chatgpt send "..." --wait`
+- Or use the dedicated site wait command: `ap-browser chatgpt wait --timeout 300`
+- Long-running commands automatically return `meta.hint` recommending `--wait` when omitted.
 
 ---
 
