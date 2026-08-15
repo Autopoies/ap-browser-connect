@@ -208,7 +208,7 @@ ${text.trim()}
 			const res = await chrome.runtime.sendMessage({
 				method: "agent.launch",
 				params: {
-					agent_id: cfg.default_agent || "pi",
+					agent_id: cfg.default_agent || currentAgent || "pi",
 					custom_cmd: cfg.custom_agent_cmd,
 					terminal_id: cfg.default_terminal || "auto",
 					prompt,
@@ -224,24 +224,43 @@ ${text.trim()}
 					feedbackEl.style.color = "#30D158";
 					feedbackEl.style.opacity = "1";
 					setTimeout(() => {
-						const agentName = getAgentDisplayName(cfg.default_agent || "pi");
+						const agentName = getAgentDisplayName(cfg.default_agent || currentAgent || "pi");
 						feedbackEl.textContent = isCmd ? `Run with ${agentName}` : `Ask ${agentName}`;
 						feedbackEl.style.color = "";
+						feedbackEl.title = "";
 					}, 2000);
 				}
 				return true;
 			}
+			const errMsg = res?.error || "Launch failed";
+			console.error("[ap-browser] Launch failed:", errMsg);
 			if (feedbackEl) {
 				feedbackEl.textContent = "✗ Failed";
+				feedbackEl.title = errMsg;
 				feedbackEl.style.color = "#FF453A";
 				feedbackEl.style.opacity = "1";
+				setTimeout(() => {
+					const agentName = getAgentDisplayName(cfg.default_agent || currentAgent || "pi");
+					feedbackEl.textContent = isCmd ? `Run with ${agentName}` : `Ask ${agentName}`;
+					feedbackEl.style.color = "";
+					feedbackEl.title = "";
+				}, 3000);
 			}
 			return false;
 		} catch (e) {
+			const errMsg = e?.message || String(e);
+			console.error("[ap-browser] Launch error:", errMsg);
 			if (feedbackEl) {
 				feedbackEl.textContent = "✗ Failed";
+				feedbackEl.title = errMsg;
 				feedbackEl.style.color = "#FF453A";
 				feedbackEl.style.opacity = "1";
+				setTimeout(() => {
+					const agentName = getAgentDisplayName(cfg.default_agent || currentAgent || "pi");
+					feedbackEl.textContent = isCmd ? `Run with ${agentName}` : `Ask ${agentName}`;
+					feedbackEl.style.color = "";
+					feedbackEl.title = "";
+				}, 3000);
 			}
 			return false;
 		}
