@@ -353,8 +353,26 @@ ${text.trim()}
 
 		const capsule = document.createElement("div");
 		capsule.className = "ap-capsule";
-		capsule.style.left = `${union.right}px`;
-		capsule.style.top = `${union.top}px`;
+
+		// Smart boundary clamping: right-align when close to right edge or in right half
+		const pad = 12;
+		const preferRight = union.right > window.innerWidth / 2 || union.right > window.innerWidth - 240;
+		if (preferRight) {
+			const rightDist = Math.max(pad, window.innerWidth - union.right);
+			capsule.style.right = `${rightDist}px`;
+			capsule.style.left = "auto";
+		} else {
+			const leftDist = Math.max(pad, union.left);
+			capsule.style.left = `${leftDist}px`;
+			capsule.style.right = "auto";
+		}
+
+		// Vertical positioning (above element by default, or below if near top)
+		if (union.top < 38) {
+			capsule.style.top = `${Math.min(window.innerHeight - 40, union.bottom + 6)}px`;
+		} else {
+			capsule.style.top = `${Math.max(6, union.top - 36)}px`;
+		}
 
 		const refPill = document.createElement("span");
 		refPill.className = "ref-pill";
@@ -697,7 +715,7 @@ ${text.trim()}
 
 		/* Apple HIG Siri-Style Capsule */
 		.ap-capsule {
-			position: absolute;
+			position: fixed;
 			display: inline-flex;
 			align-items: center;
 			height: 30px;
@@ -713,10 +731,10 @@ ${text.trim()}
 			color: #f5f5f7;
 			pointer-events: auto;
 			z-index: 2147483646;
-			transform: translateY(-100%) translateY(-6px);
-			transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+			transition: background 0.2s ease, border-color 0.2s ease;
 			white-space: nowrap;
 			user-select: none;
+			max-width: calc(100vw - 24px);
 		}
 		.ap-capsule .ref-pill {
 			background: rgba(255, 255, 255, 0.14);
