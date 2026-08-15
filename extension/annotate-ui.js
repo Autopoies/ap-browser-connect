@@ -356,7 +356,8 @@ ${text.trim()}
 
 		// Smart boundary clamping: right-align when close to right edge or in right half
 		const pad = 12;
-		const preferRight = union.right > window.innerWidth / 2 || union.right > window.innerWidth - 240;
+		const preferRight =
+			union.right > window.innerWidth / 2 || union.right > window.innerWidth - 240;
 		if (preferRight) {
 			const rightDist = Math.max(pad, window.innerWidth - union.right);
 			capsule.style.right = `${rightDist}px`;

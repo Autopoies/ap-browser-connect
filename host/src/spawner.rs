@@ -2,6 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -25,6 +26,15 @@ pub struct LaunchResult {
     pub runner_script: String,
     pub agent_id: String,
     pub terminal_id: String,
+}
+
+pub fn get_run_dir() -> PathBuf {
+    if let Some(home) = dirs::home_dir() {
+        let run_dir = home.join(".ap-browser").join("run");
+        let _ = std::fs::create_dir_all(&run_dir);
+        return run_dir;
+    }
+    std::env::temp_dir()
 }
 
 pub fn resolve_cwd(cwd_opt: Option<&str>) -> String {
@@ -62,9 +72,9 @@ pub fn write_temp_prompt(prompt: &str, title: Option<&str>, url: Option<&str>) -
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let temp_dir = std::env::temp_dir();
+    let run_dir = get_run_dir();
     let filename = format!("ap-agent-prompt-{millis}.md");
-    let file_path = temp_dir.join(filename);
+    let file_path = run_dir.join(filename);
 
     let mut full_prompt = String::new();
     if title.is_some() || url.is_some() {
@@ -148,12 +158,17 @@ pub fn write_runner_script(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let temp_dir = std::env::temp_dir();
+    let run_dir = get_run_dir();
 
     #[cfg(not(windows))]
     {
+        #[cfg(target_os = "macos")]
+        let filename = format!("ap-agent-run-{millis}.command");
+
+        #[cfg(not(target_os = "macos"))]
         let filename = format!("ap-agent-run-{millis}.sh");
-        let file_path = temp_dir.join(filename);
+
+        let file_path = run_dir.join(filename);
 
         #[cfg(target_os = "macos")]
         let shebang = "#!/bin/zsh -l";
@@ -200,9 +215,7 @@ fi
             let mut perms = std::fs::metadata(&file_path)?.permissions();
             perms.set_mode(0o755);
             std::fs::set_permissions(&file_path, perms)?;
-            let _ = Command::new("xattr")
-                .args(["-c", &file_path.to_string_lossy()])
-                .output();
+            let _ = Command::new("xattr").args(["-c", &file_path.to_string_lossy()]).output();
         }
 
         Ok(file_path.to_string_lossy().to_string())
@@ -211,7 +224,7 @@ fi
     #[cfg(windows)]
     {
         let filename = format!("ap-agent-run-{millis}.ps1");
-        let file_path = temp_dir.join(filename);
+        let file_path = run_dir.join(filename);
         let script = format!(
             r#"
 $Host.UI.RawUI.WindowTitle = "AP Browser Connect - {agent_id}"
@@ -236,13 +249,11 @@ Write-Host "━━━━━━━━━━━━━━━━━━━━━━�
 }
 
 pub fn launch(params: LaunchParams) -> Result<LaunchResult> {
-    let prompt_file = write_temp_prompt(
-        &params.prompt,
-        params.title.as_deref(),
-        params.url.as_deref(),
-    )?;
+    let prompt_file =
+        write_temp_prompt(&params.prompt, params.title.as_deref(), params.url.as_deref())?;
     let cwd = resolve_cwd(params.cwd.as_deref());
-    let agent_cmd = build_agent_cmd(&params.agent_id, params.custom_cmd.as_deref(), &prompt_file);
+    let agent_cmd =
+        build_agent_cmd(&params.agent_id, params.custom_cmd.as_deref(), &prompt_file);
     let runner_script = write_runner_script(&params.agent_id, &agent_cmd, &cwd, &prompt_file)?;
 
     let requested_terminal = params.terminal_id.as_deref().unwrap_or("auto");
@@ -265,55 +276,40 @@ fn spawn_terminal(terminal_id: &str, runner_script: &str, _cwd: &str) -> Result<
     };
 
     let spawned = match target {
-        "ghostty" => Command::new("ghostty")
-            .args(["-e", runner_script])
+        "ghostty" => Command::new("open")
+            .args(["-a", "Ghostty", runner_script])
             .spawn()
-            .or_else(|_| {
-                Command::new("open")
-                    .args(["-a", "Ghostty", runner_script])
-                    .spawn()
-            }),
-        "iterm2" => {
-            let script = format!(
-                r#"tell application "iTerm"
-                    activate
-                    create window with default profile command "{runner_script}"
-                end tell"#
-            );
-            Command::new("osascript").args(["-e", &script]).spawn()
-        }
+            .or_else(|_| Command::new("ghostty").args(["-e", runner_script]).spawn()),
+        "iterm2" => Command::new("open")
+            .args(["-a", "iTerm", runner_script])
+            .spawn()
+            .or_else(|_| Command::new("open").args(["-a", "iTerm2", runner_script]).spawn()),
         "wezterm" => Command::new("wezterm")
             .args(["start", "--", runner_script])
-            .spawn(),
-        "kitty" => Command::new("kitty").arg(runner_script).spawn(),
+            .spawn()
+            .or_else(|_| Command::new("open").args(["-a", "WezTerm", runner_script]).spawn()),
+        "kitty" => Command::new("kitty")
+            .arg(runner_script)
+            .spawn()
+            .or_else(|_| Command::new("open").args(["-a", "kitty", runner_script]).spawn()),
         "alacritty" => Command::new("alacritty")
             .args(["-e", runner_script])
-            .spawn(),
-        _ => {
-            let script = format!(
-                r#"tell application "Terminal"
-                    activate
-                    do script "{runner_script}"
-                end tell"#
-            );
-            Command::new("osascript").args(["-e", &script]).spawn()
-        }
+            .spawn()
+            .or_else(|_| Command::new("open").args(["-a", "Alacritty", runner_script]).spawn()),
+        _ => Command::new("open")
+            .args(["-a", "Terminal", runner_script])
+            .spawn()
+            .or_else(|_| Command::new("open").arg(runner_script).spawn()),
     };
 
     match spawned {
         Ok(_) => Ok(target.to_string()),
         Err(e) => {
-            let script = format!(
-                r#"tell application "Terminal"
-                    activate
-                    do script "{runner_script}"
-                end tell"#
-            );
-            Command::new("osascript")
-                .args(["-e", &script])
+            Command::new("open")
+                .arg(runner_script)
                 .spawn()
-                .with_context(|| format!("failed to spawn Terminal: {e:#}"))?;
-            Ok("terminal".to_string())
+                .with_context(|| format!("failed to open runner script {runner_script}: {e:#}"))?;
+            Ok("default".to_string())
         }
     }
 }
