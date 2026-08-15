@@ -1,10 +1,11 @@
 //! spawner.rs — Spawns isolated terminal windows running CLI agents across macOS, Linux, and Windows.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{error, info, warn};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LaunchParams {
@@ -251,17 +252,24 @@ Write-Host "━━━━━━━━━━━━━━━━━━━━━━�
 }
 
 pub fn launch(params: LaunchParams) -> Result<LaunchResult> {
+    info!(
+        "launch requested: agent_id={}, terminal_id={:?}, cwd={:?}",
+        params.agent_id, params.terminal_id, params.cwd
+    );
     let prompt_file = write_temp_prompt(
         &params.prompt,
         params.title.as_deref(),
         params.url.as_deref(),
     )?;
+    info!("wrote prompt file: {}", prompt_file);
     let cwd = resolve_cwd(params.cwd.as_deref());
     let agent_cmd = build_agent_cmd(&params.agent_id, params.custom_cmd.as_deref(), &prompt_file);
     let runner_script = write_runner_script(&params.agent_id, &agent_cmd, &cwd, &prompt_file)?;
+    info!("wrote runner script: {}", runner_script);
 
     let requested_terminal = params.terminal_id.as_deref().unwrap_or("auto");
     let chosen_terminal = spawn_terminal(requested_terminal, &runner_script, &cwd)?;
+    info!("spawned terminal: {}", chosen_terminal);
 
     Ok(LaunchResult {
         ok: true,
@@ -278,60 +286,110 @@ fn spawn_terminal(terminal_id: &str, runner_script: &str, _cwd: &str) -> Result<
         "auto" => "terminal",
         other => other,
     };
+    info!("spawn_terminal target={}", target);
 
-    let spawned = match target {
-        "ghostty" => Command::new("open")
+    let mut launched = false;
+
+    if target == "iterm2" || target == "iterm" {
+        let script = format!(
+            r#"tell application "iTerm"
+                activate
+                create window with default profile command "{runner_script}"
+            end tell"#
+        );
+        if let Ok(out) = Command::new("osascript").args(["-e", &script]).output() {
+            if out.status.success() {
+                launched = true;
+            } else {
+                warn!(
+                    "iTerm osascript failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+        if !launched {
+            if let Ok(out) = Command::new("open")
+                .args(["-a", "iTerm", runner_script])
+                .output()
+            {
+                if out.status.success() {
+                    launched = true;
+                }
+            }
+        }
+    } else if target == "ghostty" {
+        if let Ok(out) = Command::new("open")
             .args(["-a", "Ghostty", runner_script])
-            .spawn()
-            .or_else(|_| Command::new("ghostty").args(["-e", runner_script]).spawn()),
-        "iterm2" => Command::new("open")
-            .args(["-a", "iTerm", runner_script])
-            .spawn()
-            .or_else(|_| {
-                Command::new("open")
-                    .args(["-a", "iTerm2", runner_script])
-                    .spawn()
-            }),
-        "wezterm" => Command::new("wezterm")
-            .args(["start", "--", runner_script])
-            .spawn()
-            .or_else(|_| {
-                Command::new("open")
-                    .args(["-a", "WezTerm", runner_script])
-                    .spawn()
-            }),
-        "kitty" => Command::new("kitty")
-            .arg(runner_script)
-            .spawn()
-            .or_else(|_| {
-                Command::new("open")
-                    .args(["-a", "kitty", runner_script])
-                    .spawn()
-            }),
-        "alacritty" => Command::new("alacritty")
-            .args(["-e", runner_script])
-            .spawn()
-            .or_else(|_| {
-                Command::new("open")
-                    .args(["-a", "Alacritty", runner_script])
-                    .spawn()
-            }),
-        _ => Command::new("open")
-            .args(["-a", "Terminal", runner_script])
-            .spawn()
-            .or_else(|_| Command::new("open").arg(runner_script).spawn()),
-    };
-
-    match spawned {
-        Ok(_) => Ok(target.to_string()),
-        Err(e) => {
-            Command::new("open")
-                .arg(runner_script)
-                .spawn()
-                .with_context(|| format!("failed to open runner script {runner_script}: {e:#}"))?;
-            Ok("default".to_string())
+            .output()
+        {
+            if out.status.success() {
+                launched = true;
+            }
+        }
+        if !launched {
+            if let Ok(child) = Command::new("ghostty").args(["-e", runner_script]).spawn() {
+                let _ = child;
+                launched = true;
+            }
         }
     }
+
+    if !launched {
+        // 1. Primary: open -n -a Terminal (forces a fresh foreground window in active Space without TCC permissions)
+        if let Ok(out) = Command::new("open")
+            .args(["-n", "-a", "Terminal", runner_script])
+            .output()
+        {
+            if out.status.success() {
+                launched = true;
+                info!("Terminal.app launched via open -n -a Terminal");
+            } else {
+                warn!(
+                    "open -n -a Terminal failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+
+        // 2. Secondary: AppleScript with reopen and do script
+        if !launched {
+            let script = format!(
+                r#"tell application "Terminal"
+                    reopen
+                    activate
+                    do script "{runner_script}"
+                end tell"#
+            );
+            if let Ok(out) = Command::new("osascript").args(["-e", &script]).output() {
+                if out.status.success() {
+                    launched = true;
+                    info!("Terminal.app launched via AppleScript reopen");
+                } else {
+                    warn!(
+                        "Terminal osascript failed: {}",
+                        String::from_utf8_lossy(&out.stderr)
+                    );
+                }
+            }
+        }
+
+        // 3. Fallback: open directly with LaunchServices
+        if !launched {
+            let out = Command::new("open")
+                .arg(runner_script)
+                .output()
+                .with_context(|| format!("failed to open runner script {runner_script}"))?;
+            if out.status.success() {
+                info!("runner script opened via default open handler");
+            } else {
+                let err_str = String::from_utf8_lossy(&out.stderr);
+                error!("open failed: {}", err_str);
+                bail!("open failed with: {}", err_str);
+            }
+        }
+    }
+
+    Ok(target.to_string())
 }
 
 #[cfg(target_os = "linux")]

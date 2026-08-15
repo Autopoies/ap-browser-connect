@@ -56,13 +56,41 @@ fn unregister_host_instance(host: &Host) {
     }
 }
 
+fn init_logging() {
+    let log_file = dirs::home_dir().and_then(|h| {
+        let p = h.join(".ap-browser").join("host.log");
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&p)
+            .ok()
+    });
+
+    if let Some(file) = log_file {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "info,debug".into()),
+            )
+            .with_writer(file)
+            .with_ansi(false)
+            .try_init();
+    } else {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| "info".into()),
+            )
+            .with_writer(std::io::stderr)
+            .try_init();
+    }
+}
+
 fn main() -> Result<()> {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .with_writer(std::io::stderr)
-        .try_init();
+    init_logging();
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 2 && (args[1] == "--version" || args[1] == "-V") {
