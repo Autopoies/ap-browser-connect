@@ -215,7 +215,9 @@ fi
             let mut perms = std::fs::metadata(&file_path)?.permissions();
             perms.set_mode(0o755);
             std::fs::set_permissions(&file_path, perms)?;
-            let _ = Command::new("xattr").args(["-c", &file_path.to_string_lossy()]).output();
+            let _ = Command::new("xattr")
+                .args(["-c", &file_path.to_string_lossy()])
+                .output();
         }
 
         Ok(file_path.to_string_lossy().to_string())
@@ -249,11 +251,13 @@ Write-Host "━━━━━━━━━━━━━━━━━━━━━━�
 }
 
 pub fn launch(params: LaunchParams) -> Result<LaunchResult> {
-    let prompt_file =
-        write_temp_prompt(&params.prompt, params.title.as_deref(), params.url.as_deref())?;
+    let prompt_file = write_temp_prompt(
+        &params.prompt,
+        params.title.as_deref(),
+        params.url.as_deref(),
+    )?;
     let cwd = resolve_cwd(params.cwd.as_deref());
-    let agent_cmd =
-        build_agent_cmd(&params.agent_id, params.custom_cmd.as_deref(), &prompt_file);
+    let agent_cmd = build_agent_cmd(&params.agent_id, params.custom_cmd.as_deref(), &prompt_file);
     let runner_script = write_runner_script(&params.agent_id, &agent_cmd, &cwd, &prompt_file)?;
 
     let requested_terminal = params.terminal_id.as_deref().unwrap_or("auto");
@@ -283,19 +287,35 @@ fn spawn_terminal(terminal_id: &str, runner_script: &str, _cwd: &str) -> Result<
         "iterm2" => Command::new("open")
             .args(["-a", "iTerm", runner_script])
             .spawn()
-            .or_else(|_| Command::new("open").args(["-a", "iTerm2", runner_script]).spawn()),
+            .or_else(|_| {
+                Command::new("open")
+                    .args(["-a", "iTerm2", runner_script])
+                    .spawn()
+            }),
         "wezterm" => Command::new("wezterm")
             .args(["start", "--", runner_script])
             .spawn()
-            .or_else(|_| Command::new("open").args(["-a", "WezTerm", runner_script]).spawn()),
+            .or_else(|_| {
+                Command::new("open")
+                    .args(["-a", "WezTerm", runner_script])
+                    .spawn()
+            }),
         "kitty" => Command::new("kitty")
             .arg(runner_script)
             .spawn()
-            .or_else(|_| Command::new("open").args(["-a", "kitty", runner_script]).spawn()),
+            .or_else(|_| {
+                Command::new("open")
+                    .args(["-a", "kitty", runner_script])
+                    .spawn()
+            }),
         "alacritty" => Command::new("alacritty")
             .args(["-e", runner_script])
             .spawn()
-            .or_else(|_| Command::new("open").args(["-a", "Alacritty", runner_script]).spawn()),
+            .or_else(|_| {
+                Command::new("open")
+                    .args(["-a", "Alacritty", runner_script])
+                    .spawn()
+            }),
         _ => Command::new("open")
             .args(["-a", "Terminal", runner_script])
             .spawn()
