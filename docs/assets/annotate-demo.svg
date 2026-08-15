@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 480" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bg-grad" x1="0" y1="0" x2="960" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#14191D"/>
+      <stop offset="100%" stop-color="#0E1215"/>
+    </linearGradient>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+    <filter id="glow-pill" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#5AA788" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="960" height="480" rx="16" fill="url(#bg-grad)"/>
+
+  <!-- Main Chrome Window Mockup -->
+  <g transform="translate(32, 28)" filter="url(#shadow)">
+    <!-- Window Frame -->
+    <rect width="520" height="424" rx="10" fill="#1C2329" stroke="#2B363F" stroke-width="1.5"/>
+    
+    <!-- Window Controls -->
+    <circle cx="20" cy="18" r="5" fill="#FF5F56"/>
+    <circle cx="36" cy="18" r="5" fill="#FFBD2E"/>
+    <circle cx="52" cy="18" r="5" fill="#27C93F"/>
+    
+    <!-- Tab Bar -->
+    <rect x="72" y="8" width="180" height="22" rx="5" fill="#26313A"/>
+    <circle cx="84" cy="19" r="3" fill="#5AA788"/>
+    <text x="94" y="23" font-family="-apple-system, system-ui, sans-serif" font-size="11" fill="#E2E8F0" font-weight="500">FastAPI Docs — Readme</text>
+    
+    <!-- URL Bar -->
+    <rect x="14" y="38" width="492" height="24" rx="6" fill="#141A1E" stroke="#253038" stroke-width="1"/>
+    <text x="26" y="54" font-family="-apple-system, monospace" font-size="10.5" fill="#94A3B8">https://fastapi.tiangolo.com/tutorial/first-steps/</text>
+    
+    <!-- Webpage Content -->
+    <g transform="translate(24, 80)">
+      <text x="0" y="16" font-family="-apple-system, system-ui, sans-serif" font-size="18" font-weight="700" fill="#F8FAFC">First Steps with FastAPI</text>
+      
+      <!-- Normal Text -->
+      <text x="0" y="44" font-family="-apple-system, system-ui, sans-serif" font-size="12" fill="#94A3B8">The simplest FastAPI file could look like this:</text>
+      
+      <!-- Code Block (with Pin & Run with Agent Pill) -->
+      <rect x="0" y="60" width="472" height="96" rx="8" fill="#11161A" stroke="#2A3742" stroke-width="1"/>
+      <text x="16" y="86" font-family="ui-monospace, monospace" font-size="11" fill="#5AA788">from</text>
+      <text x="48" y="86" font-family="ui-monospace, monospace" font-size="11" fill="#E2E8F0"> fastapi </text>
+      <text x="96" y="86" font-family="ui-monospace, monospace" font-size="11" fill="#5AA788">import</text>
+      <text x="136" y="86" font-family="ui-monospace, monospace" font-size="11" fill="#E2E8F0"> FastAPI</text>
+      
+      <text x="16" y="108" font-family="ui-monospace, monospace" font-size="11" fill="#E2E8F0">app = FastAPI()</text>
+      
+      <text x="16" y="130" font-family="ui-monospace, monospace" font-size="11" fill="#818CF8">@app.get</text>
+      <text x="68" y="130" font-family="ui-monospace, monospace" font-size="11" fill="#E2E8F0">("/")</text>
+      
+      <!-- Action Pill: Run with Agent -->
+      <g transform="translate(300, 70)" filter="url(#glow-pill)">
+        <rect width="156" height="28" rx="14" fill="#1C262C" stroke="#5AA788" stroke-width="1.5"/>
+        <circle cx="16" cy="14" r="8" fill="#5AA788"/>
+        <text x="16" y="17.5" font-family="system-ui, sans-serif" font-size="9.5" font-weight="bold" fill="#11161A" text-anchor="middle">1</text>
+        <text x="32" y="18" font-family="-apple-system, system-ui, sans-serif" font-size="11" font-weight="600" fill="#F8FAFC">▶ Run with Agent</text>
+      </g>
+
+      <!-- Paragraph with Green Pin and Ask Capsule -->
+      <g transform="translate(0, 172)">
+        <!-- Highlight / Pin Box -->
+        <rect x="-6" y="-6" width="484" height="66" rx="6" fill="#1A2D26" stroke="#5AA788" stroke-width="1.5" stroke-dasharray="4 2"/>
+        <text x="0" y="16" font-family="-apple-system, system-ui, sans-serif" font-size="12" fill="#E2E8F0" font-weight="500">
+          "FastAPI inspects type hints at runtime to generate OpenAPI schemas
+        </text>
+        <text x="0" y="34" font-family="-apple-system, system-ui, sans-serif" font-size="12" fill="#E2E8F0" font-weight="500">
+          and automatic interactive documentation endpoints."
+        </text>
+
+        <!-- Siri-Style Ask Agent Capsule Bar -->
+        <g transform="translate(20, 44)" filter="url(#shadow)">
+          <rect width="440" height="34" rx="17" fill="#162026" stroke="#5AA788" stroke-width="1.5"/>
+          <text x="18" y="21" font-family="system-ui, sans-serif" font-size="12" fill="#5AA788">✦</text>
+          <text x="36" y="21" font-family="-apple-system, system-ui, sans-serif" font-size="11" fill="#94A3B8">Ask local agent about this selection...</text>
+          <rect x="384" y="7" width="20" height="20" rx="10" fill="#5AA788"/>
+          <text x="394" y="21" font-family="system-ui, sans-serif" font-size="11" font-weight="bold" fill="#11161A" text-anchor="middle">↑</text>
+          <text x="418" y="21" font-family="system-ui, sans-serif" font-size="11" fill="#64748B">✕</text>
+        </g>
+      </g>
+    </g>
+  </g>
+
+  <!-- Flow Connector / Arrow -->
+  <g transform="translate(568, 220)">
+    <path d="M 0 0 L 22 0 M 16 -5 L 22 0 L 16 5" stroke="#5AA788" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="11" y="-12" font-family="-apple-system, system-ui, sans-serif" font-size="10" font-weight="600" fill="#5AA788" text-anchor="middle">Zero-Modal</text>
+  </g>
+
+  <!-- Right Terminal Window Mockup -->
+  <g transform="translate(604, 60)" filter="url(#shadow)">
+    <rect width="324" height="360" rx="10" fill="#0F1418" stroke="#2D3B45" stroke-width="1.5"/>
+    
+    <!-- Window Header -->
+    <rect width="324" height="28" rx="10" fill="#192229"/>
+    <circle cx="16" cy="14" r="4" fill="#FF5F56"/>
+    <circle cx="28" cy="14" r="4" fill="#FFBD2E"/>
+    <circle cx="40" cy="14" r="4" fill="#27C93F"/>
+    <text x="162" y="18" font-family="-apple-system, monospace" font-size="10.5" fill="#94A3B8" text-anchor="middle">pi agent — live context</text>
+
+    <!-- Terminal Content -->
+    <g transform="translate(16, 44)">
+      <text x="0" y="14" font-family="ui-monospace, monospace" font-size="10.5" fill="#5AA788">● [Chrome Context Attached]</text>
+      <text x="0" y="30" font-family="ui-monospace, monospace" font-size="9.5" fill="#64748B">url: fastapi.tiangolo.com/tutorial/first-steps/</text>
+      <text x="0" y="44" font-family="ui-monospace, monospace" font-size="9.5" fill="#64748B">selection: "FastAPI inspects type hints..."</text>
+      
+      <line x1="0" y1="56" x2="292" y2="56" stroke="#25323C" stroke-width="1"/>
+
+      <text x="0" y="74" font-family="ui-monospace, monospace" font-size="10.5" fill="#E2E8F0">&gt; How does FastAPI compare to Flask</text>
+      <text x="0" y="88" font-family="ui-monospace, monospace" font-size="10.5" fill="#E2E8F0">  type checking under the hood?</text>
+
+      <text x="0" y="118" font-family="ui-monospace, monospace" font-size="10" fill="#38BDF8">Assistant:</text>
+      <text x="0" y="136" font-family="ui-monospace, monospace" font-size="10" fill="#94A3B8">FastAPI relies on Pydantic to parse</text>
+      <text x="0" y="152" font-family="ui-monospace, monospace" font-size="10" fill="#94A3B8">and validate standard Python type</text>
+      <text x="0" y="168" font-family="ui-monospace, monospace" font-size="10" fill="#94A3B8">hints. Unlike Flask, request validation</text>
+      <text x="0" y="184" font-family="ui-monospace, monospace" font-size="10" fill="#94A3B8">and OpenAPI generation happen</text>
+      <text x="0" y="200" font-family="ui-monospace, monospace" font-size="10" fill="#94A3B8">automatically without manual schemas.</text>
+
+      <rect x="0" y="222" width="292" height="64" rx="6" fill="#141E24" stroke="#223630" stroke-width="1"/>
+      <text x="10" y="240" font-family="ui-monospace, monospace" font-size="9.5" fill="#5AA788">✓ 4-Point Safety Check Passed</text>
+      <text x="10" y="258" font-family="ui-monospace, monospace" font-size="9.5" fill="#94A3B8">Ready in ~/.ap-browser/workspace</text>
+      <text x="10" y="274" font-family="ui-monospace, monospace" font-size="9.5" fill="#E2E8F0">$ uvicorn main:app --reload</text>
+    </g>
+  </g>
+</svg>

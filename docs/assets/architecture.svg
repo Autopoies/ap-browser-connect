@@ -1,0 +1,135 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bg-arch" x1="0" y1="0" x2="960" y2="520" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#14191D"/>
+      <stop offset="100%" stop-color="#0E1215"/>
+    </linearGradient>
+    <filter id="shadow-arch" x="-4%" y="-4%" width="108%" height="108%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#5AA788"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#38BDF8"/>
+    </marker>
+  </defs>
+
+  <!-- Background Canvas -->
+  <rect width="960" height="520" rx="16" fill="url(#bg-arch)"/>
+
+  <!-- Diagram Title Header -->
+  <g transform="translate(48, 36)">
+    <text x="0" y="0" font-family="-apple-system, system-ui, sans-serif" font-size="18" font-weight="700" fill="#F8FAFC">Autopoies Browser Connect — System Architecture</text>
+    <text x="0" y="20" font-family="-apple-system, system-ui, sans-serif" font-size="11.5" fill="#94A3B8">Local Process Isolation • Native Messaging IPC • Chrome Session Reuse</text>
+  </g>
+
+  <!-- Legend & Trust Boundary Header -->
+  <g transform="translate(680, 28)">
+    <rect width="232" height="34" rx="6" fill="#182229" stroke="#2B3944" stroke-width="1"/>
+    <circle cx="16" cy="17" r="4" fill="#5AA788"/>
+    <text x="26" y="21" font-family="system-ui, sans-serif" font-size="10.5" fill="#E2E8F0">100% Local IPC (No Cloud)</text>
+    <circle cx="156" cy="17" r="4" fill="#38BDF8"/>
+    <text x="166" y="21" font-family="system-ui, sans-serif" font-size="10.5" fill="#E2E8F0">Bidirectional</text>
+  </g>
+
+  <!-- LAYER 1: CLIENTS & RUNTIMES (Top) -->
+  <g transform="translate(48, 88)" filter="url(#shadow-arch)">
+    <rect width="864" height="84" rx="10" fill="#182128" stroke="#2D3B47" stroke-width="1.5"/>
+    <text x="20" y="24" font-family="-apple-system, system-ui, sans-serif" font-size="11" font-weight="700" fill="#5AA788" letter-spacing="1">CONTROL SURFACE &amp; AGENTS</text>
+    
+    <!-- Client Boxes -->
+    <g transform="translate(20, 36)">
+      <!-- AI Coding Agents -->
+      <rect x="0" y="0" width="260" height="36" rx="6" fill="#10161A" stroke="#25323D" stroke-width="1"/>
+      <text x="14" y="22" font-family="ui-monospace, monospace" font-size="11" fill="#F8FAFC">AI Agents (pi, claude, codex)</text>
+
+      <!-- Human Terminal / Scripts -->
+      <rect x="276" y="0" width="260" height="36" rx="6" fill="#10161A" stroke="#25323D" stroke-width="1"/>
+      <text x="14" y="22" font-family="ui-monospace, monospace" font-size="11" fill="#F8FAFC" transform="translate(276,0)">Developer Terminal &amp; Scripts</text>
+
+      <!-- In-Page Copilot Trigger -->
+      <rect x="552" y="0" width="272" height="36" rx="6" fill="#162522" stroke="#5AA788" stroke-width="1"/>
+      <text x="14" y="22" font-family="ui-monospace, monospace" font-size="11" fill="#5AA788" transform="translate(552,0)">In-Page Picker (Cmd+Shift+E)</text>
+    </g>
+  </g>
+
+  <!-- Connector 1 -->
+  <path d="M 480 172 L 480 200" stroke="#5AA788" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="420" y="178" width="120" height="18" rx="4" fill="#141E22"/>
+  <text x="480" y="191" font-family="ui-monospace, monospace" font-size="9" fill="#94A3B8" text-anchor="middle">CLI Subprocess / Tool</text>
+
+  <!-- LAYER 2: LOCAL CLI & EXTENSION ENGINE (Middle) -->
+  <g transform="translate(48, 206)" filter="url(#shadow-arch)">
+    <rect width="864" height="124" rx="10" fill="#161E24" stroke="#2B3843" stroke-width="1.5"/>
+    <text x="20" y="24" font-family="-apple-system, system-ui, sans-serif" font-size="11" font-weight="700" fill="#5AA788" letter-spacing="1">LOCAL ENGINE &amp; NATIVE HOST</text>
+
+    <!-- Component 1: CLI (ap-browser) -->
+    <g transform="translate(20, 36)">
+      <rect width="250" height="72" rx="8" fill="#10161A" stroke="#283742" stroke-width="1.2"/>
+      <text x="16" y="24" font-family="-apple-system, system-ui, sans-serif" font-size="13" font-weight="700" fill="#F8FAFC">ap-browser (Rust CLI)</text>
+      <text x="16" y="44" font-family="ui-monospace, monospace" font-size="9.5" fill="#94A3B8">• 2.05 MiB native binary</text>
+      <text x="16" y="58" font-family="ui-monospace, monospace" font-size="9.5" fill="#94A3B8">• Batch engine &amp; arg parser</text>
+    </g>
+
+    <!-- IPC Arrow Between CLI and Host -->
+    <g transform="translate(270, 72)">
+      <path d="M 0 0 L 36 0" stroke="#5AA788" stroke-width="2" marker-end="url(#arrow)"/>
+      <text x="18" y="-8" font-family="ui-monospace, monospace" font-size="8.5" fill="#5AA788" text-anchor="middle">Local Socket</text>
+    </g>
+
+    <!-- Component 2: Native Host (ap-browser-host) -->
+    <g transform="translate(312, 36)">
+      <rect width="260" height="72" rx="8" fill="#10161A" stroke="#283742" stroke-width="1.2"/>
+      <text x="16" y="24" font-family="-apple-system, system-ui, sans-serif" font-size="13" font-weight="700" fill="#F8FAFC">ap-browser-host</text>
+      <text x="16" y="44" font-family="ui-monospace, monospace" font-size="9.5" fill="#94A3B8">• Chrome Native Messaging</text>
+      <text x="16" y="58" font-family="ui-monospace, monospace" font-size="9.5" fill="#94A3B8">• stdin/stdout length-prefixed IPC</text>
+    </g>
+
+    <!-- IPC Arrow Between Host and Runtime Data -->
+    <g transform="translate(572, 72)">
+      <path d="M 0 0 L 36 0" stroke="#38BDF8" stroke-width="2" marker-end="url(#arrow-blue)"/>
+      <text x="18" y="-8" font-family="ui-monospace, monospace" font-size="8.5" fill="#38BDF8" text-anchor="middle">Loads</text>
+    </g>
+
+    <!-- Component 3: Adapters & Configs -->
+    <g transform="translate(614, 36)">
+      <rect width="230" height="72" rx="8" fill="#10161A" stroke="#283742" stroke-width="1.2"/>
+      <text x="16" y="24" font-family="-apple-system, system-ui, sans-serif" font-size="13" font-weight="700" fill="#38BDF8">Runtime Library</text>
+      <text x="16" y="44" font-family="ui-monospace, monospace" font-size="9.5" fill="#94A3B8">• 43+ YAML+JS site adapters</text>
+      <text x="16" y="58" font-family="ui-monospace, monospace" font-size="9.5" fill="#94A3B8">• Anti-injection safety filters</text>
+    </g>
+  </g>
+
+  <!-- Connector 2 -->
+  <path d="M 442 330 L 442 364" stroke="#5AA788" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="362" y="340" width="160" height="18" rx="4" fill="#141E22"/>
+  <text x="442" y="353" font-family="ui-monospace, monospace" font-size="9" fill="#5AA788" text-anchor="middle">Chrome Native Messaging</text>
+
+  <!-- LAYER 3: CHROME EXTENSION & BROWSER INSTANCE (Bottom) -->
+  <g transform="translate(48, 370)" filter="url(#shadow-arch)">
+    <rect width="864" height="114" rx="10" fill="#182229" stroke="#2D3B47" stroke-width="1.5"/>
+    <text x="20" y="24" font-family="-apple-system, system-ui, sans-serif" font-size="11" font-weight="700" fill="#5AA788" letter-spacing="1">CHROME BROWSER ENVIRONMENT (MV3)</text>
+
+    <!-- Chrome Sub-components -->
+    <g transform="translate(20, 36)">
+      <!-- Extension Background Worker -->
+      <rect x="0" y="0" width="250" height="64" rx="6" fill="#10161A" stroke="#24333E" stroke-width="1"/>
+      <text x="14" y="22" font-family="-apple-system, system-ui, sans-serif" font-size="12" font-weight="600" fill="#F8FAFC">Extension Service Worker</text>
+      <text x="14" y="40" font-family="ui-monospace, monospace" font-size="9.5" fill="#94A3B8">Tab dispatch &amp; CDP session routing</text>
+      <text x="14" y="54" font-family="ui-monospace, monospace" font-size="9.5" fill="#94A3B8">Profile &amp; cookie reuse</text>
+
+      <!-- In-Page UI & Overlay -->
+      <rect x="270" y="0" width="270" height="64" rx="6" fill="#10161A" stroke="#24333E" stroke-width="1"/>
+      <text x="14" y="22" font-family="-apple-system, system-ui, sans-serif" font-size="12" font-weight="600" fill="#F8FAFC">In-Page Annotate &amp; Picker</text>
+      <text x="14" y="40" font-family="ui-monospace, monospace" font-size="9.5" fill="#94A3B8">Visual ref badges &amp; action capsules</text>
+      <text x="14" y="54" font-family="ui-monospace, monospace" font-size="9.5" fill="#94A3B8">Interactive pinning &amp; ask agent</text>
+
+      <!-- Live Webpages / DOM -->
+      <rect x="560" y="0" width="264" height="64" rx="6" fill="#10161A" stroke="#24333E" stroke-width="1"/>
+      <text x="14" y="22" font-family="-apple-system, system-ui, sans-serif" font-size="12" font-weight="600" fill="#38BDF8">Logged-in Chrome Tabs</text>
+      <text x="14" y="40" font-family="ui-monospace, monospace" font-size="9.5" fill="#94A3B8">Twitter, GitHub, Notion, Jira...</text>
+      <text x="14" y="54" font-family="ui-monospace, monospace" font-size="9.5" fill="#94A3B8">Real cookies, 2FA, &amp; session state</text>
+    </g>
+  </g>
+</svg>
