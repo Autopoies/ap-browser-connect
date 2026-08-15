@@ -1,11 +1,15 @@
 //! spawner.rs — Spawns isolated terminal windows running CLI agents across macOS, Linux, and Windows.
 
-use anyhow::{bail, Context, Result};
+#[cfg(target_os = "macos")]
+use anyhow::bail;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{error, info, warn};
+use tracing::info;
+#[cfg(target_os = "macos")]
+use tracing::{error, warn};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LaunchParams {
