@@ -57,7 +57,8 @@ pub fn find_binary(bin_name: &str) -> Option<PathBuf> {
     }
 
     if let Some(home) = dirs::home_dir() {
-        let candidates = vec![
+        #[allow(unused_mut)]
+        let mut candidates = vec![
             home.join(".cargo/bin").join(bin_name),
             home.join(".local/bin").join(bin_name),
             home.join(".npm-global/bin").join(bin_name),
