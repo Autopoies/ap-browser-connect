@@ -11,6 +11,7 @@
         --muted: GrayText;
         --accent: #5aa788;
         --border: color-mix(in srgb, CanvasText 12%, transparent);
+        --card-bg: color-mix(in srgb, Canvas 92%, CanvasText 8%);
       }
       body {
         font:
@@ -23,14 +24,13 @@
         color: var(--fg);
         margin: 0;
         padding: 16px;
-        min-width: 280px;
+        min-width: 300px;
       }
       h1 {
         font-size: 14px;
-        margin: 0 0 12px;
+        margin: 0;
         display: flex;
         align-items: center;
-        justify-content: center;
         gap: 8px;
       }
       h1 svg {
@@ -46,7 +46,8 @@
         text-transform: uppercase;
         letter-spacing: 0.5px;
       }
-      input[type="text"] {
+      input[type="text"],
+      select {
         width: 100%;
         box-sizing: border-box;
         padding: 6px 8px;
@@ -55,9 +56,11 @@
         border: 1px solid var(--border);
         border-radius: 6px;
         font: inherit;
+        font-size: 12px;
         margin-bottom: 12px;
       }
-      input[type="text"]:focus {
+      input[type="text"]:focus,
+      select:focus {
         outline: none;
         border-color: var(--accent);
         box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
@@ -175,45 +178,128 @@
         color: var(--muted);
         border: 1px solid var(--border);
         flex-shrink: 0;
+        cursor: pointer;
+        border-radius: 4px;
+      }
+      .header-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+      .settings-btn {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        font-size: 12px;
+        cursor: pointer;
+        padding: 3px 6px;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .settings-btn:hover {
+        color: var(--fg);
+        border-color: var(--accent);
+      }
+      .settings-panel {
+        background: var(--card-bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 12px;
+      }
+      .full-options-link {
+        display: inline-block;
+        font-size: 11px;
+        color: var(--accent);
+        text-decoration: none;
+        margin-top: 4px;
+        cursor: pointer;
+      }
+      .full-options-link:hover {
+        text-decoration: underline;
       }
     </style>
   </head>
   <body>
-    <h1>
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <defs>
-          <linearGradient
-            id="ap-bg"
-            x1="0"
-            y1="0"
-            x2="16"
-            y2="16"
-            gradientUnits="userSpaceOnUse"
-          >
-            <stop offset="0" stop-color="#313b42" />
-            <stop offset="1" stop-color="#242b30" />
-          </linearGradient>
-        </defs>
-        <rect width="16" height="16" rx="3" fill="url(#ap-bg)" />
-        <g transform="translate(2.88 3.00) scale(0.020)">
-          <path
-            d="M 237.4 310 L 258.2 310 Q 274.6 310 283.5 323.8 L 296.3 343.8 Q 326 390 271.1 390 L 130.9 390 Q 76 390 105.7 343.8 L 230.8 149.3 Q 256 110 281.2 149.3 L 436 390"
-            fill="none"
-            stroke="#5aa788"
-            stroke-width="70"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </g>
-      </svg>
-      AP Browser Connect
-    </h1>
+    <div class="header-row">
+      <h1>
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <defs>
+            <linearGradient
+              id="ap-bg"
+              x1="0"
+              y1="0"
+              x2="16"
+              y2="16"
+              gradientUnits="userSpaceOnUse"
+            >
+              <stop offset="0" stop-color="#313b42" />
+              <stop offset="1" stop-color="#242b30" />
+            </linearGradient>
+          </defs>
+          <rect width="16" height="16" rx="3" fill="url(#ap-bg)" />
+          <g transform="translate(2.88 3.00) scale(0.020)">
+            <path
+              d="M 237.4 310 L 258.2 310 Q 274.6 310 283.5 323.8 L 296.3 343.8 Q 326 390 271.1 390 L 130.9 390 Q 76 390 105.7 343.8 L 230.8 149.3 Q 256 110 281.2 149.3 L 436 390"
+              fill="none"
+              stroke="#5aa788"
+              stroke-width="70"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </g>
+        </svg>
+        AP Browser Connect
+      </h1>
+      <button class="settings-btn" id="settingsBtn" title="Toggle Settings">
+        ⚙ Settings
+      </button>
+    </div>
+
+    <!-- Inline Expandable Settings Panel -->
+    <div class="settings-panel" id="settingsPanel" hidden>
+      <label for="agentSelect">Default CLI Agent</label>
+      <select id="agentSelect">
+        <option value="dsh">DeepSeek Harness (dsh)</option>
+        <option value="agent">Cursor CLI Agent (agent)</option>
+        <option value="pi">Pi Agent (pi)</option>
+        <option value="claude">Claude Code (claude)</option>
+        <option value="codex">Codex CLI (codex)</option>
+        <option value="gemini">Gemini CLI (gemini)</option>
+        <option value="aider">Aider (aider)</option>
+        <option value="opencode">OpenCode (opencode)</option>
+        <option value="custom">Custom...</option>
+      </select>
+
+      <label for="terminalSelect">Default Terminal</label>
+      <select id="terminalSelect">
+        <option value="auto">Auto (Default / Ghostty / iTerm / WT)</option>
+        <option value="ghostty">Ghostty</option>
+        <option value="iterm2">iTerm2</option>
+        <option value="terminal">Terminal.app</option>
+        <option value="wt">Windows Terminal</option>
+      </select>
+
+      <label for="workspaceCwd">Default Workspace (CWD)</label>
+      <input
+        type="text"
+        id="workspaceCwd"
+        placeholder="Default: ~/.ap-browser/workspace"
+      />
+
+      <a class="full-options-link" id="openFullOptionsLink"
+        >Open Full Settings Page ↗</a
+      >
+    </div>
 
     <label>Annotation</label>
     <button class="annotate-btn" id="annotateBtn">
       <span class="ab-icon">✎</span>
       <span class="ab-label">Toggle annotate</span>
-      <kbd id="annotateKbd">Alt ⇧ A</kbd>
+      <kbd id="annotateKbd">⌘⇧E</kbd>
       <span
         class="ab-count"
         id="annotateCount"

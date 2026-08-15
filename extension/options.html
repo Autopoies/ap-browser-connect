@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AP Browser Connect — Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header class="header">
+        <div class="brand">
+          <svg viewBox="0 0 16 16" width="22" height="22" aria-hidden="true">
+            <defs>
+              <linearGradient
+                id="bg"
+                x1="0"
+                y1="0"
+                x2="16"
+                y2="16"
+                gradientUnits="userSpaceOnUse"
+              >
+                <stop offset="0" stop-color="#313B42" />
+                <stop offset="1" stop-color="#242B30" />
+              </linearGradient>
+            </defs>
+            <rect width="16" height="16" rx="3" fill="url(#bg)" />
+            <g transform="translate(2.88 3.00) scale(0.020)">
+              <path
+                d="M 237.4 310 L 258.2 310 Q 274.6 310 283.5 323.8 L 296.3 343.8 Q 326 390 271.1 390 L 130.9 390 Q 76 390 105.7 343.8 L 230.8 149.3 Q 256 110 281.2 149.3 L 436 390"
+                fill="none"
+                stroke="#5AA788"
+                stroke-width="70"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </g>
+          </svg>
+          <h1>AP Browser Connect Settings</h1>
+        </div>
+        <div class="header-status">
+          <span class="status-dot" id="hostStatusDot"></span>
+          <span class="status-text" id="hostStatusText">Checking host...</span>
+        </div>
+      </header>
+
+      <main class="content">
+        <!-- 1. Profile Settings -->
+        <section class="card">
+          <h2>Profile &amp; Identity</h2>
+          <div class="form-group">
+            <label for="profileLabel">Profile Name / Label</label>
+            <input
+              type="text"
+              id="profileLabel"
+              placeholder="e.g. Work, Personal, Research..."
+              maxlength="32"
+            />
+            <p class="help-text">
+              Distinguishes this browser profile when multiple Chrome profiles
+              connect.
+            </p>
+          </div>
+          <div class="form-group">
+            <label>Instance ID</label>
+            <div class="row">
+              <code class="instance-id" id="instanceId">—</code>
+              <button
+                type="button"
+                class="btn btn-secondary btn-sm"
+                id="copyInstanceBtn"
+              >
+                Copy
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 2. Annotate Trigger Shortcut -->
+        <section class="card">
+          <h2>Annotate Trigger Shortcut</h2>
+          <div class="form-group">
+            <label>In-Page Toggle Shortcut</label>
+            <div class="shortcut-box">
+              <div class="shortcut-display" id="shortcutDisplay">
+                ⌘ Cmd + ⇧ Shift + E
+              </div>
+              <button
+                type="button"
+                class="btn btn-secondary"
+                id="recordShortcutBtn"
+              >
+                Record Shortcut
+              </button>
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
+                id="resetShortcutBtn"
+              >
+                Reset
+              </button>
+            </div>
+            <p class="help-text">
+              Press this shortcut inside any webpage to activate/exit the
+              Annotate picker overlay.
+            </p>
+          </div>
+          <div class="form-group-note">
+            <span>Chrome global extension shortcut:</span>
+            <a href="#" id="openChromeShortcutsLink"
+              >Configure in chrome://extensions/shortcuts</a
+            >
+          </div>
+        </section>
+
+        <!-- 3. CLI Agent & Terminal Configuration -->
+        <section class="card">
+          <h2>CLI Agent &amp; Terminal Runner</h2>
+
+          <div class="form-group">
+            <label for="agentSelect">Default CLI Agent</label>
+            <select id="agentSelect">
+              <option value="dsh">DeepSeek Harness (dsh)</option>
+              <option value="agent">Cursor CLI Agent (agent)</option>
+              <option value="pi">Pi Agent (pi)</option>
+              <option value="claude">Claude Code (claude)</option>
+              <option value="codex">Codex CLI (codex)</option>
+              <option value="gemini">Gemini CLI (gemini)</option>
+              <option value="aider">Aider (aider)</option>
+              <option value="opencode">OpenCode (opencode)</option>
+              <option value="custom">Custom Agent Command...</option>
+            </select>
+            <div id="detectedAgentsList" class="badge-list"></div>
+          </div>
+
+          <div class="form-group" id="customAgentGroup" hidden>
+            <label for="customAgentCmd">Custom Agent Command</label>
+            <input
+              type="text"
+              id="customAgentCmd"
+              placeholder="e.g. my-agent run {prompt_file}"
+            />
+            <p class="help-text">
+              Use <code>{prompt_file}</code> placeholder where the prompt file
+              path should be injected.
+            </p>
+          </div>
+
+          <div class="form-group">
+            <label for="terminalSelect">Default Terminal Emulator</label>
+            <select id="terminalSelect">
+              <option value="auto">
+                Auto (Default / Ghostty / iTerm / WT)
+              </option>
+            </select>
+            <div id="detectedTerminalsList" class="badge-list"></div>
+          </div>
+
+          <div class="form-group">
+            <label for="workspaceCwd">Default Workspace Directory (CWD)</label>
+            <input
+              type="text"
+              id="workspaceCwd"
+              placeholder="Default: ~/.ap-browser/workspace"
+            />
+            <p class="help-text">
+              Initial directory where the agent runs (defaults to
+              <code>~/.ap-browser/workspace</code> or
+              <code>%USERPROFILE%\.ap-browser\workspace</code>).
+            </p>
+          </div>
+        </section>
+
+        <!-- 4. Safety Harness Protocols -->
+        <section class="card">
+          <h2>Safety Harness Protocols (Mandatory &amp; Enforced)</h2>
+          <p class="section-intro">
+            Mandatory security protocols unconditionally injected into every
+            agent prompt:
+          </p>
+
+          <div class="checkbox-group">
+            <div class="checkbox-item">
+              <span style="color: #22c55e; font-weight: bold; margin-top: 2px"
+                >✔</span
+              >
+              <div class="checkbox-content">
+                <strong>Anti-Injection &amp; Pastjacking Check</strong>
+                <span
+                  >Always inspects commands for hidden zero-width characters,
+                  obfuscation, or prompt injection payloads.</span
+                >
+              </div>
+            </div>
+
+            <div class="checkbox-item">
+              <span style="color: #22c55e; font-weight: bold; margin-top: 2px"
+                >✔</span
+              >
+              <div class="checkbox-content">
+                <strong
+                  >Destructive &amp; Irreversible Command Interception</strong
+                >
+                <span
+                  >Requires confirmation before running destructive operations
+                  (e.g. <code>rm -rf</code>, <code>sudo</code>, disk
+                  formatting).</span
+                >
+              </div>
+            </div>
+
+            <div class="checkbox-item">
+              <span style="color: #22c55e; font-weight: bold; margin-top: 2px"
+                >✔</span
+              >
+              <div class="checkbox-content">
+                <strong>Remote Script Pre-Audit</strong>
+                <span
+                  >Enforces downloading and inspecting source code before
+                  running remote scripts (e.g. <code>curl | sh</code>).</span
+                >
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="actions">
+          <button type="button" class="btn btn-primary" id="saveBtn">
+            Save Settings
+          </button>
+          <span class="save-msg" id="saveMsg" hidden>✓ Settings saved</span>
+        </div>
+      </main>
+    </div>
+
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

@@ -205,27 +205,32 @@ echo '[
 Use separate commands when the next step depends on the previous result.  
 Patterns: [`skill/references/patterns.md`](./skill/references/patterns.md).
 
-## Annotate (pixel → ref)
+## Annotate (pixel → ref & Agent Bridge)
 
-Agents need a stable map from what they see to what they click. Annotate mode provides that.
+Annotate mode bridges human visual picks, agent exploration, and instant terminal execution.
 
-**Screenshot overlay**: Draw numbered badges that match `state` references:
+### 1. In-page picker & Agent Action Capsules
+
+Press `Cmd+Shift+E` on macOS (or `Alt+Shift+E` on Linux/Windows, custom-recordable in Settings) to activate the in-page picker overlay:
+
+- **Hover & Pin**: Hover any interactive element (blue preview) or click to pin it (green box + badge).
+- **Run with Agent (for Commands / Code)**:
+  - Clicking any code block or command (e.g. `npm i`, `cargo add`, `curl | sh`) renders an Apple HIG-inspired action pill: `[ 1 ] ▶ Run with <Agent>`.
+  - **Zero-Modal Direct Launch**: Click to spawn a new native OS terminal window (Terminal.app, Ghostty, iTerm2, x-terminal-emulator, Windows Terminal) executing your preferred CLI agent (`pi`, `claude`, `codex`, `dsh` / DeepSeek Harness, `agent` / Cursor CLI, `gemini`, `aider`, `opencode`) inside `~/.ap-browser/workspace`.
+  - **Mandatory Safety Audit**: Injects strict 4-point security protocols before execution (Anti-Injection & Pastjacking check, destructive command gating, remote script pre-audit, context alignment).
+- **Ask Agent (for Text / Documentation)**:
+  - Pinned text renders a `[ 2 ] ✦ Ask <Agent>` capsule.
+  - **Siri-Style Horizontal Expansion**: Click to smoothly expand into an inline prompt bar `✦ [ Ask anything about this selection… ] (↑) (✕)`. Type your question and hit `Enter` to open an agent session in your terminal with page context already attached.
+
+### 2. Screenshot overlay & State mapping
 
 ```bash
 ap-browser state
 ap-browser screenshot --annotate --out /tmp/page.png
 ```
 
-Red boxes are interactive `state` refs. Green boxes are elements the user pinned.
-
-**In-page picker**: Pin elements on the live tab:
-
-- Shortcut: `Cmd+Shift+A` (macOS) / `Alt+Shift+A` (other)
-- Extension popup button
-- `ap-browser dev annotate` for a specific tab
-
-Pinned elements appear in `state` as `annotated: [{ref|null, selector, name, ...}]`.
-Use the pinned elements. Do not guess which element to select.
+- Red boxes are interactive `state` refs. Green boxes are user-pinned elements.
+- Pinned elements appear in `state` output as `annotated: [{ref|null, selector, name, ...}]`.
 
 Details: [`skill/references/commands.md`](./skill/references/commands.md).
 

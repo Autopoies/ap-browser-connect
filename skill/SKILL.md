@@ -270,7 +270,7 @@ Structured debugging over CDP: `dev console list`, `dev network list`, `dev erro
 
 ## Annotation mode (user marks elements)
 
-The user can pick elements on a page (shortcut Alt+Shift+A or the extension popup): an inspect-style picker — hovering previews the element (blue dashed outline), clicking pins it (green box + ref badge), clicking again unpins. The compact panel lists only the pinned elements. Pinned elements:
+The user can pick elements on a page (shortcut Cmd+Shift+E on mac / Alt+Shift+E elsewhere or the extension popup): an inspect-style picker — hovering previews the element (blue dashed outline), clicking pins it (green box + ref badge), clicking again unpins. The compact panel lists only the pinned elements. Pinned elements:
 
 - appear in `state` output as the `annotated` array (`{ref, name}`)
 - render as **green** boxes in `screenshot --annotate` (state refs stay red)

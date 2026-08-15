@@ -101,6 +101,9 @@ elif [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/Cargo.toml" && -f "$REPO_ROOT/host/Car
 	echo "→ Symlinking host binary to ${HOST_BIN_INSTALL}"
 	sudo mkdir -p "$(dirname "$HOST_BIN_INSTALL")" 2>/dev/null || true
 	sudo ln -sf "$HOST_BIN" "$HOST_BIN_INSTALL" 2>/dev/null || ln -sf "$HOST_BIN" "$HOST_BIN_INSTALL"
+	if [[ "$(uname -s)" == "Darwin" ]]; then
+		codesign --force --sign - "$HOST_BIN_INSTALL" 2>/dev/null || true
+	fi
 else
 	echo "Host binary not found at ${HOST_BIN_INSTALL}." >&2
 	echo "Install the release binaries first, or run this script from an ap-browser-connect source checkout." >&2

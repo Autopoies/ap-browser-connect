@@ -1,7 +1,7 @@
 {
 	"manifest_version": 3,
 	"name": "AP Browser Connect",
-	"version": "0.1.2",
+	"version": "0.1.3",
 	"description": "Open agent-driven Chrome control. Any agent + Rust CLI drives your already-logged-in browser.",
 	"action": {
 		"default_popup": "popup.html",
@@ -13,6 +13,11 @@
 			"128": "icons/idle-128.png"
 		}
 	},
+	"options_ui": {
+		"page": "options.html",
+		"open_in_tab": true
+	},
+	"options_page": "options.html",
 	"commands": {
 		"toggle-annotate": {
 			"suggested_key": {

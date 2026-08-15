@@ -7,15 +7,18 @@ const hostDot = document.getElementById("hostDot");
 const hostState = document.getElementById("hostState");
 const opsDot = document.getElementById("opsDot");
 const opsCount = document.getElementById("opsCount");
+const settingsBtn = document.getElementById("settingsBtn");
+const settingsPanel = document.getElementById("settingsPanel");
+const openFullOptionsLink = document.getElementById("openFullOptionsLink");
+const agentSelect = document.getElementById("agentSelect");
+const terminalSelect = document.getElementById("terminalSelect");
+const workspaceCwdInput = document.getElementById("workspaceCwd");
 
 const annotateBtn = document.getElementById("annotateBtn");
 const annotateLabel = annotateBtn.querySelector(".ab-label");
 const annotateCount = document.getElementById("annotateCount");
-// Shortcut differs by platform: mac uses Command+Shift+A (Option+Shift is
-// swallowed by input-method switching), everything else Alt+Shift+A.
-document.getElementById("annotateKbd").textContent = /Mac|iPhone|iPad/.test(
-	navigator.platform,
-)
+
+document.getElementById("annotateKbd").textContent = /Mac|iPhone|iPad/.test(navigator.platform)
 	? "⌘⇧E"
 	: "Alt⇧E";
 
@@ -36,10 +39,7 @@ annotateBtn.addEventListener("click", async () => {
 
 async function refreshAnnotateCount() {
 	try {
-		const r = await withTimeout(
-			chrome.runtime.sendMessage({ method: "annotations.count" }),
-			1200,
-		);
+		const r = await withTimeout(chrome.runtime.sendMessage({ method: "annotations.count" }), 1200);
 		if (r && r.ok) {
 			annotateCount.textContent = String(r.count);
 			annotateCount.hidden = r.count === 0;
@@ -48,21 +48,62 @@ async function refreshAnnotateCount() {
 }
 
 async function init() {
-	const { instance_id, label } = await chrome.storage.local.get([
+	const stored = await chrome.storage.local.get([
 		"instance_id",
 		"label",
+		"custom_annotate_shortcut",
+		"default_agent",
+		"default_terminal",
+		"workspace_cwd",
 	]);
-	const idStr = instance_id || "(not set)";
+	const idStr = stored.instance_id || "(not set)";
 	instanceIdEl.textContent = idStr;
 	instanceIdEl.title = idStr;
-	labelInput.value = label || "";
-	labelInput.focus();
-	labelInput.select();
+	labelInput.value = stored.label || "";
+
+	if (stored.custom_annotate_shortcut?.display) {
+		document.getElementById("annotateKbd").textContent = stored.custom_annotate_shortcut.display;
+	}
+
+	if (stored.default_agent) {
+		agentSelect.value = stored.default_agent;
+	}
+	if (stored.default_terminal) {
+		terminalSelect.value = stored.default_terminal;
+	}
+	if (stored.workspace_cwd) {
+		workspaceCwdInput.value = stored.workspace_cwd;
+	}
 }
 
-// Popup UI must render instantly even when the SW is cold-starting: bound
-// every background round-trip with a timeout and show offline until it
-// answers (next 1s tick retries).
+// Toggle Inline Settings Panel
+settingsBtn?.addEventListener("click", (e) => {
+	e.preventDefault();
+	settingsPanel.hidden = !settingsPanel.hidden;
+	settingsBtn.textContent = settingsPanel.hidden ? "⚙ Settings" : "▲ Close";
+});
+
+// Open Full Page Options
+function openFullOptions(e) {
+	e?.preventDefault?.();
+	chrome.tabs.create({ url: chrome.runtime.getURL("options.html") });
+}
+
+openFullOptionsLink?.addEventListener("click", openFullOptions);
+
+// Save quick settings changes
+agentSelect?.addEventListener("change", async () => {
+	await chrome.storage.local.set({ default_agent: agentSelect.value });
+});
+
+terminalSelect?.addEventListener("change", async () => {
+	await chrome.storage.local.set({ default_terminal: terminalSelect.value });
+});
+
+workspaceCwdInput?.addEventListener("input", async (e) => {
+	await chrome.storage.local.set({ workspace_cwd: e.target.value.trim() });
+});
+
 function withTimeout(p, ms) {
 	return Promise.race([
 		p,
@@ -72,10 +113,7 @@ function withTimeout(p, ms) {
 
 async function refreshStatus() {
 	try {
-		const s = await withTimeout(
-			chrome.runtime.sendMessage({ method: "status" }),
-			1200,
-		);
+		const s = await withTimeout(chrome.runtime.sendMessage({ method: "status" }), 1200);
 		if (!s) return;
 		if (s.native_host === "connected") {
 			hostDot.className = "dot connected";
@@ -88,7 +126,6 @@ async function refreshStatus() {
 		opsCount.textContent = String(n);
 		opsDot.className = n > 0 ? "dot connected" : "dot idle";
 	} catch (_) {
-		// SW may be down; show offline until it responds.
 		hostDot.className = "dot disconnected";
 		hostState.textContent = "offline";
 	}
@@ -97,6 +134,7 @@ async function refreshStatus() {
 labelInput.addEventListener("input", async (e) => {
 	const value = e.target.value.trim().slice(0, 32);
 	await chrome.storage.local.set({ label: value });
+	await chrome.runtime.sendMessage({ method: "profile.set_label", label: value });
 });
 
 labelInput.addEventListener("keydown", (e) => {
@@ -120,4 +158,4 @@ copyBtn.addEventListener("click", async () => {
 init();
 refreshStatus();
 refreshAnnotateCount();
-const statusInterval = setInterval(refreshStatus, 1000);
+setInterval(refreshStatus, 1000);

@@ -17,6 +17,9 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use tracing::{debug, error, info, warn};
 
+mod capabilities;
+mod spawner;
+
 const KEEPALIVE_METHOD: &str = "keepalive";
 const HELLO_METHOD: &str = "hello";
 const RESPONSE_TIMEOUT_SECS: u64 = 30;
@@ -182,6 +185,54 @@ fn handle_sw_message(host: &Arc<Host>, msg: serde_json::Value) -> Result<()> {
 
         (KEEPALIVE_METHOD, _) => {
             debug!("keepalive");
+            Ok(())
+        }
+
+        ("host.capabilities", _) => {
+            let caps = capabilities::detect_all();
+            let resp = serde_json::json!({
+                "id": msg.get("id"),
+                "ok": true,
+                "result": caps
+            });
+            let encoded = encode(&resp)?;
+            if let Ok(guard) = host.stdout_tx.lock() {
+                if let Some(tx) = guard.as_ref() {
+                    let _ = tx.send(encoded);
+                }
+            }
+            Ok(())
+        }
+
+        ("agent.launch", _) => {
+            let params_val = msg
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let launch_params: spawner::LaunchParams =
+                serde_json::from_value(params_val).context("parse agent.launch params")?;
+            let launch_res = spawner::launch(launch_params);
+            let resp = match launch_res {
+                Ok(res) => serde_json::json!({
+                    "id": msg.get("id"),
+                    "ok": true,
+                    "result": res
+                }),
+                Err(e) => serde_json::json!({
+                    "id": msg.get("id"),
+                    "ok": false,
+                    "error": {
+                        "code": "LAUNCH_FAILED",
+                        "message": format!("{e:#}")
+                    }
+                }),
+            };
+            let encoded = encode(&resp)?;
+            if let Ok(guard) = host.stdout_tx.lock() {
+                if let Some(tx) = guard.as_ref() {
+                    let _ = tx.send(encoded);
+                }
+            }
             Ok(())
         }
 

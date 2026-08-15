@@ -191,7 +191,7 @@ Returns `{tab_id, file, bytes, annotated}`. PNG base64 is never emitted to stdou
 
 ## Annotation mode
 
-`Command+Shift+A` on mac / `Alt+Shift+A` elsewhere (or the popup button) toggles an in-page annotation picker on the active tab: hover any visible element to preview it (blue dashed box), click to pin it (green box + badge), click a pinned element to unpin. Multi-line elements get one closed box per line; the small floating panel lists only the pinned elements, with a `×` button to exit the mode (pins stay visible to agents). `ap-browser dev annotate [--tab <id>]` injects the picker into a specific tab (e.g. a silent tab) without touching the active one.
+`Command+Shift+E` on mac / `Alt+Shift+E` elsewhere (or the popup button) toggles an in-page annotation picker on the active tab: hover any visible element to preview it (blue dashed box), click to pin it (green box + badge), click a pinned element to unpin. Multi-line elements get one closed box per line; the small floating panel lists only the pinned elements, with a `×` button to exit the mode (pins stay visible to agents). `ap-browser dev annotate [--tab <id>]` injects the picker into a specific tab (e.g. a silent tab) without touching the active one.
 
 Pinned elements may be interactive (they carry a `state` ref) or not (located by CSS `selector`); `state`'s `annotated` entries carry `{ref|null, selector, name}` and screenshot --annotate draws green boxes for both.
 

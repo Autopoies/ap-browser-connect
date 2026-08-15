@@ -81,6 +81,26 @@ let nativePort = null;
 let nativeReconnectTimer = null;
 let nativeReconnectDelayMs = 1000;
 let labelCache = "";
+let swNextId = 1;
+const swPending = new Map();
+
+async function sendToNativeHost(method, params = {}) {
+	if (!nativePort) {
+		await connectNativePort();
+	}
+	if (!nativePort) {
+		throw new Error("Native host not connected");
+	}
+	return new Promise((resolve, reject) => {
+		const id = `sw-${swNextId++}`;
+		const timer = setTimeout(() => {
+			swPending.delete(id);
+			reject(new Error(`Timeout waiting for native host: ${method}`));
+		}, 15000);
+		swPending.set(id, { resolve, reject, timer });
+		nativePort.postMessage({ id, method, params });
+	});
+}
 
 function scheduleNativeReconnect() {
 	if (nativeReconnectTimer) return;
@@ -192,6 +212,19 @@ async function connectNativePort() {
 // ─── Message dispatch (JSON-RPC) ─────────────────────────────────────────
 async function handleNativeMessage(msg, port) {
 	if (!msg || typeof msg !== "object") return;
+	if (typeof msg.id === "string" && msg.id.startsWith("sw-")) {
+		const pending = swPending.get(msg.id);
+		if (pending) {
+			clearTimeout(pending.timer);
+			swPending.delete(msg.id);
+			if (msg.ok === false || msg.error) {
+				pending.reject(new Error(msg.error?.message || msg.error || "Host error"));
+			} else {
+				pending.resolve(msg.result === undefined ? msg : msg.result);
+			}
+		}
+		return;
+	}
 	if (msg.jsonrpc !== "2.0") return;
 	if (!("id" in msg)) return;
 
@@ -229,11 +262,11 @@ async function handleNativeMessage(msg, port) {
 		}
 
 		if (operatedTab) {
-			if (!lockedTab) {
-				await unlockAllTabs();
-			} else {
+			if (lockedTab) {
 				await unlockOtherTabs(operatedTab.id);
 				lockedTabs.add(operatedTab.id);
+			} else {
+				await unlockAllTabs();
 			}
 			cancelPendingRestore(operatedTab.id);
 			try {
@@ -495,7 +528,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			await ensureDebugger(tab.id);
 			const policies = await activeFilterPolicies("click", params, tab);
 			const denyRules = interactionDenyRules(policies);
-			const query = params.ref != null ? refSelector(params.ref) : params.selector;
+			const query = params.ref == null ? params.selector : refSelector(params.ref);
 			// Phase 1: resolve + filter guard + scrollIntoView, returning the
 			// element's viewport rect (see resolveForNativeClick).
 			const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
@@ -526,13 +559,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const cx = interaction.x + interaction.w / 2;
 			const cy = interaction.y + interaction.h / 2;
 			let method = "native-input";
-			if (!interaction.hitOk) {
-				await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
-					expression: `(() => { const el = document.querySelector(${JSON.stringify(query)}); if (!el) return false; el.click(); return true; })()`,
-					returnByValue: true,
-				});
-				method = "js-click";
-			} else {
+			if (interaction.hitOk) {
 				const events = [
 					{ type: "mouseMoved", x: cx, y: cy },
 					{
@@ -559,6 +586,12 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 						await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchMouseEvent", ev);
 					}
 				});
+			} else {
+				await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+					expression: `(() => { const el = document.querySelector(${JSON.stringify(query)}); if (!el) return false; el.click(); return true; })()`,
+					returnByValue: true,
+				});
+				method = "js-click";
 			}
 			return attachFilterMetadata(
 				{
@@ -575,7 +608,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			await ensureDebugger(tab.id);
 			const policies = await activeFilterPolicies("fill", params, tab);
 			const denyRules = interactionDenyRules(policies);
-			const query = params.ref != null ? refSelector(params.ref) : params.selector;
+			const query = params.ref == null ? params.selector : refSelector(params.ref);
 			// Phase 1: resolve + filter guard + scrollIntoView + focus + select
 			// existing content (see resolveForNativeFill).
 			const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
@@ -643,7 +676,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			await ensureDebugger(tab.id);
 			const policies = await activeFilterPolicies("select", params, tab);
 			const denyRules = interactionDenyRules(policies);
-			const query = params.ref != null ? refSelector(params.ref) : params.selector;
+			const query = params.ref == null ? params.selector : refSelector(params.ref);
 			const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
 				expression: buildNativeSelectExpression(query, denyRules, params.option),
 				returnByValue: true,
@@ -943,7 +976,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					data = await waitForXhr(tab.id, params.xhr, timeout);
 				}
 			} else {
-				const query = params.ref != null ? refSelector(params.ref) : params.selector;
+				const query = params.ref == null ? params.selector : refSelector(params.ref);
 				const start = Date.now();
 				while (Date.now() - start < timeout) {
 					await ensureDebugger(tab.id);
@@ -1636,12 +1669,13 @@ async function toggleAnnotation() {
 			await chrome.scripting.executeScript({
 				target: { tabId: tab.id },
 				func: () => {
-					const h = document.querySelector("#ap-annotate-root");
-					if (h) h.remove();
-					// Clear the singleton guard too, or the next inject hits the
-					// idempotent toggle() branch with a detached panel and the
-					// UI never comes back.
-					window.__apAnnotatePanel = null;
+					if (typeof window.__apAnnotateCleanup === "function") {
+						window.__apAnnotateCleanup();
+					} else {
+						const h = document.querySelector("#ap-annotate-root");
+						if (h) h.remove();
+						window.__apAnnotatePanel = null;
+					}
 				},
 			});
 			return { ok: true, toggled: false };
@@ -2080,6 +2114,33 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 					[`annotations:${msg.tab_id}`]: Array.isArray(msg.refs) ? msg.refs : [],
 				});
 				sendResponse({ ok: true });
+			} catch (e) {
+				sendResponse({ ok: false, error: String(e?.message || e) });
+			}
+		})();
+		return true;
+	}
+	if (msg?.method === "host.capabilities") {
+		sendToNativeHost("host.capabilities", msg.params || {})
+			.then((data) => sendResponse({ ok: true, data }))
+			.catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+		return true;
+	}
+	if (msg?.method === "agent.launch") {
+		sendToNativeHost("agent.launch", msg.params || {})
+			.then((data) => sendResponse({ ok: true, data }))
+			.catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+		return true;
+	}
+	if (msg?.method === "profile.set_label") {
+		(async () => {
+			try {
+				const label = String(msg.label || "")
+					.trim()
+					.slice(0, 32);
+				labelCache = label;
+				await chrome.storage.local.set({ label });
+				sendResponse({ ok: true, label });
 			} catch (e) {
 				sendResponse({ ok: false, error: String(e?.message || e) });
 			}
