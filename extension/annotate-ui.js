@@ -369,6 +369,14 @@ ${text.trim()}
 			capsule.style.right = "auto";
 		}
 
+		// Prevent webpage mouse/pointer handlers from stealing focus on capsule interaction
+		capsule.addEventListener("mousedown", (e) => e.stopPropagation());
+		capsule.addEventListener("pointerdown", (e) => e.stopPropagation());
+		capsule.addEventListener("mouseup", (e) => e.stopPropagation());
+		capsule.addEventListener("click", (e) => e.stopPropagation());
+		capsule.addEventListener("dblclick", (e) => e.stopPropagation());
+		capsule.addEventListener("contextmenu", (e) => e.stopPropagation());
+
 		// Vertical positioning (above element by default, or below if near top)
 		if (union.top < 38) {
 			capsule.style.top = `${Math.min(window.innerHeight - 40, union.bottom + 6)}px`;
@@ -438,7 +446,12 @@ ${text.trim()}
 			if (el === activeExpandedEl) {
 				capsule.classList.add("expanded");
 				askInput.value = activeExpandedText;
-				setTimeout(() => askInput.focus(), 0);
+				setTimeout(() => {
+					askInput.focus();
+					if (activeExpandedText) {
+						askInput.setSelectionRange(activeExpandedText.length, activeExpandedText.length);
+					}
+				}, 0);
 			}
 
 			// Smooth horizontal morph expansion
@@ -450,6 +463,7 @@ ${text.trim()}
 			});
 
 			askInput.addEventListener("input", (e) => {
+				e.stopPropagation();
 				if (activeExpandedEl === el) {
 					activeExpandedText = e.target.value;
 				}
@@ -489,17 +503,54 @@ ${text.trim()}
 				doSubmit();
 			});
 
+			// Prevent keyboard shortcuts from stealing focus / hijacking keystrokes
+			const stopKey = (e) => {
+				e.stopPropagation();
+				e.stopImmediatePropagation();
+			};
+
 			askInput.addEventListener("keydown", (e) => {
-				if (e.key === "Enter") {
+				stopKey(e);
+				if (e.key === "Enter" && !e.isComposing && e.key !== "Process") {
 					e.preventDefault();
-					e.stopPropagation();
 					doSubmit();
 				} else if (e.key === "Escape") {
 					e.preventDefault();
-					e.stopPropagation();
+					collapseInline();
+				} else if (e.key === "Tab" && e.shiftKey) {
+					e.preventDefault();
+					closeBtn.focus();
+				}
+			});
+			askInput.addEventListener("keyup", stopKey);
+			askInput.addEventListener("keypress", stopKey);
+			askInput.addEventListener("paste", (e) => e.stopPropagation());
+			askInput.addEventListener("copy", (e) => e.stopPropagation());
+			askInput.addEventListener("cut", (e) => e.stopPropagation());
+			askInput.addEventListener("compositionstart", (e) => e.stopPropagation());
+			askInput.addEventListener("compositionupdate", (e) => e.stopPropagation());
+			askInput.addEventListener("compositionend", (e) => e.stopPropagation());
+
+			sendBtn.addEventListener("keydown", (e) => {
+				stopKey(e);
+				if (e.key === "Escape") {
+					e.preventDefault();
 					collapseInline();
 				}
 			});
+			sendBtn.addEventListener("keyup", stopKey);
+
+			closeBtn.addEventListener("keydown", (e) => {
+				stopKey(e);
+				if (e.key === "Escape") {
+					e.preventDefault();
+					collapseInline();
+				} else if (e.key === "Tab" && !e.shiftKey) {
+					e.preventDefault();
+					askInput.focus();
+				}
+			});
+			closeBtn.addEventListener("keyup", stopKey);
 
 			closeBtn.addEventListener("click", (e) => {
 				e.stopPropagation();
@@ -815,6 +866,8 @@ ${text.trim()}
 			font-size: 11.5px;
 			color: #fff;
 			outline: none;
+			user-select: text;
+			-webkit-user-select: text;
 		}
 		.ap-capsule .inline-ask input::placeholder {
 			color: rgba(255, 255, 255, 0.4);
@@ -1172,6 +1225,9 @@ ${text.trim()}
 		const sc = res?.custom_annotate_shortcut;
 		if (sc?.key) {
 			shortcutHandler = (e) => {
+				if (activeExpandedEl || e.composedPath().some((n) => n === host)) {
+					return;
+				}
 				const altMatch = Boolean(e.altKey) === Boolean(sc.altKey);
 				const shiftMatch = Boolean(e.shiftKey) === Boolean(sc.shiftKey);
 				const ctrlMatch = Boolean(e.ctrlKey) === Boolean(sc.ctrlKey);
