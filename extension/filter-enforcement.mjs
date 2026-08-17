@@ -134,9 +134,14 @@ export function interactionDenyRules(policies) {
 }
 
 export function interactionOutcome(resultValue, guarded) {
-	if (!guarded) return resultValue ? "ok" : "not_found";
+	// Resolve helpers always return {status: ok|not_found|denied} — honor it
+	// in BOTH branches. The old unguarded branch only checked truthiness, so a
+	// `{status:"not_found"}` object (truthy!) passed as "ok" and click/fill
+	// reported success on selectors that matched nothing.
 	if (resultValue?.status === "denied") return "denied";
-	return resultValue?.status === "ok" ? "ok" : "not_found";
+	if (resultValue?.status) return resultValue.status === "ok" ? "ok" : "not_found";
+	if (guarded) return "not_found"; // fail closed
+	return resultValue ? "ok" : "not_found"; // legacy truthy-primitive callers
 }
 
 // This function is serialized into Runtime.evaluate. Keep it self-contained

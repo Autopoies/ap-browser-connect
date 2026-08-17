@@ -587,10 +587,20 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					}
 				});
 			} else {
-				await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
-					expression: `(() => { const el = document.querySelector(${JSON.stringify(query)}); if (!el) return false; el.click(); return true; })()`,
-					returnByValue: true,
-				});
+				const clickedExpr = await chrome.debugger.sendCommand(
+					{ tabId: tab.id },
+					"Runtime.evaluate",
+					{
+						expression: `(() => { const el = document.querySelector(${JSON.stringify(query)}); if (!el) return false; el.click(); return true; })()`,
+						returnByValue: true,
+					},
+				);
+				if (runtimeEvaluateValue(clickedExpr) !== true) {
+					throw Object.assign(
+						new Error(`selector not found: ${params.selector}`),
+						{ code: "SELECTOR_NO_MATCH" },
+				);
+				}
 				method = "js-click";
 			}
 			return attachFilterMetadata(

@@ -570,6 +570,12 @@ test("guarded interaction fails closed when Runtime.evaluate has no valid status
 	assert.equal(interactionOutcome({ status: "ok" }, true), "ok");
 	assert.equal(interactionOutcome(false, false), "not_found");
 	assert.equal(interactionOutcome(true, false), "ok");
+	// Regression: unguarded branch must honor status, not truthiness —
+	// {status:"not_found"} is a truthy object and used to pass as "ok",
+	// making click/fill report success on non-matching selectors.
+	assert.equal(interactionOutcome({ status: "not_found" }, false), "not_found");
+	assert.equal(interactionOutcome({ status: "ok" }, false), "ok");
+	assert.equal(interactionOutcome({ status: "not_found" }, true), "not_found");
 });
 
 test("filter metadata merges unique policy IDs and aggregate counters", () => {
