@@ -98,6 +98,7 @@ export function buildBatchStepParams(step, inheritedTabId) {
 		"interval_ms",
 		"initial_delay_ms",
 		"progress",
+		"probe",
 	]) {
 		if (step[key] !== undefined) params[key] = step[key];
 	}
@@ -173,6 +174,77 @@ function snapshotGrowth(value) {
 			typeof value.lastResponseLength === "number" ? value.lastResponseLength : -1,
 		markdownCount: typeof value.markdownCount === "number" ? value.markdownCount : -1,
 	};
+}
+
+// Scroll-probe classification: snapshots taken before the first scroll
+// window and after each window. Comparing first-half vs second-half growth
+// separates the three list behaviors an agent must handle differently:
+//   finite          — nothing grows: stop scrolling, extract now
+//   append-infinite — nodes+chars keep growing: scroll N windows, extract once
+//   virtual-infinite — chars keep growing while DOM stops (recycling):
+//     extract incrementally after EACH window, or the tail is all you keep
+// CHAR_EPS is a noise floor: menus/anims wiggle innerText by a few bytes.
+const CHAR_EPS = 200;
+
+export function classifyListBehavior(snapshots) {
+	if (!Array.isArray(snapshots) || snapshots.length < 3) return null;
+	const first = snapshots[0];
+	const last = snapshots[snapshots.length - 1];
+	// Per-window deltas across ALL windows, not halves: virtualization shows up
+	// as grow-then-shed oscillation (mount → recycle → remount), which halves
+	// average away. Measured on X: nodes 2040→6585→5074→6996→3974.
+	const deltas = snapshots.slice(1).map((s, i) => ({
+		nodes: s.nodes - snapshots[i].nodes,
+		chars: s.chars - snapshots[i].chars,
+	}));
+	const anyGrowth = deltas.some((d) => d.chars > CHAR_EPS || d.nodes > 5);
+	// Content REMOVED while scrolling: an append-only feed never loses DOM;
+	// losing 200+ chars / 10+ nodes means items scrolled out were recycled.
+	const anyShed = deltas.some((d) => d.chars < -CHAR_EPS || d.nodes < -10);
+	const scrolledDown = (last.y ?? 0) > (first.y ?? 0);
+	const lazy = snapshots.slice(1).some((s, i) => s.imgsLoaded - snapshots[i].imgsLoaded > 0);
+	const exhausted = !anyGrowth;
+	const infinite = anyGrowth && scrolledDown;
+	const virtual = infinite && anyShed;
+	const behavior = exhausted
+		? "finite"
+		: virtual
+			? "virtual-infinite"
+			: "append-infinite";
+	const strategy =
+		behavior === "finite"
+			? "list exhausted — extract now; more scrolling yields nothing"
+			: behavior === "virtual-infinite"
+				? "virtualized list — DOM recycles items: extract after EACH scroll window and merge; a single extraction at the end only keeps the tail"
+				: "infinite append — scroll N windows, then extract once";
+	return {
+		behavior,
+		infinite,
+		virtual,
+		lazy,
+		exhausted,
+		first_window: {
+			nodes: snapshots[Math.floor(snapshots.length / 2)].nodes - first.nodes,
+			chars: snapshots[Math.floor(snapshots.length / 2)].chars - first.chars,
+		},
+		second_window: { nodes: last.nodes - snapshots[Math.floor(snapshots.length / 2)].nodes, chars: last.chars - snapshots[Math.floor(snapshots.length / 2)].chars },
+		max_nodes: Math.max(...snapshots.map((s) => s.nodes)),
+		strategy,
+	};
+}
+
+// Serialized into Runtime.evaluate by the scroll probe. Keep self-contained.
+export function listSnapshotExpression() {
+	return `JSON.stringify((() => {
+		const imgs = Array.from(document.querySelectorAll('img'));
+		return {
+			nodes: document.getElementsByTagName('*').length,
+			chars: document.body.innerText.length,
+			imgs: imgs.length,
+			imgsLoaded: imgs.filter((i) => i.complete && i.naturalWidth > 0).length,
+			y: Math.round(window.scrollY),
+		};
+	})())`;
 }
 
 export async function waitForCondition(

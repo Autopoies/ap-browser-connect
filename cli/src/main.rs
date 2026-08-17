@@ -99,6 +99,9 @@ enum Cmd {
         pause_ms: Option<u64>,
         #[arg(long)]
         selector: Option<String>,
+        /// detect list behavior (finite / append-infinite / virtual-infinite)
+        #[arg(long)]
+        detect: bool,
     },
     Press {
         keys: String,
@@ -447,6 +450,7 @@ fn run_static_match(cli: &Cli, human: bool) -> Result<()> {
             count,
             pause_ms,
             selector,
+            detect,
         } => {
             let mut params = json!({});
             if let Some(c) = count {
@@ -457,6 +461,9 @@ fn run_static_match(cli: &Cli, human: bool) -> Result<()> {
             }
             if let Some(s) = selector {
                 params["selector"] = json!(s);
+            }
+            if *detect {
+                params["probe"] = json!(true);
             }
             rpc(cli, "scroll", params, human, |_| {})?
         }

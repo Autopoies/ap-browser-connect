@@ -19,9 +19,11 @@ import {
 } from "./filter-enforcement.mjs";
 import {
 	buildBatchStepParams,
+	classifyListBehavior,
 	clearTabRuntimeState,
 	ensureAttachedOnce,
 	isCurrentPort,
+	listSnapshotExpression,
 	nextReconnectDelay,
 	runtimeEvaluateValue,
 	scheduleExtensionReload,
@@ -1035,8 +1037,23 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const count = Math.max(1, Math.min(params.count || 1, 50));
 			const pauseMs = Math.max(200, Math.min(params.pause_ms || 800, 5000));
 			const target = params.selector || null;
+			// --detect probe: snapshot before scrolling and after each window,
+			// classify the list (finite / append-infinite / virtual-infinite)
+			// so the agent knows how to extract. Needs ≥2 windows.
+			const probe = params.probe === true;
+			const windows = probe ? Math.max(count, 2) : count;
 			const scrolled = [];
-			for (let i = 0; i < count; i++) {
+			const snapshots = [];
+			const takeSnapshot = async () => {
+				const evaluated = await chrome.debugger.sendCommand(
+					{ tabId: tab.id },
+					"Runtime.evaluate",
+					{ expression: listSnapshotExpression(), returnByValue: true },
+				);
+				return safeJsonParse(runtimeEvaluateValue(evaluated)) || null;
+			};
+			if (probe) snapshots.push(await takeSnapshot());
+			for (let i = 0; i < windows; i++) {
 				let moved = false;
 				if (target) {
 					const evaluated = await chrome.debugger.sendCommand(
@@ -1072,11 +1089,17 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					moved = afterState.y > beforeState.y || afterState.h > beforeState.h;
 				}
 				scrolled.push(moved);
+				if (probe) snapshots.push(await takeSnapshot());
 				await new Promise((r) => setTimeout(r, pauseMs));
+			}
+			const data = { scrolled_count: windows, scrolled };
+			if (probe) {
+				data.list_behavior = classifyListBehavior(snapshots);
+				data.snapshots = snapshots;
 			}
 			return {
 				ok: true,
-				data: { scrolled_count: count, scrolled },
+				data,
 				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
 			};
 		}

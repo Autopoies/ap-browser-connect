@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
 	buildBatchStepParams,
+	classifyListBehavior,
 	clearTabRuntimeState,
 	ensureAttachedOnce,
 	isCurrentPort,
@@ -469,4 +470,51 @@ test("require_started deadline returns started_not_observed, not deadline_reache
 	assert.equal(result.matched, false);
 	assert.equal(result.completed, false);
 	assert.equal(result.reason, "started_not_observed");
+});
+
+test("classifyListBehavior detects virtualized infinite lists", () => {
+	// X-like (real measured shape): mount phase grows, then recycling sheds
+	// more than remounting adds — grow-then-shed oscillation.
+	const r = classifyListBehavior([
+		{ nodes: 2040, chars: 1906, imgsLoaded: 5, y: 0 },
+		{ nodes: 3732, chars: 4017, imgsLoaded: 12, y: 2200 },
+		{ nodes: 6585, chars: 7486, imgsLoaded: 20, y: 4400 },
+		{ nodes: 5346, chars: 5816, imgsLoaded: 16, y: 6600 },
+		{ nodes: 5074, chars: 5272, imgsLoaded: 14, y: 8800 },
+		{ nodes: 6996, chars: 7936, imgsLoaded: 22, y: 11000 },
+		{ nodes: 3974, chars: 4452, imgsLoaded: 9, y: 13200 },
+	]);
+	assert.equal(r.behavior, "virtual-infinite");
+	assert.equal(r.virtual, true);
+	assert.equal(r.infinite, true);
+	assert.equal(r.lazy, true);
+	assert.match(r.strategy, /EACH scroll window/);
+});
+
+test("classifyListBehavior detects append-only infinite lists", () => {
+	// HN-like feed: nodes and chars keep growing proportionally, never shed.
+	const r = classifyListBehavior([
+		{ nodes: 1000, chars: 2000, imgsLoaded: 0, y: 0 },
+		{ nodes: 1500, chars: 6000, imgsLoaded: 0, y: 2000 },
+		{ nodes: 2050, chars: 11000, imgsLoaded: 0, y: 4200 },
+	]);
+	assert.equal(r.behavior, "append-infinite");
+	assert.equal(r.virtual, false);
+	assert.match(r.strategy, /extract once/);
+});
+
+test("classifyListBehavior reports finite/exhausted lists", () => {
+	const r = classifyListBehavior([
+		{ nodes: 1000, chars: 2000, imgsLoaded: 3, y: 0 },
+		{ nodes: 1002, chars: 2050, imgsLoaded: 3, y: 900 },
+		{ nodes: 1002, chars: 2060, imgsLoaded: 3, y: 900 },
+	]);
+	assert.equal(r.behavior, "finite");
+	assert.equal(r.exhausted, true);
+	assert.match(r.strategy, /extract now/);
+});
+
+test("classifyListBehavior needs at least two windows", () => {
+	assert.equal(classifyListBehavior([{ nodes: 1, chars: 1 }]), null);
+	assert.equal(classifyListBehavior(null), null);
 });

@@ -162,7 +162,7 @@ rules vs **59 calls / 229s** with the anti-patterns above.
 | | `select <target> <option>` | pick a `<select>` option by value or label |
 | | `press <key>` | keyboard (Enter, Tab, Control+a) |
 | | `wait <CSS>` / `wait --until-eval JS` / `wait --gone CSS` / `wait --url-change-from URL` / `wait --media-ended` | wait for element, removal, JS condition, URL or media |
-| | `scroll [--count N] [--selector CSS]` | scroll page or element into view |
+| | `scroll [--count N] [--selector CSS]` | scroll page or element into view; `--detect` classifies the list (see patterns.md #16) |
 | **Power** | `eval "<js>"` | scripted extraction / page-state reads / escape hatch when semantic commands fail |
 | | `cdp <method>` | raw DevTools Protocol call |
 | **Batch** | `batch` | pipe JSON steps → one round-trip (use for deterministic 3+ step sequences and state→ref chains; see `patterns.md` #11) |

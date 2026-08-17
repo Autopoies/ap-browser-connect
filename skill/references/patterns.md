@@ -304,3 +304,32 @@ hand-build often already exists.
 - `--wait`/`--timeout` inside a command beats external sleep-poll loops.
 - Parallelize independent reads inside one call (15.2).
 - A quiet page is not success — check `current_status` evidence.
+
+## 16. Detect infinite / lazy / virtualized lists before extracting
+
+Don't scroll blind. One probe classifies the list and returns the extraction
+strategy that won't silently lose data:
+
+```bash
+ap-browser scroll --detect --count 10 --pause-ms 1200   # after the list renders
+# data.list_behavior = {
+#   behavior: "virtual-infinite" | "append-infinite" | "finite",
+#   virtual, infinite, lazy, exhausted,
+#   strategy: "…extract after EACH scroll window and merge…" }
+```
+
+How it reads: the probe snapshots DOM nodes / text chars / loaded images /
+scrollY after every scroll window and classifies the deltas:
+
+- **finite** — nothing grows: extract now, stop scrolling.
+- **append-infinite** — nodes/chars keep growing, never shrink (YouTube home):
+  scroll N windows, then extract once.
+- **virtual-infinite** — content grew AND shed while scrolling (X/Twitter:
+  mount 2040→6585 nodes, recycle →5074, remount →6996, net →3974): the DOM
+  recycles items out of view — extract after EACH window and merge, or a
+  single end-of-scroll extraction only keeps the tail.
+
+Use `--count 8-10` on unknown heavy sites: virtualization often starts only
+after ~20 items have mounted, and shallow probes see only the mount phase.
+For virtual lists, the merge loop is: scroll → `text`/`eval` extract → scroll
+→ extract → dedupe (URLs/ids) at the end.
