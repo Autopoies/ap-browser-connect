@@ -23,25 +23,62 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       sha: ${{ steps.resolve.outputs.sha }}
     steps:
-      - name: Checkout
+      - name: Checkout (full history + tags for version resolution)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Resolve tag + sha
+      # Every push to main is a release. Version rule:
+      #   next = max(Cargo.toml version, latest v* tag + one patch)
+      # Manual minor/major bumps win by raising Cargo.toml; otherwise the tag
+      # auto-advances so consecutive pushes never pile onto one release. If
+      # Cargo.toml lags, it is committed back to main with [skip ci] so the
+      # built binaries' `--version` matches the tag (no drift).
+      - name: Resolve tag + sha (auto-bump, commit-back on lag)
         id: resolve
         run: |
           set -euo pipefail
           if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF_NAME}"
+            SHA="${GITHUB_SHA}"
           else
+            git fetch --tags --force origin
             VERSION=$(sed -n 's/^version = "\([^"]*\)"/\1/p' \
               Cargo.toml | head -1)
             if [ -z "$VERSION" ]; then
               echo "could not read workspace version from Cargo.toml" >&2
               exit 1
             fi
-            TAG="v${VERSION}"
+            LATEST=$(git tag -l 'v*' | sed 's/^v//' | sort -V | tail -1)
+            if [ -n "${LATEST}" ]; then
+              NEXT_PATCH="${LATEST%.*}.$(( ${LATEST##*.} + 1 ))"
+              TAG_BODY=$(printf '%s\n%s\n' "${VERSION}" "${NEXT_PATCH}" \
+                | sort -V | tail -1)
+            else
+              TAG_BODY="${VERSION}"
+            fi
+            TAG="v${TAG_BODY}"
+            SHA="${GITHUB_SHA}"
+            if [ "${VERSION}" != "${TAG_BODY}" ]; then
+              git config user.name "github-actions[bot]"
+              git config email \
+                "41898282+github-actions[bot]@users.noreply.github.com"
+              sed -i "s/^version = \"[^\"]*\"/version = \"${TAG_BODY}\"/" \
+                Cargo.toml
+              git commit -am "chore(release): ${TAG} [skip ci]"
+              # Pushes made with GITHUB_TOKEN never retrigger workflows;
+              # [skip ci] is the belt-and-braces. If branch protection blocks
+              # the push, degrade gracefully: tag the merge SHA as-is.
+              if git push origin HEAD:main; then
+                SHA=$(git rev-parse HEAD)
+                echo "bumped Cargo.toml to ${TAG_BODY}, tagged bump commit"
+              else
+                git reset --hard "${GITHUB_SHA}"
+                echo "::warning::commit-back blocked; releasing ${TAG}" \
+                  "with Cargo.toml still at ${VERSION}"
+              fi
+            fi
           fi
-          SHA="${GITHUB_SHA}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
           echo "Publishing ${TAG} @ ${SHA}"

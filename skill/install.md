@@ -147,8 +147,13 @@ security rules cannot remain active.
   rm -rf ~/.ap-browser/filters
   cp -R "$adapter_tmp/repo/filters" ~/.ap-browser/
   cp "$adapter_tmp/repo/download-config.yml" ~/.ap-browser/
+  cp "$adapter_tmp/repo/adapters-version.yml" ~/.ap-browser/
 )
 ```
+
+After installing once, `ap-browser update adapters` maintains this directory
+( SHA-marker sync with automatic filters backup) — the manual block above is
+only for first install or offline machines.
 
 After this, `ap-browser sites list` should print ~43 sites (arxiv, bilibili,
 github, hackernews, ...), and `~/.ap-browser/filters/` should contain the
@@ -170,10 +175,28 @@ If `ap-browser ping` fails:
 
 ## Updating
 
-- **Skill:** `npx skills update` (or re-run `npx skills add`).
-- **CLI:** re-download the tarball from Releases; after reloading the Extension, re-run `install/install.sh` to refresh the manifest.
-- **Extension:** re-download `extension.zip`, replace the loaded directory, click "reload" in `chrome://extensions`.
-- **Adapters + filters:** re-run Step 4 to refresh adapters and replace the managed filter directory from the same repository revision. Back up local custom filters first.
+One command covers everything installable:
+
+```bash
+ap-browser update            # adapters + skill sync, CLI version report
+ap-browser update --check    # dry-run: exit 0 = current, 1 = updates ready, 2 = offline
+ap-browser update adapters   # adapters + filters only (auto-backs up filters/)
+ap-browser update skill      # reinstall the skill via npx
+```
+
+- **Adapters:** `ap-browser update adapters` syncs `~/.ap-browser/` from the
+  adapters repo HEAD via a shallow clone; `filters/` is replaced wholesale but
+  backed up to `filters.bak-<timestamp>` first; user-added site folders are kept.
+- **CLI:** `ap-browser update` prints the upgrade command when npm has a newer
+  version — it never runs `npm install -g` itself (sudo/nvm is the agent's call).
+- **Extension:** re-download `extension.zip`, replace the loaded directory,
+  click "reload" in `chrome://extensions" (Chrome-enforced, stays manual).
+
+Version safety: the adapters repo ships `adapters-version.yml` with a
+`min_cli_version`. If the installed adapters need a newer CLI than the one on
+PATH, every `ap-browser` invocation prints a stderr warning (stdout/JSON output
+is unaffected) and `ap-browser doctor` reports it. Mismatched adapters degrade
+to per-command or per-site failures, never a CLI-wide crash.
 
 ## Platform support
 

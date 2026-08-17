@@ -280,6 +280,17 @@ ap-browser doctor --json       # machine-readable for agents
 ap-browser doctor --fix        # auto-create ~/.ap-browser/ + sites.history only
 ```
 
+### Keeping current
+
+```bash
+ap-browser update              # adapters + skill sync, CLI version report
+ap-browser update --check      # exit 0 = current, 1 = updates ready, 2 = offline
+```
+
+A stderr `[warn] adapters require ap-browser >= X` at startup means the
+installed adapters outgrew the CLI — upgrade the CLI; adapters never crash the
+CLI, they only fail per command/site.
+
 ### Connection rescue (least disruptive first)
 
 1. `ap-browser doctor --json` — don't infer a stuck process from socket files alone.

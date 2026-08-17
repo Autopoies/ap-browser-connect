@@ -8,6 +8,7 @@ mod doctor;
 mod filters;
 mod sites;
 mod socket_client;
+mod update;
 
 use anyhow::{anyhow, Context, Result};
 use ap_browser_core::transport;
@@ -217,6 +218,11 @@ const MAX_WAIT_TIMEOUT_MS: u64 = (MAX_RPC_TIMEOUT_SECS - WAIT_OVERHEAD_SECS) * 1
 fn main() -> Result<()> {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
 
+    // Incompatible adapters must degrade to command/site-level failures, never
+    // crash the CLI. This stderr-only warning is the global signal; stdout
+    // (incl. --json) stays parseable.
+    update::warn_if_incompatible();
+
     // Append runtime-discovered site/dev adapters to --help. They're argv[1]-dispatched,
     // not in the static clap enum, so the default help renders them invisible.
     let wants_top_help = match raw_args.first().map(|s| s.as_str()) {
@@ -231,6 +237,9 @@ fn main() -> Result<()> {
         println!("  sites      adapter management — run `ap-browser sites list` (summary) or `sites search <q>`");
         println!("  dev        devtools — run `ap-browser dev --help`");
         println!("  doctor     health check — run `ap-browser doctor [--fix|--json]`");
+        println!(
+            "  update     adapters + skill sync — run `ap-browser update [--check|adapters|skill]`"
+        );
         println!();
         let registry = sites::Registry::load();
         let total_adapters: usize = registry.sites.values().map(|e| e.adapters.len()).sum();
@@ -269,6 +278,9 @@ fn main() -> Result<()> {
         if first == "sites" {
             return run_sites_command(&raw_args[1..]);
         }
+        if first == "update" {
+            return update::run(&raw_args[1..]);
+        }
         if first == "dev" {
             return dev::dispatch(&raw_args[1..]);
         }
@@ -288,6 +300,9 @@ fn main() -> Result<()> {
             }
             if reordered[0] == "dev" {
                 return dev::dispatch(&reordered[1..]);
+            }
+            if reordered[0] == "update" {
+                return update::run(&reordered[1..]);
             }
             if reordered[0] == "doctor" {
                 let fix = reordered.iter().any(|a| a == "--fix");

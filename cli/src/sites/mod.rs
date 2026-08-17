@@ -35,6 +35,7 @@ pub const RESERVED: &[&str] = &[
     "batch",
     "sites",
     "dev",
+    "update",
 ];
 
 // ── YAML schemas ───────────────────────────────────────────────────────────
@@ -313,7 +314,12 @@ pub fn dispatch_site(
 ) -> Result<()> {
     let entry = registry
         .match_site(site)
-        .ok_or_else(|| anyhow!("unknown site: {}", site))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "unknown site: {} (see `ap-browser sites list`; if adapters failed to install: `ap-browser update adapters`)",
+                site
+            )
+        })?;
     // `ap-browser <site> --help` (command-level discovery) lists the site's
     // commands instead of erroring "unknown command: <site> --help".
     if cmd == "--help" || cmd == "-h" {
@@ -335,7 +341,13 @@ pub fn dispatch_site(
     let adapter = entry
         .adapters
         .get(cmd)
-        .ok_or_else(|| anyhow!("unknown command: {} {}", site, cmd))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "unknown command: {} {} (a command YAML may have failed to parse — `ap-browser doctor`; or update adapters: `ap-browser update adapters`)",
+                site,
+                cmd
+            )
+        })?;
 
     // `ap-browser <site> <cmd> --help` prints the adapter's usage instead of
     // trying to parse --help as an arg (parse_args has no clap help). This is

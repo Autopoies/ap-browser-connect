@@ -139,6 +139,7 @@ pub fn run(fix: bool, json_out: bool) -> Result<()> {
         check_cli_in_path(16),
         check_skill_sync(17),
         check_download_config(18),
+        check_adapters_compat(19),
     ];
 
     if json_out {
@@ -749,6 +750,43 @@ fn check_cli_in_path(id: usize) -> Check {
             "ap-browser not on PATH — must invoke with full path".to_string(),
             Some("add to PATH or invoke with full path".into()),
         ),
+    }
+}
+
+fn check_adapters_compat(id: usize) -> Check {
+    match crate::update::read_adapters_version(dirs::home_dir().as_deref()) {
+        None => Check::warn(
+            id,
+            "adapters compat",
+            Severity::Warning,
+            "~/.ap-browser/adapters-version.yml missing".to_string(),
+            Some("run `ap-browser update adapters` to sync + record compatibility".into()),
+        ),
+        Some(av) => {
+            if crate::update::is_incompatible(&av) {
+                Check::fail(
+                    id,
+                    "adapters compat",
+                    Severity::Warning,
+                    format!(
+                        "adapters require CLI >= {}, this CLI is {}",
+                        av.min_cli_version.as_deref().unwrap_or("?"),
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                    Some("npm install -g ap-browser-connect@latest".into()),
+                )
+            } else {
+                Check::pass(
+                    id,
+                    "adapters compat",
+                    Severity::Warning,
+                    format!(
+                        "min_cli_version {} satisfied",
+                        av.min_cli_version.as_deref().unwrap_or("(none)")
+                    ),
+                )
+            }
+        }
     }
 }
 
