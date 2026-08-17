@@ -275,6 +275,13 @@ ap-browser tabs close <id>          # generic path even needs cleanup — anothe
 −67% calls, −88% context tokens, zero parsing risk. The adapter also encodes
 the site's waits, pagination, and ad-filtering.
 
+**CSR caveat (measured on YouTube):** on heavy client-rendered sites the
+generic `wait → text` can return near-empty content (235 chars) because the
+wait selector matches pre-render skeleton DOM — a silent quality failure
+that costs its 3 calls. The adapter's encoded SPA waits + scroll returned 5
+structured videos in one call. On React/Polymer/SvelteKit sites, prefer the
+adapter even more strongly.
+
 ### 15.4 Composite flows are one adapter command
 
 Multi-step flows that would be goto→state→click→wait→click→text chains ship
