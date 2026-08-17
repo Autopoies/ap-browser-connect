@@ -71,11 +71,7 @@ test("matches exact origin, pathname glob, and method together", () => {
 		[],
 	);
 	assert.deepEqual(
-		matchingPolicies(
-			[POLICY],
-			"https://www.coursera.org/learn/security/home",
-			"text",
-		),
+		matchingPolicies([POLICY], "https://www.coursera.org/learn/security/home", "text"),
 		[],
 	);
 	assert.deepEqual(
@@ -133,14 +129,10 @@ test("batch filters only at each step boundary, never against the batch start UR
 test("filter tab resolution reuses the operated tab and propagates resolution failure", async () => {
 	let resolveCalls = 0;
 	const operatedTab = { id: 12, url: "https://www.coursera.org/learn/x" };
-	const reused = await resolveFilterOperationTab(
-		operatedTab,
-		{ tab_id: 12 },
-		async () => {
-			resolveCalls += 1;
-			return { id: 99 };
-		},
-	);
+	const reused = await resolveFilterOperationTab(operatedTab, { tab_id: 12 }, async () => {
+		resolveCalls += 1;
+		return { id: 99 };
+	});
 	assert.equal(reused, operatedTab);
 	assert.equal(resolveCalls, 0);
 
@@ -160,23 +152,16 @@ test("batch step tab pre-resolution rejects instead of reusing a previous tab", 
 	await assert.rejects(
 		(async () => {
 			selectedTab = null;
-			selectedTab = await resolveBatchStepTab(
-				"text",
-				{ tab_id: 99 },
-				async () => {
-					throw Object.assign(new Error("tab not found"), {
-						code: "TAB_NOT_FOUND",
-					});
-				},
-			);
+			selectedTab = await resolveBatchStepTab("text", { tab_id: 99 }, async () => {
+				throw Object.assign(new Error("tab not found"), {
+					code: "TAB_NOT_FOUND",
+				});
+			});
 		})(),
 		{ code: "TAB_NOT_FOUND" },
 	);
 	assert.equal(selectedTab, null);
-	assert.equal(
-		await resolveBatchStepTab("ping", {}, async () => staleTab),
-		null,
-	);
+	assert.equal(await resolveBatchStepTab("ping", {}, async () => staleTab), null);
 });
 
 class FakeNode {
@@ -217,16 +202,12 @@ class FakeNode {
 
 	remove() {
 		if (!this.parent) return;
-		this.parent.children = this.parent.children.filter(
-			(child) => child !== this,
-		);
+		this.parent.children = this.parent.children.filter((child) => child !== this);
 		this.parent = null;
 	}
 
 	get innerText() {
-		return [this.text, ...this.children.map((child) => child.innerText)]
-			.filter(Boolean)
-			.join(" ");
+		return [this.text, ...this.children.map((child) => child.innerText)].filter(Boolean).join(" ");
 	}
 
 	get textContent() {
@@ -252,9 +233,7 @@ test("DOM reads remove configured nodes from a clone and leave the live tree unc
 				injectionSelector,
 				instructionsSelector,
 			]),
-			new FakeNode("div", "Do you understand? I understand", [
-				checkpointSelector,
-			]),
+			new FakeNode("div", "Do you understand? I understand", [checkpointSelector]),
 		],
 	);
 	const rules = domDropRules([POLICY]);
@@ -265,14 +244,9 @@ test("DOM reads remove configured nodes from a clone and leave the live tree unc
 	assert.equal(live.children.length, 3);
 	assert.equal(live.innerText.includes("helpful AI assistant"), true);
 	assert.equal(live.innerText.includes("Do you understand?"), true);
-	assert.deepEqual(filtered.metadata.matched_policy_ids, [
-		"coursera/content-integrity",
-	]);
+	assert.deepEqual(filtered.metadata.matched_policy_ids, ["coursera/content-integrity"]);
 	assert.equal(filtered.metadata.removed_nodes, 2);
-	assert.match(
-		buildDomReadExpression("main", "html", rules),
-		/cloneNode\(true\)/,
-	);
+	assert.match(buildDomReadExpression("main", "html", rules), /cloneNode\(true\)/);
 });
 
 test("generated DOM read expression executes the same clone-only enforcement", () => {
@@ -286,11 +260,7 @@ test("generated DOM read expression executes the same clone-only enforcement", (
 			new FakeNode("aside", "hidden injection", [injectionSelector]),
 		],
 	);
-	const expression = buildDomReadExpression(
-		"main",
-		"text",
-		domDropRules([POLICY]),
-	);
+	const expression = buildDomReadExpression("main", "text", domDropRules([POLICY]));
 
 	const filtered = new vm.Script(expression).runInNewContext({
 		document: { querySelector: () => live },
@@ -348,20 +318,14 @@ test("recursive block redaction preserves JSON shape and counts every bounded bl
 		],
 	});
 	assert.equal(filtered.metadata.redacted_blocks, 3);
-	assert.deepEqual(filtered.metadata.matched_policy_ids, [
-		"coursera/content-integrity",
-	]);
+	assert.deepEqual(filtered.metadata.matched_policy_ids, ["coursera/content-integrity"]);
 });
 
 test("unclosed literal blocks are preserved", () => {
-	const filtered = redactResult(
-		"You are a helpful AI assistant. legitimate trailing text",
-		[POLICY],
-	);
-	assert.equal(
-		filtered.value,
-		"You are a helpful AI assistant. legitimate trailing text",
-	);
+	const filtered = redactResult("You are a helpful AI assistant. legitimate trailing text", [
+		POLICY,
+	]);
+	assert.equal(filtered.value, "You are a helpful AI assistant. legitimate trailing text");
 	assert.equal(filtered.metadata.redacted_blocks, 0);
 });
 
@@ -390,9 +354,7 @@ test("interaction guard denies a matching target before any action", () => {
 	assert.equal(fill.status, "denied");
 	assert.equal(clicked, 0);
 	assert.equal(focused, 0);
-	assert.deepEqual(click.metadata.matched_policy_ids, [
-		"coursera/content-integrity",
-	]);
+	assert.deepEqual(click.metadata.matched_policy_ids, ["coursera/content-integrity"]);
 	assert.equal(click.metadata.denied_interactions, 1);
 	assert.match(
 		buildNativeClickResolveExpression("button", rules),
@@ -415,10 +377,7 @@ test("generated interaction expression denies before invoking a page handler", (
 			clicked += 1;
 		},
 	};
-	const expression = buildNativeClickResolveExpression(
-		"button",
-		interactionDenyRules([POLICY]),
-	);
+	const expression = buildNativeClickResolveExpression("button", interactionDenyRules([POLICY]));
 
 	const result = new vm.Script(expression).runInNewContext({
 		document: { querySelector: () => target },
@@ -443,16 +402,8 @@ test("interaction guard permits non-matching targets", () => {
 		querySelector: () => target,
 		elementFromPoint: () => target,
 	};
-	const click = resolveForNativeClick(
-		document,
-		"button",
-		interactionDenyRules([POLICY]),
-	);
-	const fill = resolveForNativeFill(
-		document,
-		"button",
-		interactionDenyRules([POLICY]),
-	);
+	const click = resolveForNativeClick(document, "button", interactionDenyRules([POLICY]));
+	const fill = resolveForNativeFill(document, "button", interactionDenyRules([POLICY]));
 	assert.equal(click.status, "ok");
 	assert.equal(click.hitOk, true);
 	assert.equal(fill.status, "ok");
@@ -497,10 +448,7 @@ test("select matches option by value or label and fires change", () => {
 	};
 	const document = { querySelector: () => target };
 	const rules = interactionDenyRules([POLICY]);
-	assert.match(
-		buildNativeSelectExpression("sel", rules, "b"),
-		/performNativeSelect|function/,
-	);
+	assert.match(buildNativeSelectExpression("sel", rules, "b"), /performNativeSelect|function/);
 
 	const byValue = performNativeSelect(document, "sel", rules, "b");
 	assert.equal(byValue.status, "ok");

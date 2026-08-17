@@ -16,10 +16,7 @@ export function emptyFilterMetadata() {
 }
 
 export function hasFilterDiagnostics(metadata) {
-	return Boolean(
-		metadata &&
-			FILTER_COUNTER_KEYS.some((key) => Number(metadata[key] || 0) > 0),
-	);
+	return Boolean(metadata && FILTER_COUNTER_KEYS.some((key) => Number(metadata[key] || 0) > 0));
 }
 
 export function mergeFilterMetadata(...items) {
@@ -67,11 +64,7 @@ export function matchingPolicies(policies, operatedUrl, method) {
 	}
 	return policies.filter((policy) => {
 		const match = policy?.match;
-		if (
-			!match ||
-			!Array.isArray(match.origins) ||
-			!Array.isArray(match.paths)
-		) {
+		if (!match || !Array.isArray(match.origins) || !Array.isArray(match.paths)) {
 			return false;
 		}
 		const originMatches = match.origins.some((origin) => {
@@ -82,12 +75,9 @@ export function matchingPolicies(policies, operatedUrl, method) {
 			}
 		});
 		if (!originMatches) return false;
-		if (!match.paths.some((pattern) => pathGlobMatches(pattern, url.pathname)))
-			return false;
+		if (!match.paths.some((pattern) => pathGlobMatches(pattern, url.pathname))) return false;
 		return (
-			!Array.isArray(match.methods) ||
-			match.methods.length === 0 ||
-			match.methods.includes(method)
+			!Array.isArray(match.methods) || match.methods.length === 0 || match.methods.includes(method)
 		);
 	});
 }
@@ -96,11 +86,7 @@ export function shouldFilterOuterResponse(method) {
 	return method !== "batch";
 }
 
-export async function resolveFilterOperationTab(
-	operatedTab,
-	params,
-	resolveTab,
-) {
+export async function resolveFilterOperationTab(operatedTab, params, resolveTab) {
 	if (operatedTab) return operatedTab;
 	return resolveTab(params);
 }
@@ -208,8 +194,7 @@ function redactString(value, block) {
 	) {
 		return { value, count: 0 };
 	}
-	const replacement =
-		typeof block.replacement === "string" ? block.replacement : "[FILTERED]";
+	const replacement = typeof block.replacement === "string" ? block.replacement : "[FILTERED]";
 	let cursor = 0;
 	let output = "";
 	let count = 0;
@@ -392,20 +377,14 @@ export function buildNativeFillResolveExpression(targetSelector, rules) {
 // open or click them, so selecting happens by DOM mutation (opencli's
 // approach): match the option by exact value or visible label, set it, and
 // dispatch a bubbling change so React/Vue listeners fire.
-export function performNativeSelect(
-	documentObject,
-	targetSelector,
-	rules,
-	want,
-) {
+export function performNativeSelect(documentObject, targetSelector, rules, want) {
 	const guard = guardInteractionTarget(documentObject, targetSelector, rules);
 	if (guard.denied) return { status: "denied", metadata: guard.metadata };
 	const target = guard.target;
 	if (!target) return { status: "not_found", metadata: guard.metadata };
 
 	const tag = target.tagName ? target.tagName.toUpperCase() : "";
-	if (tag !== "SELECT")
-		return { status: "not_a_select", metadata: guard.metadata };
+	if (tag !== "SELECT") return { status: "not_a_select", metadata: guard.metadata };
 
 	target.scrollIntoView({ block: "center" });
 	target.focus();

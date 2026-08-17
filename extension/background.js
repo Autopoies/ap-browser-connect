@@ -596,10 +596,9 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					},
 				);
 				if (runtimeEvaluateValue(clickedExpr) !== true) {
-					throw Object.assign(
-						new Error(`selector not found: ${params.selector}`),
-						{ code: "SELECTOR_NO_MATCH" },
-				);
+					throw Object.assign(new Error(`selector not found: ${params.selector}`), {
+						code: "SELECTOR_NO_MATCH",
+					});
 				}
 				method = "js-click";
 			}
