@@ -314,6 +314,24 @@ pub fn dispatch_site(
     let entry = registry
         .match_site(site)
         .ok_or_else(|| anyhow!("unknown site: {}", site))?;
+    // `ap-browser <site> --help` (command-level discovery) lists the site's
+    // commands instead of erroring "unknown command: <site> --help".
+    if cmd == "--help" || cmd == "-h" {
+        let mut cmds: Vec<&str> = entry.adapters.keys().map(String::as_str).collect();
+        cmds.sort();
+        let desc = entry
+            .meta
+            .as_ref()
+            .and_then(|m| m.description.as_deref())
+            .unwrap_or("");
+        println!("ap-browser {site} — {desc}");
+        println!("commands:");
+        for c in cmds {
+            println!("  {site} {c}");
+        }
+        println!("\nRun `ap-browser {site} <cmd> --help` for args and defaults.");
+        return Ok(());
+    }
     let adapter = entry
         .adapters
         .get(cmd)
@@ -457,6 +475,35 @@ pub fn dispatch_site(
     }
 }
 
+/// Agent --timeout also bounds the inner wait loop: the host caps the whole
+/// request at override+5s, and a wait step with a larger timeout_ms would be
+/// killed there with an opaque TIMEOUT error (observed: `wait --timeout 60`
+/// dying at 65s mid-generation). Clamp the loop (2s head room) so it returns
+/// its own graceful deadline_reached + current_status before the host cap.
+fn clamp_wait_timeouts(steps: Vec<Value>, timeout_override: Option<u64>) -> Vec<Value> {
+    let Some(t) = timeout_override else {
+        return steps;
+    };
+    let cap_ms = t.saturating_sub(2).max(1) * 1000;
+    steps
+        .into_iter()
+        .map(|mut s| {
+            if s.get("method").and_then(Value::as_str) == Some("wait") {
+                let over_cap = s
+                    .get("params")
+                    .and_then(|p| p.get("timeout_ms"))
+                    .and_then(Value::as_u64)
+                    .map(|ms| ms > cap_ms)
+                    .unwrap_or(false);
+                if over_cap {
+                    s["params"]["timeout_ms"] = json!(cap_ms);
+                }
+            }
+            s
+        })
+        .collect()
+}
+
 // Host-side cap for _timeout_hint_secs (host/src/main.rs MAX_RESPONSE_TIMEOUT_SECS).
 const MAX_ADAPTER_TIMEOUT_SECS: u64 = 3_600;
 
@@ -515,6 +562,7 @@ fn send_adapter_batch(req: AdapterBatchRequest<'_>) -> Result<Value> {
         }
     }
     let steps = expand_steps(&raw_steps, req.args)?;
+    let steps = clamp_wait_timeouts(steps, req.timeout_override);
     // Precedence: agent --timeout > adapter `timeout` > step estimate (30s floor).
     let timeout = req
         .timeout_override
@@ -937,17 +985,24 @@ fn parse_args(adapter: &Adapter, raw: &[String]) -> Result<HashMap<String, Value
             skip = false;
             continue;
         }
-        // Skip our own global flags
+        // Skip our own global flags. --timeout/--wait are consumed by
+        // dispatch_site but their value must not leak into positionals and
+        // clobber the first required arg.
+        let takes_value = arg == "--format"
+            || arg == "--tab"
+            || arg == "--profile"
+            || arg == "--map"
+            || arg == "--timeout";
         if arg.starts_with("--format")
             || arg == "--read-stdin"
             || arg == "--human"
             || arg == "--tab"
             || arg == "--profile"
             || arg == "--map"
+            || arg == "--timeout"
+            || arg == "--wait"
         {
-            if (arg == "--format" || arg == "--tab" || arg == "--profile" || arg == "--map")
-                && i + 1 < raw.len()
-            {
+            if takes_value && i + 1 < raw.len() {
                 skip = true;
             }
             continue;
@@ -1194,6 +1249,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn clamp_wait_timeouts_bounds_inner_loop_below_host_cap() {
+        let steps = vec![
+            json!({"method": "goto", "params": {"url": "https://x"}}),
+            json!({"method": "wait", "params": {"eval": "status.js", "timeout_ms": 300000}}),
+        ];
+        let clamped = clamp_wait_timeouts(steps.clone(), Some(60));
+        assert_eq!(clamped[1]["params"]["timeout_ms"], json!(58000));
+        assert_eq!(clamped[0]["params"]["url"], json!("https://x"));
+        // No override: adapter loop budget stays untouched.
+        assert_eq!(
+            clamp_wait_timeouts(steps, None)[1]["params"]["timeout_ms"],
+            json!(300000)
+        );
+        // Short waits below the cap are untouched too.
+        let small = vec![json!({"method": "wait", "params": {"timeout_ms": 5000}})];
+        assert_eq!(
+            clamp_wait_timeouts(small, Some(60))[0]["params"]["timeout_ms"],
+            json!(5000)
+        );
+    }
+
+    #[test]
     fn adapter_extraction_preserves_filter_metadata_and_business_shape() {
         let response = json!({
             "ok": true,
@@ -1333,5 +1410,64 @@ mod tests {
                 }
             })
         );
+    }
+
+    fn test_adapter() -> Adapter {
+        Adapter {
+            site: "t".into(),
+            description: None,
+            args: HashMap::from([
+                (
+                    "query".into(),
+                    ArgDef {
+                        arg_type: "string".into(),
+                        required: true,
+                        default: None,
+                    },
+                ),
+                (
+                    "limit".into(),
+                    ArgDef {
+                        arg_type: "int".into(),
+                        required: false,
+                        default: Some(json!(10)),
+                    },
+                ),
+            ]),
+            input: None,
+            output: None,
+            steps: vec![],
+            timeout: None,
+            long_running: None,
+            wait_strategy: None,
+            hints: None,
+        }
+    }
+
+    #[test]
+    fn global_flag_values_do_not_leak_into_positional_args() {
+        // Regression: `--timeout 90` used to leak "90" into positionals and
+        // clobber the first required arg (query became "90").
+        let raw: Vec<String> = [
+            "--query",
+            "graph neural networks",
+            "--limit",
+            "3",
+            "--tab",
+            "123",
+            "--profile",
+            "p",
+            "--timeout",
+            "90",
+            "--wait",
+            "--format",
+            "json",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let parsed = parse_args(&test_adapter(), &raw).unwrap();
+        assert_eq!(parsed["query"], json!("graph neural networks"));
+        assert_eq!(parsed["limit"], json!(3));
     }
 }

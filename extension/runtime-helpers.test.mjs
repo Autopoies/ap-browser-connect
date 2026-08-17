@@ -376,3 +376,97 @@ test("waitForCondition returns completed false with deadline_reached when time b
 		currentActivity: "thinking",
 	});
 });
+
+test("require_started blocks the pre-generation idle false positive", async () => {
+	// The bug: right after send, status is idle with no response yet. Without
+	// the latch, `isGenerating: false` matches instantly (false "completed").
+	let count = 0;
+	const result = await waitForCondition(
+		{ id: 7, url: "https://chatgpt.com/" },
+		{
+			eval: "status.js",
+			when: { isGenerating: false },
+			require_started: true,
+			interval_ms: 10,
+			initial_delay_ms: 0,
+		},
+		2000,
+		async () => {
+			count += 1;
+			if (count === 1) {
+				// dead window: submitted but generation not started
+				return {
+					isGenerating: false,
+					lastResponseLength: 0,
+					markdownCount: 0,
+					currentActivity: null,
+				};
+			}
+			if (count < 3)
+				return {
+					isGenerating: true,
+					isThinking: true,
+					lastResponseLength: 86,
+					markdownCount: 2,
+					currentActivity: "thinking",
+				};
+			return {
+				isGenerating: false,
+				lastResponseLength: 4106,
+				markdownCount: 3,
+				currentActivity: null,
+			};
+		},
+		async () => ({ url: "https://chatgpt.com/" }),
+		async () => {},
+	);
+	assert.equal(result.matched, true);
+	assert.equal(result.reason, "condition_met");
+	assert.ok(count >= 3, "must not match on the first idle poll");
+	assert.equal(result.value.lastResponseLength, 4106);
+});
+
+test("require_started accepts completion via response growth (busy phase never polled)", async () => {
+	// Fast answer: finishes entirely between polls 1 and 2, no busy flag seen.
+	let count = 0;
+	const result = await waitForCondition(
+		{ id: 7, url: "https://chatgpt.com/" },
+		{
+			eval: "status.js",
+			when: { isGenerating: false },
+			require_started: true,
+			interval_ms: 10,
+			initial_delay_ms: 0,
+		},
+		2000,
+		async () => {
+			count += 1;
+			if (count === 1) return { isGenerating: false, lastResponseLength: 0, markdownCount: 0 };
+			return { isGenerating: false, lastResponseLength: 500, markdownCount: 1 };
+		},
+		async () => ({ url: "https://chatgpt.com/" }),
+		async () => {},
+	);
+	assert.equal(result.matched, true);
+	assert.equal(result.reason, "condition_met");
+});
+
+test("require_started deadline returns started_not_observed, not deadline_reached", async () => {
+	const result = await waitForCondition(
+		{ id: 7, url: "https://chatgpt.com/" },
+		{
+			eval: "status.js",
+			when: { isGenerating: false },
+			require_started: true,
+			interval_ms: 10,
+			initial_delay_ms: 0,
+		},
+		50,
+		async () => ({ isGenerating: false, lastResponseLength: 0, markdownCount: 0 }),
+		async () => ({ url: "https://chatgpt.com/" }),
+		async () => {},
+	);
+	assert.equal(result.matched, false);
+	assert.equal(result.completed, false);
+	assert.equal(result.reason, "started_not_observed");
+});

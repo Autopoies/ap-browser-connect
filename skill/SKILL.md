@@ -67,6 +67,29 @@ from this skill. If `ap-browser ping` fails with "command not found" or socket
 errors, read `install.md` and follow its 4 steps (skill → binaries →
 extension → adapters).
 
+## Failure discipline (mandatory)
+
+**A hanging CLI call is a broken install, not a wrong tool choice.** Never
+switch tool family (other CLIs, APIs, skills) because an `ap-browser` command
+hangs — diagnose the binary first:
+
+1. Retest bounded: `timeout 3 ap-browser ping`. A shim overwritten by a
+   native-host binary hangs forever waiting on stdin; a healthy CLI answers in
+   under a second.
+2. Diagnose: `which ap-browser && file "$(which ap-browser)"`. The npm
+   install is a Node launcher script; `Mach-O`/`ELF` at that path means the
+   package is corrupted.
+3. Repair: `npm install -g ap-browser-connect`, or bypass the shim directly:
+   `ln -sf /opt/homebrew/lib/node_modules/ap-browser-connect/bin/aarch64-apple-darwin/ap-browser /opt/homebrew/bin/ap-browser`
+   (Apple silicon; use the matching `bin/<target>/` dir otherwise).
+4. Only after `ap-browser ping` answers may you fall back to another tool.
+
+**Check the profile before login-dependent work.** Multiple Chrome profiles
+may be online. `ap-browser status` marks the current one with `*` (and every
+response carries `meta.profile.label`); `tabs new` reports `data.profile`. If
+the site's login lives in another profile: `ap-browser use <label>`, or pass
+`--profile <label|instance_id>` (position flexible: leading or trailing).
+
 ## Quick start
 
 ```bash

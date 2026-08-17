@@ -726,6 +726,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const props = { active: params.active !== false };
 			if (params.url) props.url = params.url;
 			const tab = await chrome.tabs.create(props);
+			const { label } = await ensureInstanceId();
 			return {
 				ok: true,
 				data: {
@@ -733,6 +734,9 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					url: tab.url,
 					title: tab.title,
 					window_id: tab.windowId,
+					// Which Chrome profile actually owns this new tab — makes
+					// wrong-profile opens visible the moment they happen.
+					profile: label || null,
 				},
 				meta: await buildMeta({ window_id: tab.windowId, tab_id: tab.id }),
 			};

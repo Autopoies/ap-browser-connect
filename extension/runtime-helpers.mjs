@@ -93,6 +93,7 @@ export function buildBatchStepParams(step, inheritedTabId) {
 		"eval",
 		"until_eval",
 		"when",
+		"require_started",
 		"gone",
 		"interval_ms",
 		"initial_delay_ms",
@@ -137,6 +138,43 @@ export function evaluateDoneCondition(value, when) {
 	return !!value;
 }
 
+// Active-generation evidence for require_started: any status object field that
+// says work is in flight right now. Keeps the latch generic across adapters.
+function activityEvidence(value) {
+	if (!value || typeof value !== "object") return false;
+	if (
+		value.isGenerating === true ||
+		value.isThinking === true ||
+		value.isSearching === true ||
+		value.stopBtnFound === true
+	)
+		return true;
+	return value.currentActivity !== null && value.currentActivity !== undefined;
+}
+
+// Completion evidence for require_started when no poll caught the busy phase:
+// the response grew since the first poll (fast answer finished between polls).
+function growthEvidence(value, baseline) {
+	if (!value || typeof value !== "object" || !baseline) return false;
+	if (
+		typeof value.lastResponseLength === "number" &&
+		value.lastResponseLength > baseline.lastResponseLength
+	)
+		return true;
+	if (typeof value.markdownCount === "number" && value.markdownCount > baseline.markdownCount)
+		return true;
+	return false;
+}
+
+function snapshotGrowth(value) {
+	if (!value || typeof value !== "object") return null;
+	return {
+		lastResponseLength:
+			typeof value.lastResponseLength === "number" ? value.lastResponseLength : -1,
+		markdownCount: typeof value.markdownCount === "number" ? value.markdownCount : -1,
+	};
+}
+
 export async function waitForCondition(
 	tab,
 	params,
@@ -148,9 +186,16 @@ export async function waitForCondition(
 	const started = Date.now();
 	const interval = Math.max(params.interval_ms || 1000, 50);
 	const evalExpr = params.eval || params.until_eval;
+	// require_started: an idle status only counts as done once generation was
+	// actually observed (busy flag seen, or response grew since the first
+	// poll). Without it, `isGenerating: false` matches in the dead window
+	// after send but before the first token — a false-positive "completed".
+	const requireStarted = params.require_started === true;
+	let everActive = false;
+	let baseline = null;
 	let lastValue;
 
-	const initialDelay = params.initial_delay_ms !== undefined ? params.initial_delay_ms : 500;
+	const initialDelay = params.initial_delay_ms === undefined ? 500 : params.initial_delay_ms;
 	if (initialDelay > 0) {
 		await sleep(initialDelay);
 	}
@@ -201,7 +246,17 @@ export async function waitForCondition(
 				}
 				throw e;
 			}
-			if (evaluateDoneCondition(lastValue, params.when)) {
+			if (requireStarted) {
+				if (activityEvidence(lastValue)) everActive = true;
+				if (baseline === null) baseline = snapshotGrowth(lastValue);
+			}
+			const done = evaluateDoneCondition(lastValue, params.when);
+			// ponytail: require_started can miss a response that fully completes
+			// before the first poll AND shows no growth fields — accept that rare
+			// miss (agent falls back to `read`); baseline tracking needs send-coupling
+			// we don't want.
+			const startedEnough = !requireStarted || everActive || growthEvidence(lastValue, baseline);
+			if (done && startedEnough) {
 				return {
 					matched: true,
 					completed: true,
@@ -220,10 +275,10 @@ export async function waitForCondition(
 	return {
 		matched: false,
 		completed: false,
-		reason: "deadline_reached",
+		reason: requireStarted && !everActive ? "started_not_observed" : "deadline_reached",
 		waited_ms: Date.now() - started,
-		current_status: lastValue !== undefined ? lastValue : null,
-		value: lastValue !== undefined ? lastValue : null,
+		current_status: lastValue === undefined ? null : lastValue,
+		value: lastValue === undefined ? null : lastValue,
 	};
 }
 

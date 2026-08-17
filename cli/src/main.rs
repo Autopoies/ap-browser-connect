@@ -293,6 +293,17 @@ fn main() -> Result<()> {
             }
             let registry = sites::Registry::load();
             let site = &reordered[0];
+            // `ap-browser --profile X tabs close N`: a static clap command, not
+            // an adapter site. Parse the rewritten argv with clap instead of
+            // misrouting it to dispatch_site ("unknown site: tabs").
+            if sites::RESERVED.contains(&site.as_str()) && registry.match_site(site).is_none() {
+                let argv = std::iter::once("ap-browser".to_string())
+                    .chain(reordered.iter().cloned())
+                    .collect::<Vec<String>>();
+                let cli = Cli::parse_from(argv);
+                let human = cli.human || atty_is_tty();
+                return run_static_match(&cli, human);
+            }
             let cmd = reordered.get(1).cloned().unwrap_or_else(|| {
                 eprintln!("Usage: ap-browser {} <command> [args]", site);
                 std::process::exit(1);
@@ -313,12 +324,17 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let human = cli.human || atty_is_tty();
+    run_static_match(&cli, human)
+}
 
+/// The static (clap-defined) command surface, shared by direct dispatch and
+/// by the leading-global-flag rewrite path (`--profile X tabs close N`).
+fn run_static_match(cli: &Cli, human: bool) -> Result<()> {
     match &cli.command {
-        Cmd::Ping => rpc(&cli, "ping", json!({}), human, |_| {})?,
-        Cmd::Info => rpc(&cli, "info", json!({}), human, |_| {})?,
-        Cmd::Status => run_status(&cli, human)?,
-        Cmd::Profiles => run_profiles(&cli, human)?,
+        Cmd::Ping => rpc(cli, "ping", json!({}), human, |_| {})?,
+        Cmd::Info => rpc(cli, "info", json!({}), human, |_| {})?,
+        Cmd::Status => run_status(cli, human)?,
+        Cmd::Profiles => run_profiles(cli, human)?,
         Cmd::Current => run_current(human)?,
         Cmd::Use { id_or_label } => run_use(id_or_label, human)?,
         Cmd::Tabs(cmd) => match cmd {
@@ -334,7 +350,7 @@ fn main() -> Result<()> {
                 if let Some(g) = group {
                     params["group"] = json!(g);
                 }
-                rpc(&cli, "tabs.list", params, human, |_| {})?
+                rpc(cli, "tabs.list", params, human, |_| {})?
             }
             TabsCmd::New { url, silent } => {
                 let mut params = json!({});
@@ -344,18 +360,18 @@ fn main() -> Result<()> {
                 if *silent {
                     params["active"] = json!(false);
                 }
-                rpc(&cli, "tabs.new", params, human, |_| {})?
+                rpc(cli, "tabs.new", params, human, |_| {})?
             }
-            TabsCmd::Close { id } => rpc(&cli, "tabs.close", json!({"tab_id": id}), human, |_| {})?,
+            TabsCmd::Close { id } => rpc(cli, "tabs.close", json!({"tab_id": id}), human, |_| {})?,
             TabsCmd::Activate { id } => {
-                rpc(&cli, "tabs.activate", json!({"tab_id": id}), human, |_| {})?
+                rpc(cli, "tabs.activate", json!({"tab_id": id}), human, |_| {})?
             }
-            TabsCmd::Get { id } => rpc(&cli, "tabs.get", json!({"tab_id": id}), human, |_| {})?,
+            TabsCmd::Get { id } => rpc(cli, "tabs.get", json!({"tab_id": id}), human, |_| {})?,
         },
-        Cmd::Goto { url } => rpc(&cli, "goto", json!({"url": url}), human, |_| {})?,
-        Cmd::Back => rpc(&cli, "back", json!({}), human, |_| {})?,
-        Cmd::Forward => rpc(&cli, "forward", json!({}), human, |_| {})?,
-        Cmd::Reload => rpc(&cli, "reload", json!({}), human, |_| {})?,
+        Cmd::Goto { url } => rpc(cli, "goto", json!({"url": url}), human, |_| {})?,
+        Cmd::Back => rpc(cli, "back", json!({}), human, |_| {})?,
+        Cmd::Forward => rpc(cli, "forward", json!({}), human, |_| {})?,
+        Cmd::Reload => rpc(cli, "reload", json!({}), human, |_| {})?,
         Cmd::Text {
             selector,
             full,
@@ -368,7 +384,7 @@ fn main() -> Result<()> {
             if let Some(r) = range {
                 params["range"] = parse_range(r)?;
             }
-            rpc(&cli, "text", params, human, |_| {})?
+            rpc(cli, "text", params, human, |_| {})?
         }
         Cmd::Html {
             selector,
@@ -382,7 +398,7 @@ fn main() -> Result<()> {
             if let Some(r) = range {
                 params["range"] = parse_range(r)?;
             }
-            rpc(&cli, "html", params, human, |_| {})?
+            rpc(cli, "html", params, human, |_| {})?
         }
         Cmd::Screenshot {
             out,
@@ -401,27 +417,27 @@ fn main() -> Result<()> {
                 if *annotate {
                     params["annotate"] = json!(true);
                 }
-                rpc(&cli, "screenshot", params, human, |resp| {
+                rpc(cli, "screenshot", params, human, |resp| {
                     save_screenshot(resp, out, *annotate, *full);
                 })?
             }
         }
         Cmd::Click { target } => rpc(
-            &cli,
+            cli,
             "click",
             target_params(target, json!({})),
             human,
             |_| {},
         )?,
         Cmd::Fill { target, value } => rpc(
-            &cli,
+            cli,
             "fill",
             target_params(target, json!({"value": value})),
             human,
             |_| {},
         )?,
         Cmd::Select { target, option } => rpc(
-            &cli,
+            cli,
             "select",
             target_params(target, json!({"option": option})),
             human,
@@ -442,14 +458,14 @@ fn main() -> Result<()> {
             if let Some(s) = selector {
                 params["selector"] = json!(s);
             }
-            rpc(&cli, "scroll", params, human, |_| {})?
+            rpc(cli, "scroll", params, human, |_| {})?
         }
-        Cmd::State => rpc(&cli, "state.snapshot", json!({}), human, |resp| {
+        Cmd::State => rpc(cli, "state.snapshot", json!({}), human, |resp| {
             if human {
                 render_state_tree(resp);
             }
         })?,
-        Cmd::Press { keys } => rpc(&cli, "press", json!({"keys": keys}), human, |_| {})?,
+        Cmd::Press { keys } => rpc(cli, "press", json!({"keys": keys}), human, |_| {})?,
         Cmd::Wait {
             selector,
             url_change_from,
@@ -470,10 +486,10 @@ fn main() -> Result<()> {
                 interval_ms: *interval_ms,
                 timeout_ms: *timeout_ms,
             })?;
-            rpc(&cli, "wait", params, human, |_| {})?
+            rpc(cli, "wait", params, human, |_| {})?
         }
         Cmd::Eval { expression } => rpc(
-            &cli,
+            cli,
             "eval",
             json!({"expression": expression}),
             human,
@@ -485,7 +501,7 @@ fn main() -> Result<()> {
                 None => json!({}),
             };
             rpc(
-                &cli,
+                cli,
                 "cdp",
                 json!({"method": method, "params": p}),
                 human,
@@ -503,7 +519,7 @@ fn main() -> Result<()> {
                 }
             };
             let steps: Value = serde_json::from_str(&input)?;
-            rpc(&cli, "batch", json!({"steps": steps}), human, |_| {})?
+            rpc(cli, "batch", json!({"steps": steps}), human, |_| {})?
         }
         Cmd::Download {
             url,
@@ -858,40 +874,78 @@ fn save_screenshot(resp: &mut Value, out: &str, annotate: bool, full: bool) {
 
 fn run_status(_cli: &Cli, human: bool) -> Result<()> {
     let profiles = discover_profiles()?;
+    let current = read_current_profile().ok().flatten();
     if human {
-        println!("ap-browser status: {} socket(s) online", profiles.len());
+        println!(
+            "ap-browser status: {} socket(s) online (* = current)",
+            profiles.len()
+        );
         for p in &profiles {
             println!(
-                "  {}  {}  {}",
+                "  {}{}  {}  {}",
+                if current.as_deref() == Some(&p.instance_id) {
+                    "*"
+                } else {
+                    " "
+                },
                 truncate_id(&p.instance_id),
                 p.label.as_deref().unwrap_or(""),
                 p.active_tab_url.as_deref().unwrap_or("(no tab)")
             );
         }
     } else {
-        println!("{}", serde_json::to_string(&json!({"online": profiles}))?);
+        println!(
+            "{}",
+            serde_json::to_string(&json!({"online": decorate_current(profiles, current)}))?
+        );
     }
     Ok(())
 }
 
 fn run_profiles(_cli: &Cli, human: bool) -> Result<()> {
     let profiles = discover_profiles()?;
+    let current = read_current_profile().ok().flatten();
     if human {
         if profiles.is_empty() {
             println!("(no extension instances online)");
         }
         for p in &profiles {
             println!(
-                "{}  label={}  active={}",
+                "{}{}  label={}  active={}",
+                if current.as_deref() == Some(&p.instance_id) {
+                    "*"
+                } else {
+                    " "
+                },
                 truncate_id(&p.instance_id),
                 p.label.as_deref().unwrap_or(""),
                 p.active_tab_url.as_deref().unwrap_or("(none)")
             );
         }
     } else {
-        println!("{}", serde_json::to_string(&profiles)?);
+        println!(
+            "{}",
+            serde_json::to_string(&decorate_current(profiles, current))?
+        );
     }
     Ok(())
+}
+
+/// Additive `current: true` marker on the profile the CLI routes to by
+/// default, so multi-profile JSON consumers don't have to cross-reference
+/// `~/.ap-browser/current` themselves.
+fn decorate_current(profiles: Vec<ProfileInfo>, current: Option<String>) -> Vec<Value> {
+    profiles
+        .into_iter()
+        .map(|p| {
+            let is_current = current.as_deref() == Some(&p.instance_id);
+            let mut o = serde_json::to_value(&p).unwrap_or_else(|_| json!({}));
+            if let Some(obj) = o.as_object_mut() {
+                obj.insert("current".into(), json!(is_current));
+            }
+            o
+        })
+        .collect()
 }
 
 fn run_current(human: bool) -> Result<()> {
@@ -1063,6 +1117,7 @@ mod flag_reorder_tests {
     use super::reorder_leading_flags;
     use super::reorder_leading_flags_against;
     use crate::sites::{Registry, SiteEntry};
+    use clap::Parser;
     use std::collections::HashMap;
 
     fn registry_with_site(name: &str) -> Registry {
@@ -1126,6 +1181,44 @@ mod flag_reorder_tests {
                 "Study".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn leading_profile_before_static_tabs_command_parses_with_clap() {
+        // `ap-browser --profile X tabs close N` used to die with
+        // "unknown site: tabs". Now the reorder yields the tail-flag form and
+        // clap accepts it — the same path run_static_match takes.
+        let registry = registry_with_site("hackernews");
+        let reordered = reorder_leading_flags_against(
+            &[
+                "--profile".into(),
+                "tonyhe379".into(),
+                "tabs".into(),
+                "close".into(),
+                "663382210".into(),
+            ],
+            &registry,
+        )
+        .expect("tabs is RESERVED and should be reordered");
+        assert_eq!(
+            reordered,
+            vec![
+                "tabs".to_string(),
+                "close".to_string(),
+                "663382210".to_string(),
+                "--profile".to_string(),
+                "tonyhe379".to_string()
+            ]
+        );
+        let argv = std::iter::once("ap-browser".to_string())
+            .chain(reordered.iter().cloned())
+            .collect::<Vec<String>>();
+        let cli = super::Cli::try_parse_from(argv).expect("clap must accept tail flags");
+        assert!(matches!(
+            cli.command,
+            super::Cmd::Tabs(super::TabsCmd::Close { id: 663382210 })
+        ));
+        assert_eq!(cli.profile.as_deref(), Some("tonyhe379"));
     }
 
     #[test]
