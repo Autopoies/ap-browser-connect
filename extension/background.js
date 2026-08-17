@@ -1045,11 +1045,10 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const scrolled = [];
 			const snapshots = [];
 			const takeSnapshot = async () => {
-				const evaluated = await chrome.debugger.sendCommand(
-					{ tabId: tab.id },
-					"Runtime.evaluate",
-					{ expression: listSnapshotExpression(), returnByValue: true },
-				);
+				const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+					expression: listSnapshotExpression(),
+					returnByValue: true,
+				});
 				return safeJsonParse(runtimeEvaluateValue(evaluated)) || null;
 			};
 			if (probe) snapshots.push(await takeSnapshot());

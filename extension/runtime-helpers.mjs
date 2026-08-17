@@ -206,11 +206,7 @@ export function classifyListBehavior(snapshots) {
 	const exhausted = !anyGrowth;
 	const infinite = anyGrowth && scrolledDown;
 	const virtual = infinite && anyShed;
-	const behavior = exhausted
-		? "finite"
-		: virtual
-			? "virtual-infinite"
-			: "append-infinite";
+	const behavior = exhausted ? "finite" : virtual ? "virtual-infinite" : "append-infinite";
 	const strategy =
 		behavior === "finite"
 			? "list exhausted — extract now; more scrolling yields nothing"
@@ -227,7 +223,10 @@ export function classifyListBehavior(snapshots) {
 			nodes: snapshots[Math.floor(snapshots.length / 2)].nodes - first.nodes,
 			chars: snapshots[Math.floor(snapshots.length / 2)].chars - first.chars,
 		},
-		second_window: { nodes: last.nodes - snapshots[Math.floor(snapshots.length / 2)].nodes, chars: last.chars - snapshots[Math.floor(snapshots.length / 2)].chars },
+		second_window: {
+			nodes: last.nodes - snapshots[Math.floor(snapshots.length / 2)].nodes,
+			chars: last.chars - snapshots[Math.floor(snapshots.length / 2)].chars,
+		},
 		max_nodes: Math.max(...snapshots.map((s) => s.nodes)),
 		strategy,
 	};
