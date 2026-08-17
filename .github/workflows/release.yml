@@ -61,7 +61,7 @@ jobs:
             SHA="${GITHUB_SHA}"
             if [ "${VERSION}" != "${TAG_BODY}" ]; then
               git config user.name "github-actions[bot]"
-              git config email \
+              git config user.email \
                 "41898282+github-actions[bot]@users.noreply.github.com"
               sed -i "s/^version = \"[^\"]*\"/version = \"${TAG_BODY}\"/" \
                 Cargo.toml
