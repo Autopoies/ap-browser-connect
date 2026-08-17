@@ -219,3 +219,81 @@ ap-browser chatgpt send "Write a comprehensive report..." --wait
 # Or explicitly:
 ap-browser chatgpt wait --timeout 300
 ```
+
+## 15. Efficiency patterns (measured)
+
+Four scenarios, each benchmarked before/after on the same machine. Use them
+as the default shape of work, not as optional optimizations.
+
+### 15.1 Logged-in chat, end to end (send → wait → read)
+
+One command carries the whole interaction; `read` extracts only the
+assistant's answer (not the page).
+
+```bash
+ap-browser chatgpt send "Summarize today's key AI news in 3 bullets" --wait --timeout 120
+ap-browser chatgpt read            # → {"content": "…", "role": "assistant", …}
+```
+
+Measured: **4 calls / 10s** (ping, send+wait, read) vs 59 calls / 229s with
+per-step polling, wrong-profile retries, and sleep loops — including one
+human intervention. Anti-patterns that caused it: `sleep N && status` loops,
+trusting a quiet page as "done", re-clicking send when the first read came
+back empty.
+
+### 15.2 Fan out independent read-only commands in ONE tool call
+
+Independent queries never need separate agent round-trips — background them
+inside one shell invocation and wait:
+
+```bash
+ap-browser arxiv search "graph neural networks" --limit 3 > /tmp/a.json 2>/dev/null &
+ap-browser arxiv search "llm agent evaluation" --limit 3 > /tmp/b.json 2>/dev/null &
+ap-browser hackernews best --limit 5 > /tmp/c.json 2>/dev/null &
+wait
+```
+
+Measured: 3 queries = **3.4s in one call** vs 7.5s across three sequential
+calls (−55% wall, −67% agent round-trips). Each file is one NDJSON line per
+item — pipe to `head`/`python`/`jq` directly.
+
+### 15.3 One adapter beats N generic steps
+
+Same task, two shapes — reading a site's front page:
+
+```bash
+# Generic (3 calls, 3961-char raw text dump the model must parse):
+ap-browser tabs new "https://news.ycombinator.com" --silent
+ap-browser wait ".titleline"
+ap-browser text
+
+# Adapter (1 call, structured NDJSON, ~450 chars for 3 items):
+ap-browser hackernews best --limit 3
+ap-browser tabs close <id>          # generic path even needs cleanup — another call
+```
+
+−67% calls, −88% context tokens, zero parsing risk. The adapter also encodes
+the site's waits, pagination, and ad-filtering.
+
+### 15.4 Composite flows are one adapter command
+
+Multi-step flows that would be goto→state→click→wait→click→text chains ship
+as single commands:
+
+```bash
+# Search + open cite dialog + extract 3 citation formats — one call:
+ap-browser google-scholar cite "Attention is all you need"
+# → {bibtex, endnote_url, refman_url, refworks_url, formats, …}
+```
+
+Measured: 8s / 1 call vs ~20s / ~8 generic calls. Run
+`ap-browser sites search <topic>` — the composite command you're about to
+hand-build often already exists.
+
+### Rules of thumb
+
+- Every tool call = one LLM round-trip; every output = context. Minimize both.
+- Adapter-first (`sites search`), then batch (#11), then generic primitives.
+- `--wait`/`--timeout` inside a command beats external sleep-poll loops.
+- Parallelize independent reads inside one call (15.2).
+- A quiet page is not success — check `current_status` evidence.

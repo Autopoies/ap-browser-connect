@@ -106,6 +106,38 @@ echo '[{"method":"state"},{"method":"click","ref":12},{"method":"text"}]' | ap-b
 
 The generic flow (goto → text → click) only runs when **no adapter exists** for the site. Any deterministic 3+ step sequence becomes a `batch` (one round-trip, one `meta` block — see `references/patterns.md` #11). See **Adapter-first rule** for the full match recipe.
 
+## Efficiency rules (measured, not stylistic)
+
+Every tool call costs an LLM round-trip and every output costs context. These
+rules came from replaying real scenarios before/after — the numbers are
+measured, not estimated.
+
+1. **Adapter-first, always.** One adapter command replaces N generic steps AND
+   returns structured JSON instead of a raw text dump. Reading HN top stories:
+   `hackernews best --limit 3` = 1 call, ~450 chars of structured items vs
+   `tabs new → wait → text` = 3 calls, 3961 chars of prose the model must parse
+   (−67% calls, −88% tokens).
+2. **Parallelize independent commands inside ONE tool call.** Independent
+   read-only commands (searches, listings, status reads) run as background
+   processes in a single shell invocation — one agent round-trip instead of
+   N. Measured: two `arxiv search` + one `hackernews best` in one call = 3.4s
+   vs 7.5s sequential. Recipe: `references/patterns.md` #15.
+3. **`--wait` completes the wait inside the command.** `chatgpt send "…" --wait`
+   types, submits, and waits for the response in ONE call — never
+   sleep-then-poll (`sleep N && status` loops burned ~90s in the session audit
+   behind these rules). Waits return a graceful deadline result carrying
+   `current_status`, never an opaque kill.
+4. **Bounded waits beat open-ended ones.** Pass a `--timeout` you can afford;
+   the returned status fields tell you whether to re-wait, `read` partial
+   output, or move on.
+5. **Fail on evidence, not silence.** Long-running adapters verify their own
+   side effects (e.g. `chatgpt send` reports success only when generation
+   actually started). An empty/quiet page is NOT success — read the returned
+   `current_status` fields before concluding anything.
+
+Measured end-to-end (ChatGPT Q&A on a fresh tab): **4 calls / 10s** with these
+rules vs **59 calls / 229s** with the anti-patterns above.
+
 ## Command menu
 
 | Group | Command | What it does |
@@ -263,7 +295,7 @@ Never `pkill`/`taskkill` from stale-socket output alone; confirm a live `ap-brow
 | ------ | ------------- |
 | `install.md` | `ap-browser` is not installed or `ap-browser ping` fails — follow the 4 install steps |
 | `references/commands.md` | Need full flags, examples, or edge cases for any command |
-| `references/patterns.md` | Need a recipe (scrape list, fill form, SPA wait, pagination, screenshot) |
+| `references/patterns.md` | Need a recipe (scrape list, fill form, SPA wait, pagination, screenshot, efficiency patterns #15) |
 | `references/output-contract.md` | Need to understand `meta.focus`, truncation, or error codes in depth |
 | `references/multi-profile.md` | Multiple Chrome profiles are online and need to pick/switch |
 | `references/create-site.md` | Need to create a site-specific adapter (reusable command for a website) |
