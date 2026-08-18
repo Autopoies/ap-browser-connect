@@ -1158,6 +1158,24 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 						url: `https://${params._auto_tab.domain}`,
 						active: false,
 					});
+					// Wait for the fresh tab to finish loading before executing
+					// batch steps — otherwise adapters scrape about:blank/bootstrapping DOM.
+					await new Promise((resolve) => {
+						if (created.status === "complete") return resolve();
+						let timer;
+						const listener = (tabId, info) => {
+							if (tabId === created.id && info.status === "complete") {
+								chrome.tabs.onUpdated.removeListener(listener);
+								clearTimeout(timer);
+								resolve();
+							}
+						};
+						chrome.tabs.onUpdated.addListener(listener);
+						timer = setTimeout(() => {
+							chrome.tabs.onUpdated.removeListener(listener);
+							resolve();
+						}, 8000); // fallback timeout
+					});
 					operatedTab = created;
 					params.tab_id = created.id;
 				}
