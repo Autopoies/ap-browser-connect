@@ -10,7 +10,7 @@ mod sites;
 mod socket_client;
 mod update;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use ap_browser_core::transport;
 use clap::{CommandFactory, Parser, Subcommand};
 use serde_json::{json, Value};
@@ -368,7 +368,11 @@ fn run_static_match(cli: &Cli, human: bool) -> Result<()> {
                 if let Some(g) = group {
                     params["group"] = json!(g);
                 }
-                rpc(cli, "tabs.list", params, human, |_| {})?
+                if cli.profile.is_some() {
+                    rpc(cli, "tabs.list", params, human, |_| {})?
+                } else {
+                    run_tabs_list(cli, params, human)?
+                }
             }
             TabsCmd::New { url, silent } => {
                 let mut params = json!({});
@@ -951,6 +955,124 @@ fn run_profiles(_cli: &Cli, human: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn run_tabs_list(cli: &Cli, params: Value, human: bool) -> Result<()> {
+    if transport::remote_endpoint().is_some() {
+        return rpc(cli, "tabs.list", params, human, |_| {});
+    }
+
+    let profiles = discover_profiles()?;
+    if profiles.is_empty() {
+        bail!(
+            "no extension instance online. Is Chrome running with the ap-browser-connect extension loaded?"
+        );
+    }
+
+    let current_id = read_current_profile().ok().flatten();
+    let mut profiles_data = Vec::new();
+
+    for prof in &profiles {
+        let is_current = current_id.as_deref() == Some(&prof.instance_id)
+            || (current_id.is_none() && profiles.len() == 1);
+
+        let tabs_val =
+            match query_instance_rpc(&prof.instance_id, "tabs.list", params.clone(), cli.timeout) {
+                Ok(resp) => resp
+                    .get("data")
+                    .and_then(|d| d.get("tabs"))
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+                Err(e) => {
+                    eprintln!(
+                        "[warn] tabs.list failed for profile {}: {e}",
+                        prof.instance_id
+                    );
+                    json!([])
+                }
+            };
+
+        profiles_data.push(json!({
+            "instance_id": prof.instance_id,
+            "label": prof.label,
+            "current": is_current,
+            "tabs": tabs_val
+        }));
+    }
+
+    let response = json!({
+        "ok": true,
+        "data": {
+            "profiles": profiles_data
+        }
+    });
+
+    if human {
+        print_tabs_profiles_human(&profiles_data);
+    } else {
+        println!("{}", serde_json::to_string(&response)?);
+    }
+    Ok(())
+}
+
+fn query_instance_rpc(
+    instance_id: &str,
+    method: &str,
+    mut params: Value,
+    timeout_secs: u64,
+) -> Result<Value> {
+    apply_timeout_hint(&mut params, timeout_secs)?;
+    filters::Registry::load().attach_to(&mut params);
+
+    let request = json!({"jsonrpc":"2.0","method":method,"params":params});
+    let bytes = cli_frame::encode(&request)?;
+    let mut stream = dial_with_retry(instance_id, 3, Duration::from_millis(200))?;
+    std::io::Write::write_all(&mut stream, &bytes)?;
+    std::io::Write::flush(&mut stream)?;
+    let envelope = cli_frame::read_response(&mut stream, Duration::from_secs(timeout_secs))?;
+
+    let response = match envelope.get("result") {
+        Some(r) => r.clone(),
+        None => match envelope.get("error") {
+            Some(e) => json!({"ok": false, "error": e}),
+            None => envelope,
+        },
+    };
+    Ok(response)
+}
+
+fn print_tabs_profiles_human(profiles: &[Value]) {
+    for (i, p) in profiles.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        let label = p.get("label").and_then(|v| v.as_str()).unwrap_or("");
+        let id = p.get("instance_id").and_then(|v| v.as_str()).unwrap_or("");
+        let is_current = p.get("current").and_then(|v| v.as_bool()).unwrap_or(false);
+        let trunc_id = truncate_id(id);
+        let curr_mark = if is_current { " [current]" } else { "" };
+        let header = if label.is_empty() {
+            format!("Profile {trunc_id}{curr_mark}:")
+        } else {
+            format!("Profile {label} ({trunc_id}){curr_mark}:")
+        };
+        println!("{header}");
+
+        if let Some(tabs) = p.get("tabs").and_then(|t| t.as_array()) {
+            if tabs.is_empty() {
+                println!("  (no open tabs)");
+            } else {
+                for tab in tabs {
+                    let tid = tab.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let title = tab.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                    let url = tab.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                    let active = tab.get("active").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let active_mark = if active { " *" } else { "" };
+                    println!("  [{tid}]{active_mark} {title} — {url}");
+                }
+            }
+        }
+    }
 }
 
 /// Additive `current: true` marker on the profile the CLI routes to by
