@@ -75,6 +75,20 @@ export function clearTabRuntimeState(tabId, state, clearTimer = clearTimeout) {
 	state.networkBuffers.delete(tabId);
 }
 
+export async function cleanupAutoCreatedTab(
+	tabId,
+	release = () => Promise.resolve(),
+	removeTab = () => Promise.resolve(),
+) {
+	if (tabId == null) return;
+	try {
+		await release(tabId);
+	} catch (_) {}
+	try {
+		await removeTab(tabId);
+	} catch (_) {}
+}
+
 export function buildBatchStepParams(step, inheritedTabId) {
 	const params = { ...(step.params || {}) };
 	for (const key of [

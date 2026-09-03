@@ -4,6 +4,7 @@ import test from "node:test";
 import {
 	buildBatchStepParams,
 	classifyListBehavior,
+	cleanupAutoCreatedTab,
 	clearTabRuntimeState,
 	ensureAttachedOnce,
 	isCurrentPort,
@@ -162,6 +163,32 @@ test("tab cleanup removes attachment, lock, timer, and dev buffers", () => {
 	for (const [name, collection] of Object.entries(state)) {
 		if (name !== "attachingTabs") assert.equal(collection.has(8), true);
 	}
+});
+
+test("cleanupAutoCreatedTab releases debugger and removes tab", async () => {
+	const log = [];
+	await cleanupAutoCreatedTab(
+		42,
+		async (id) => log.push(`release:${id}`),
+		async (id) => log.push(`remove:${id}`),
+	);
+	assert.deepEqual(log, ["release:42", "remove:42"]);
+
+	// Survives release rejection and still removes tab
+	log.length = 0;
+	await cleanupAutoCreatedTab(
+		43,
+		async () => {
+			throw new Error("debugger already detached");
+		},
+		async (id) => log.push(`remove:${id}`),
+	);
+	assert.deepEqual(log, ["remove:43"]);
+
+	// No-op for null/undefined
+	log.length = 0;
+	await cleanupAutoCreatedTab(null, async () => log.push("fail"), async () => log.push("fail"));
+	assert.equal(log.length, 0);
 });
 
 test("batch forwards flattened event-wait parameters", () => {

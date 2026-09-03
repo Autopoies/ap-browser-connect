@@ -20,6 +20,7 @@ import {
 import {
 	buildBatchStepParams,
 	classifyListBehavior,
+	cleanupAutoCreatedTab,
 	clearTabRuntimeState,
 	ensureAttachedOnce,
 	isCurrentPort,
@@ -1144,6 +1145,11 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 
 		case "batch": {
 			const steps = params.steps || [];
+			let autoCreatedTabId = null;
+			const shouldKeepTab = params._auto_tab?.keep_tab === true;
+			let domainCandidateWarning = null;
+			let existingCandidates = [];
+
 			// Adapter auto-tab: adapter commands send _auto_tab = {domain} when
 			// no explicit --tab was given. If the operated tab is unscriptable
 			// (chrome://) or on a different host, silently open a tab on the
@@ -1154,10 +1160,26 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				const host = current?.url ? safeHostOf(current.url) : null;
 				const want = normalizeHost(params._auto_tab.domain || "");
 				if (!host || !want || host !== want) {
+					try {
+						const allTabs = await chrome.tabs.query({});
+						const matchingTabs = allTabs.filter(
+							(t) => t.url && safeHostOf(t.url) === want,
+						);
+						if (matchingTabs.length >= 3) {
+							existingCandidates = matchingTabs.map((t) => ({
+								tab_id: t.id,
+								title: t.title || null,
+								url: t.url,
+							}));
+							domainCandidateWarning = `${matchingTabs.length} tabs matching '${params._auto_tab.domain}' already open.`;
+						}
+					} catch (_) {}
+
 					const created = await chrome.tabs.create({
 						url: `https://${params._auto_tab.domain}`,
 						active: false,
 					});
+					autoCreatedTabId = created.id;
 					// Wait for the fresh tab to finish loading before executing
 					// batch steps — otherwise adapters scrape about:blank/bootstrapping DOM.
 					await new Promise((resolve) => {
@@ -1180,59 +1202,79 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					params.tab_id = created.id;
 				}
 			}
-			const results = [];
-			let lastTab = null;
-			let batchFilterMetadata = null;
-			// CLI-style aliases → extension method names (agents write `state`,
-			// the extension dispatches `state.snapshot`).
-			const METHOD_ALIASES = {
-				state: "state.snapshot",
-				download: "download.browser",
-			};
-			for (const step of steps) {
-				const stepMethod = METHOD_ALIASES[step.method || step.cmd] || step.method || step.cmd;
-				var stepParams = buildBatchStepParams(step, params.tab_id);
-				if (Array.isArray(params._filters)) stepParams._filters = params._filters;
-				try {
-					const isMeta = stepMethod === "ping" || stepMethod === "info";
-					if (!isMeta) {
-						lastTab = null;
-						lastTab = await resolveBatchStepTab(stepMethod, stepParams, resolveTab);
-						if (lastTab) {
-							cancelPendingRestore(lastTab.id);
-							await ensureDebugger(lastTab.id);
-							try {
-								await swapFaviconToSparkle(lastTab.id);
-							} catch (_) {}
+			try {
+				const results = [];
+				let lastTab = null;
+				let batchFilterMetadata = null;
+				// CLI-style aliases → extension method names (agents write `state`,
+				// the extension dispatches `state.snapshot`).
+				const METHOD_ALIASES = {
+					state: "state.snapshot",
+					download: "download.browser",
+				};
+				for (const step of steps) {
+					const stepMethod = METHOD_ALIASES[step.method || step.cmd] || step.method || step.cmd;
+					var stepParams = buildBatchStepParams(step, params.tab_id);
+					if (Array.isArray(params._filters)) stepParams._filters = params._filters;
+					try {
+						const isMeta = stepMethod === "ping" || stepMethod === "info";
+						if (!isMeta) {
+							lastTab = null;
+							lastTab = await resolveBatchStepTab(stepMethod, stepParams, resolveTab);
+							if (lastTab) {
+								cancelPendingRestore(lastTab.id);
+								await ensureDebugger(lastTab.id);
+								try {
+									await swapFaviconToSparkle(lastTab.id);
+								} catch (_) {}
+							}
 						}
+						const r = await dispatch(stepMethod, stepParams, lastTab || operatedTab);
+						const stepResult = { ok: true, data: r.data };
+						if (r.meta?.filters) {
+							stepResult.meta = { filters: r.meta.filters };
+							batchFilterMetadata = mergeFilterMetadata(batchFilterMetadata, r.meta.filters);
+						}
+						results.push(stepResult);
+					} catch (e) {
+						const stepResult = {
+							ok: false,
+							error: {
+								code: e.code || "INTERNAL",
+								message: e.message || String(e),
+							},
+						};
+						if (e.filterMeta) {
+							stepResult.meta = { filters: e.filterMeta };
+							batchFilterMetadata = mergeFilterMetadata(batchFilterMetadata, e.filterMeta);
+						}
+						results.push(stepResult);
+						if (params.stop_on_error !== false) break;
 					}
-					const r = await dispatch(stepMethod, stepParams, lastTab || operatedTab);
-					const stepResult = { ok: true, data: r.data };
-					if (r.meta?.filters) {
-						stepResult.meta = { filters: r.meta.filters };
-						batchFilterMetadata = mergeFilterMetadata(batchFilterMetadata, r.meta.filters);
-					}
-					results.push(stepResult);
-				} catch (e) {
-					const stepResult = {
-						ok: false,
-						error: {
-							code: e.code || "INTERNAL",
-							message: e.message || String(e),
-						},
-					};
-					if (e.filterMeta) {
-						stepResult.meta = { filters: e.filterMeta };
-						batchFilterMetadata = mergeFilterMetadata(batchFilterMetadata, e.filterMeta);
-					}
-					results.push(stepResult);
-					if (params.stop_on_error !== false) break;
+				}
+				const meta = lastTab
+					? await buildMeta({ window_id: lastTab.windowId, tab_id: lastTab.id })
+					: await buildMeta(null);
+
+				if (autoCreatedTabId != null && shouldKeepTab) {
+					meta.tab_id = autoCreatedTabId;
+					meta.session_persisted = true;
+					meta.hint = `Tab ${autoCreatedTabId} kept open for session continuity. Pass '--tab ${autoCreatedTabId}' to subsequent commands.`;
+				}
+				if (domainCandidateWarning) {
+					meta.warning = domainCandidateWarning;
+					meta.existing_candidates = existingCandidates;
+					meta.hint = meta.hint
+						? `${meta.hint} | Existing tabs found: reuse with '--tab <id>' or clean up with 'tabs close <id>'.`
+						: `Multiple tabs for '${params._auto_tab?.domain}' found. Reuse with '--tab <id>' or clean up with 'tabs close <id>'.`;
+				}
+
+				return attachFilterMetadata({ ok: true, data: { results }, meta }, batchFilterMetadata);
+			} finally {
+				if (autoCreatedTabId != null && !shouldKeepTab) {
+					await cleanupAutoCreatedTab(autoCreatedTabId, releaseTab, (id) => chrome.tabs.remove(id));
 				}
 			}
-			const meta = lastTab
-				? await buildMeta({ window_id: lastTab.windowId, tab_id: lastTab.id })
-				: await buildMeta(null);
-			return attachFilterMetadata({ ok: true, data: { results }, meta }, batchFilterMetadata);
 		}
 
 		case "dev.console.list": {

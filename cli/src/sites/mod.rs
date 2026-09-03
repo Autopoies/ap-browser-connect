@@ -64,6 +64,8 @@ pub struct Adapter {
     #[serde(default)]
     pub long_running: Option<bool>,
     #[serde(default)]
+    pub keep_tab: Option<bool>,
+    #[serde(default)]
     pub wait_strategy: Option<HashMap<String, Value>>,
     #[serde(default)]
     pub hints: Option<HashMap<String, String>>,
@@ -390,6 +392,14 @@ pub fn dispatch_site(
             .and_then(|m| m.domain.clone())
     });
 
+    let keep_tab = if raw_args.iter().any(|a| a == "--keep-tab") {
+        Some(true)
+    } else if raw_args.iter().any(|a| a == "--no-keep-tab") {
+        Some(false)
+    } else {
+        adapter.keep_tab
+    };
+
     let want_wait = raw_args.iter().any(|a| a == "--wait");
 
     if read_stdin && adapter.input.is_none() {
@@ -426,6 +436,7 @@ pub fn dispatch_site(
                 filter_registry: &filter_registry,
                 timeout_override,
                 auto_tab_domain: auto_tab_domain.as_deref(),
+                keep_tab,
                 want_wait,
             })?;
             if resp
@@ -460,6 +471,7 @@ pub fn dispatch_site(
             filter_registry: &filter_registry,
             timeout_override,
             auto_tab_domain: auto_tab_domain.as_deref(),
+            keep_tab,
             want_wait,
         })?;
         if resp
@@ -557,6 +569,7 @@ struct AdapterBatchRequest<'a> {
     filter_registry: &'a crate::filters::Registry,
     timeout_override: Option<u64>,
     auto_tab_domain: Option<&'a str>,
+    keep_tab: Option<bool>,
     want_wait: bool,
 }
 
@@ -592,7 +605,11 @@ fn send_adapter_batch(req: AdapterBatchRequest<'_>) -> Result<Value> {
         params["tab_id"] = json!(t);
     }
     if let Some(d) = req.auto_tab_domain {
-        params["_auto_tab"] = json!({ "domain": d });
+        let mut auto_tab = json!({ "domain": d });
+        if let Some(k) = req.keep_tab {
+            auto_tab["keep_tab"] = json!(k);
+        }
+        params["_auto_tab"] = auto_tab;
     }
     req.filter_registry.attach_to(&mut params);
     let socket = crate::socket_client::resolve_socket(req.profile)?;
@@ -1152,6 +1169,16 @@ fn emit_security_metadata(resp: &Value) {
     if let Some(warning) = resp.get("_security_warning").and_then(Value::as_str) {
         eprintln!("[security] {warning}");
     }
+    if let Some(warning) = resp.get("meta").and_then(|m| m.get("warning")).and_then(Value::as_str) {
+        eprintln!("[warn] {warning}");
+    }
+    if let Some(candidates) = resp.get("meta").and_then(|m| m.get("existing_candidates")).and_then(Value::as_array) {
+        for c in candidates {
+            let tid = c.get("tab_id").and_then(Value::as_i64).unwrap_or(0);
+            let title = c.get("title").and_then(Value::as_str).unwrap_or("Untitled");
+            eprintln!("       - Tab {tid}: {title:?}");
+        }
+    }
     if let Some(filters) = resp.get("meta").and_then(|meta| meta.get("filters")) {
         eprintln!(
             "[filters] {}",
@@ -1451,6 +1478,7 @@ mod tests {
             steps: vec![],
             timeout: None,
             long_running: None,
+            keep_tab: None,
             wait_strategy: None,
             hints: None,
         }
