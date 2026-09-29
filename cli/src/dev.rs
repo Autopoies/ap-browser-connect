@@ -87,17 +87,33 @@ fn rpc(method: &str, params: Value, args: &[String]) -> Result<Value> {
             o.insert("_timeout_hint_secs".into(), json!(h));
         }
     }
-    let socket = crate::socket_client::resolve_socket(extract_profile(args).as_deref())?;
+    let socket = match crate::socket_client::resolve_socket_wait(
+        extract_profile(args).as_deref(),
+        crate::socket_client::wait_online_from_env(),
+    ) {
+        Ok(s) => s,
+        Err(e) => crate::emit_transport_error("OFFLINE", e),
+    };
     let request = json!({"jsonrpc":"2.0","method":method,"params":p});
     let bytes = crate::cli_frame::encode(&request)?;
-    let mut stream = crate::socket_client::dial_with_retry(&socket, 3, Duration::from_millis(200))?;
+    let mut stream =
+        match crate::socket_client::dial_with_retry(&socket, 3, Duration::from_millis(200)) {
+            Ok(s) => s,
+            Err(e) => crate::emit_transport_error("OFFLINE", e),
+        };
     use std::io::Write;
-    stream.write_all(&bytes)?;
-    stream.flush()?;
-    let envelope = crate::cli_frame::read_response(
+    if let Err(e) = stream.write_all(&bytes).and_then(|_| stream.flush()) {
+        crate::emit_transport_error("OFFLINE", anyhow!("write to instance socket failed: {e}"));
+    }
+    let envelope = match crate::cli_frame::read_response(
         &mut stream,
         Duration::from_secs(timeout_hint.unwrap_or(60)),
-    )?;
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            crate::emit_transport_error("OFFLINE", anyhow!("read from instance socket failed: {e}"))
+        }
+    };
     let resp = match envelope.get("result") {
         Some(r) => r.clone(),
         None => match envelope.get("error") {
@@ -115,14 +131,30 @@ fn cdp(tab: Option<i64>, profile: Option<&str>, cdp_method: &str, params: Value)
             o.insert("tab_id".into(), json!(t));
         }
     }
-    let socket = crate::socket_client::resolve_socket(profile)?;
+    let socket = match crate::socket_client::resolve_socket_wait(
+        profile,
+        crate::socket_client::wait_online_from_env(),
+    ) {
+        Ok(s) => s,
+        Err(e) => crate::emit_transport_error("OFFLINE", e),
+    };
     let request = json!({"jsonrpc":"2.0","method":"cdp","params":p});
     let bytes = crate::cli_frame::encode(&request)?;
-    let mut stream = crate::socket_client::dial_with_retry(&socket, 3, Duration::from_millis(200))?;
+    let mut stream =
+        match crate::socket_client::dial_with_retry(&socket, 3, Duration::from_millis(200)) {
+            Ok(s) => s,
+            Err(e) => crate::emit_transport_error("OFFLINE", e),
+        };
     use std::io::Write;
-    stream.write_all(&bytes)?;
-    stream.flush()?;
-    let envelope = crate::cli_frame::read_response(&mut stream, Duration::from_secs(60))?;
+    if let Err(e) = stream.write_all(&bytes).and_then(|_| stream.flush()) {
+        crate::emit_transport_error("OFFLINE", anyhow!("write to instance socket failed: {e}"));
+    }
+    let envelope = match crate::cli_frame::read_response(&mut stream, Duration::from_secs(60)) {
+        Ok(r) => r,
+        Err(e) => {
+            crate::emit_transport_error("OFFLINE", anyhow!("read from instance socket failed: {e}"))
+        }
+    };
     let resp = match envelope.get("result") {
         Some(r) => r.clone(),
         None => match envelope.get("error") {
@@ -898,21 +930,37 @@ fn fill_form_cmd(args: &[String]) -> Result<()> {
 fn upload_cmd(args: &[String]) -> Result<()> {
     let pos: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
     if pos.len() < 2 {
-        bail!("usage: dev upload <selector> <filepath>");
+        bail!("usage: dev upload <selector> <file> [file...]");
     }
-    let selector = pos[0];
-    let filepath =
-        std::fs::canonicalize(pos[1]).with_context(|| format!("file not found: {}", pos[1]))?;
+    let selector = pos[0].clone();
+    let files: Vec<String> = pos[1..].iter().map(|s| s.to_string()).collect();
     let tab = resolve_active_tab_or(args)?;
     let profile = extract_profile(args);
-    ensure_debugger_attached(tab, profile.as_deref())?;
+    let r = upload_files(&selector, &files, tab, profile.as_deref())?;
+    print_or_emit(r, args);
+    Ok(())
+}
+
+/// Set file(s) on an `<input type="file">` via CDP `DOM.setFileInputFiles`.
+/// Shared by `ap-browser upload` (first-class) and `dev upload`. `tab` is the
+/// optional explicit tab id; `None` resolves to the active tab.
+pub(crate) fn upload_files(
+    selector: &str,
+    paths: &[String],
+    tab: Option<i64>,
+    profile: Option<&str>,
+) -> Result<Value> {
+    if paths.is_empty() {
+        bail!("no file path given");
+    }
+    let mut files: Vec<String> = Vec::with_capacity(paths.len());
+    for p in paths {
+        let canonical = std::fs::canonicalize(p).with_context(|| format!("file not found: {p}"))?;
+        files.push(canonical.to_string_lossy().into_owned());
+    }
+    ensure_debugger_attached(tab, profile)?;
     // Resolve selector to backend nodeId
-    let doc = cdp(
-        tab,
-        profile.as_deref(),
-        "DOM.getDocument",
-        json!({"depth": 0}),
-    )?;
+    let doc = cdp(tab, profile, "DOM.getDocument", json!({"depth": 0}))?;
     let root_node_id = doc
         .get("data")
         .and_then(|d| d.get("result"))
@@ -922,7 +970,7 @@ fn upload_cmd(args: &[String]) -> Result<()> {
         .unwrap_or(0);
     let sel = cdp(
         tab,
-        profile.as_deref(),
+        profile,
         "DOM.querySelector",
         json!({"nodeId": root_node_id, "selector": selector}),
     )?;
@@ -935,14 +983,12 @@ fn upload_cmd(args: &[String]) -> Result<()> {
     if node_id == 0 {
         bail!("selector matched nothing: {selector}");
     }
-    let r = cdp(
+    cdp(
         tab,
-        profile.as_deref(),
+        profile,
         "DOM.setFileInputFiles",
-        json!({"nodeId": node_id, "files": [filepath.to_string_lossy()]}),
-    )?;
-    print_or_emit(r, args);
-    Ok(())
+        json!({"nodeId": node_id, "files": files}),
+    )
 }
 
 fn dialog_cmd(args: &[String]) -> Result<()> {

@@ -379,6 +379,10 @@ pub fn dispatch_site(
     let timeout_override = extract_flag(raw_args, "--timeout")
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|&t| t > 0);
+    // --wait-online beats the env var; both cap at 600s inside resolve.
+    let wait_online = extract_flag(raw_args, "--wait-online")
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or_else(crate::socket_client::wait_online_from_env);
     let filter_registry = crate::filters::Registry::load();
     // Adapter auto-tab: when the adapter declares a canonical site domain and
     // no explicit --tab was given, the extension opens a silent tab on that
@@ -438,6 +442,7 @@ pub fn dispatch_site(
                 auto_tab_domain: auto_tab_domain.as_deref(),
                 keep_tab,
                 want_wait,
+                wait_online,
             })?;
             if resp
                 .get("data")
@@ -473,6 +478,7 @@ pub fn dispatch_site(
             auto_tab_domain: auto_tab_domain.as_deref(),
             keep_tab,
             want_wait,
+            wait_online,
         })?;
         if resp
             .get("data")
@@ -571,6 +577,7 @@ struct AdapterBatchRequest<'a> {
     auto_tab_domain: Option<&'a str>,
     keep_tab: Option<bool>,
     want_wait: bool,
+    wait_online: u64,
 }
 
 fn send_adapter_batch(req: AdapterBatchRequest<'_>) -> Result<Value> {
@@ -612,15 +619,30 @@ fn send_adapter_batch(req: AdapterBatchRequest<'_>) -> Result<Value> {
         params["_auto_tab"] = auto_tab;
     }
     req.filter_registry.attach_to(&mut params);
-    let socket = crate::socket_client::resolve_socket(req.profile)?;
+    let socket = match crate::socket_client::resolve_socket_wait(req.profile, req.wait_online) {
+        Ok(s) => s,
+        Err(e) => crate::emit_transport_error("OFFLINE", e),
+    };
     let request = json!({"jsonrpc":"2.0","method":"batch","params":params});
     let bytes = crate::cli_frame::encode(&request)?;
-    let mut stream =
-        crate::socket_client::dial_with_retry(&socket, 3, std::time::Duration::from_millis(200))?;
+    let mut stream = match crate::socket_client::dial_with_retry(
+        &socket,
+        3,
+        std::time::Duration::from_millis(200),
+    ) {
+        Ok(s) => s,
+        Err(e) => crate::emit_transport_error("OFFLINE", e),
+    };
     use std::io::Write;
-    stream.write_all(&bytes)?;
-    stream.flush()?;
-    let envelope = crate::cli_frame::read_response(&mut stream, timeout)?;
+    if let Err(e) = stream.write_all(&bytes).and_then(|_| stream.flush()) {
+        crate::emit_transport_error("OFFLINE", anyhow!("write to instance socket failed: {e}"));
+    }
+    let envelope = match crate::cli_frame::read_response(&mut stream, timeout) {
+        Ok(r) => r,
+        Err(e) => {
+            crate::emit_transport_error("OFFLINE", anyhow!("read from instance socket failed: {e}"))
+        }
+    };
     let resp = match envelope.get("result") {
         Some(r) => r.clone(),
         None => match envelope.get("error") {
@@ -1021,15 +1043,18 @@ fn parse_args(adapter: &Adapter, raw: &[String]) -> Result<HashMap<String, Value
             || arg == "--tab"
             || arg == "--profile"
             || arg == "--map"
-            || arg == "--timeout";
+            || arg == "--timeout"
+            || arg == "--wait-online";
         if arg.starts_with("--format")
             || arg == "--read-stdin"
             || arg == "--human"
+            || arg == "--raw"
             || arg == "--tab"
             || arg == "--profile"
             || arg == "--map"
             || arg == "--timeout"
             || arg == "--wait"
+            || arg == "--wait-online"
         {
             if takes_value && i + 1 < raw.len() {
                 skip = true;
@@ -1169,10 +1194,18 @@ fn emit_security_metadata(resp: &Value) {
     if let Some(warning) = resp.get("_security_warning").and_then(Value::as_str) {
         eprintln!("[security] {warning}");
     }
-    if let Some(warning) = resp.get("meta").and_then(|m| m.get("warning")).and_then(Value::as_str) {
+    if let Some(warning) = resp
+        .get("meta")
+        .and_then(|m| m.get("warning"))
+        .and_then(Value::as_str)
+    {
         eprintln!("[warn] {warning}");
     }
-    if let Some(candidates) = resp.get("meta").and_then(|m| m.get("existing_candidates")).and_then(Value::as_array) {
+    if let Some(candidates) = resp
+        .get("meta")
+        .and_then(|m| m.get("existing_candidates"))
+        .and_then(Value::as_array)
+    {
         for c in candidates {
             let tid = c.get("tab_id").and_then(Value::as_i64).unwrap_or(0);
             let title = c.get("title").and_then(Value::as_str).unwrap_or("Untitled");
@@ -1255,15 +1288,33 @@ pub fn send_single_step(step: &Value) -> Result<Value> {
         "_timeout_hint_secs": timeout.as_secs()
     });
     crate::filters::Registry::load().attach_to(&mut params);
-    let socket = crate::socket_client::resolve_socket(None)?;
+    let socket = match crate::socket_client::resolve_socket_wait(
+        None,
+        crate::socket_client::wait_online_from_env(),
+    ) {
+        Ok(s) => s,
+        Err(e) => crate::emit_transport_error("OFFLINE", e),
+    };
     let request = json!({"jsonrpc":"2.0","method":"batch","params":params});
     let bytes = crate::cli_frame::encode(&request)?;
-    let mut stream =
-        crate::socket_client::dial_with_retry(&socket, 3, std::time::Duration::from_millis(200))?;
+    let mut stream = match crate::socket_client::dial_with_retry(
+        &socket,
+        3,
+        std::time::Duration::from_millis(200),
+    ) {
+        Ok(s) => s,
+        Err(e) => crate::emit_transport_error("OFFLINE", e),
+    };
     use std::io::Write;
-    stream.write_all(&bytes)?;
-    stream.flush()?;
-    let envelope = crate::cli_frame::read_response(&mut stream, timeout)?;
+    if let Err(e) = stream.write_all(&bytes).and_then(|_| stream.flush()) {
+        crate::emit_transport_error("OFFLINE", anyhow!("write to instance socket failed: {e}"));
+    }
+    let envelope = match crate::cli_frame::read_response(&mut stream, timeout) {
+        Ok(r) => r,
+        Err(e) => {
+            crate::emit_transport_error("OFFLINE", anyhow!("read from instance socket failed: {e}"))
+        }
+    };
     let resp = match envelope.get("result") {
         Some(r) => r.clone(),
         None => match envelope.get("error") {

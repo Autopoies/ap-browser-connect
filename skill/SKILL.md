@@ -160,6 +160,7 @@ rules vs **59 calls / 229s** with the anti-patterns above.
 | **Interact** | `click <target>` | click — target is a `state` ref (`click 12`) or CSS selector |
 | | `fill <target> <value>` | type into inputs, textareas, contenteditable (real keystrokes) |
 | | `select <target> <option>` | pick a `<select>` option by value or label |
+| | `upload <selector> <file> [file...]` | set file(s) on an `<input type="file">` (CSV import etc.; same engine as `dev upload`) |
 | | `press <key>` | keyboard (Enter, Tab, Control+a) |
 | | `wait <CSS>` / `wait --until-eval JS` / `wait --gone CSS` / `wait --url-change-from URL` / `wait --media-ended` | wait for element, removal, JS condition, URL or media |
 | | `scroll [--count N] [--selector CSS]` | scroll page or element into view; `--detect` classifies the list (see patterns.md #16) |
@@ -169,7 +170,7 @@ rules vs **59 calls / 229s** with the anti-patterns above.
 
 **Batch saves tokens:** one process, one socket, one `meta` block for N operations. See `references/patterns.md` Pattern 11.
 
-**Global flags:** `--profile`, `--tab <ID>`, `--window <ID>`, `--human`, `--timeout <s>`
+**Global flags:** `--profile`, `--tab <ID>`, `--window <ID>`, `--human`, `--timeout <s>`, `--raw`, `--wait-online <s>`
 
 **`--timeout <s>`** works on **every** command (generic, adapter, dev) and beats the default 30s — and beats an adapter's own `timeout` field. Use it when you know the operation will take longer (or shorter) than the default.
 
@@ -256,19 +257,28 @@ ap-browser tabs close $T   # close once, after all adapters done
 
 ## Output at a glance
 
-Every command returns JSON on stdout:
+Every command returns JSON on stdout — **including failures** (offline, transport, usage errors print `{"ok":false,"error":{"code":...}}`), so `json.load`/`jq` never see empty or invalid output:
 
 ```json
 {"ok": true, "data": {...}, "meta": {"focus": {"matched_operated_target": true}}}
 ```
 
+**`--raw`** (global flag): on success with a `data.result` (eval/cdp), print only that value — strings verbatim, everything else compact JSON. Failures still print the full envelope. This replaces wrapper scripts like `python3 -c 'json.load(...)['data']['result']'`:
+
+```bash
+ap-browser eval 'document.title' --raw        # → the title, nothing else
+ap-browser eval '1+1' --raw                    # → 2
+```
+
 | Exit code | Meaning |
 | ----------- | --------- |
 | 0 | success |
-| 2 | extension offline → ask user to open Chrome |
+| 2 | usage error (clap; JSON envelope has `code: "USAGE"`) |
+| 3 | tab not found |
 | 4 | selector/JS error → fix CSS or JS |
 | 5 | timeout → retry or check page |
 | 6 | multiple profiles → run `profiles` + `use` |
+| 7 | offline / transport (`code: "OFFLINE"`) → retry with `--wait-online`, then ask user to open Chrome |
 
 ## Health check
 
@@ -293,9 +303,10 @@ CLI, they only fail per command/site.
 
 ### Connection rescue (least disruptive first)
 
+0. Any command with `--wait-online <s>` (or env `AP_BROWSER_WAIT_ONLINE`) blocks through brief reconnects instead of failing — during a service-worker/native-host restart just retry once with `--wait-online 30`. `ap-browser status --wait-online 60` replaces poll-in-a-loop status scripts. Only idempotent discovery is retrried; writes are never auto-retried.
 1. `ap-browser doctor --json` — don't infer a stuck process from socket files alone.
-2. Profile online but flaky: `ap-browser dev extension reload`, then poll `ping` until it returns (exponential backoff, ≤30s).
-3. CLI fully offline: wait ≤30s for automatic reconnect, retry `ping`.
+2. Profile online but flaky: `ap-browser dev extension reload`, then `ping --wait-online 30` until it returns.
+3. CLI fully offline: `ping --wait-online 30` covers the automatic-reconnect window in one call.
 4. Still offline: ask the user to reload the extension at `chrome://extensions`. Reopen Chrome only as the final fallback.
 
 Never `pkill`/`taskkill` from stale-socket output alone; confirm a live `ap-browser-host` first and get user approval.

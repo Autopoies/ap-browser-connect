@@ -18,7 +18,7 @@ use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::socket_client::{dial_with_retry, resolve_socket};
+use crate::socket_client::{dial_with_retry, resolve_socket_wait};
 
 #[derive(Parser, Debug)]
 #[command(name = "ap-browser", version, about = "Drive Chrome from any agent")]
@@ -33,6 +33,20 @@ struct Cli {
     human: bool,
     #[arg(long, global = true, default_value = "30")]
     timeout: u64,
+    /// Machine-friendly output: print only `data.result` (eval/cdp) instead of
+    /// the full {"ok":..,"data":..,"meta":..} envelope. Failures still print
+    /// the full envelope so stdout is always parseable JSON.
+    #[arg(long, global = true)]
+    raw: bool,
+    /// Seconds to wait for the extension instance to come online before
+    /// failing (backoff retry; also AP_BROWSER_WAIT_ONLINE, capped at 600).
+    #[arg(
+        long,
+        global = true,
+        env = "AP_BROWSER_WAIT_ONLINE",
+        default_value_t = 0
+    )]
+    wait_online: u64,
     #[command(subcommand)]
     command: Cmd,
 }
@@ -92,6 +106,13 @@ enum Cmd {
     Select {
         target: String,
         option: String,
+    },
+    Upload {
+        /// CSS selector matching the <input type="file"> element
+        selector: String,
+        /// File path(s) to set on the input (absolute or cwd-relative)
+        #[arg(num_args = 1..)]
+        files: Vec<String>,
     },
     Scroll {
         #[arg(long)]
@@ -215,9 +236,58 @@ const MAX_RPC_TIMEOUT_SECS: u64 = 3_600;
 const WAIT_OVERHEAD_SECS: u64 = 15;
 const MAX_WAIT_TIMEOUT_MS: u64 = (MAX_RPC_TIMEOUT_SECS - WAIT_OVERHEAD_SECS) * 1_000;
 
-fn main() -> Result<()> {
+fn main() {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
+    if let Err(err) = run(&raw_args) {
+        fail_cli(err);
+    }
+}
 
+/// Failure contract: interactive users get the classic stderr-only error;
+/// piped stdout still receives one parseable JSON envelope, so agent-side
+/// `json.load` / `jq` never sees empty output or a decode error.
+/// (Transport-level failures use `emit_transport_error` for a coded exit.)
+fn fail_cli(err: anyhow::Error) -> ! {
+    eprintln!("Error: {err}");
+    if !atty_is_tty() {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "ok": false,
+                "error": {"code": "CLI_ERROR", "message": err.to_string()}
+            }))
+            .unwrap_or_default()
+        );
+    }
+    std::process::exit(1);
+}
+
+/// Transport-level failure (instance resolution / dial / socket IO): print a
+/// coded JSON error envelope on piped stdout plus the human copy on stderr,
+/// then exit. Exit code 7 = OFFLINE. Shared by static, dev and sites paths.
+pub(crate) fn emit_transport_error(code: &str, err: anyhow::Error) -> ! {
+    eprintln!("Error: {err}");
+    if !atty_is_tty() {
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "ok": false,
+                "error": {"code": code, "message": err.to_string()}
+            }))
+            .unwrap_or_default()
+        );
+    }
+    std::process::exit(exit_code_for(code));
+}
+
+fn exit_code_for(code: &str) -> i32 {
+    match code {
+        "OFFLINE" => 7,
+        _ => 1,
+    }
+}
+
+fn run(raw_args: &[String]) -> Result<()> {
     // Incompatible adapters must degrade to command/site-level failures, never
     // crash the CLI. This stderr-only warning is the global signal; stdout
     // (incl. --json) stays parseable.
@@ -294,7 +364,7 @@ fn main() -> Result<()> {
         // argv[1]-dispatched and only see flags after the subcommand. Rewrite
         // leading global flags to the tail when argv[1] is a known site or a
         // reserved (manually-dispatched) command.
-        if let Some(reordered) = reorder_leading_flags(&raw_args) {
+        if let Some(reordered) = reorder_leading_flags(raw_args) {
             if reordered[0] == "sites" {
                 return run_sites_command(&reordered[1..]);
             }
@@ -340,7 +410,26 @@ fn main() -> Result<()> {
         }
     }
 
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) => {
+            // clap prints help to stdout / usage errors to stderr; keep that,
+            // but also keep piped stdout parseable for usage errors (agents).
+            let code = e.exit_code();
+            let _ = e.print();
+            if !atty_is_tty() && code != 0 {
+                println!(
+                    "{}",
+                    serde_json::to_string(&json!({
+                        "ok": false,
+                        "error": {"code": "USAGE", "message": e.to_string()}
+                    }))
+                    .unwrap_or_default()
+                );
+            }
+            std::process::exit(code);
+        }
+    };
     let human = cli.human || atty_is_tty();
     run_static_match(&cli, human)
 }
@@ -465,6 +554,7 @@ fn run_static_match(cli: &Cli, human: bool) -> Result<()> {
             human,
             |_| {},
         )?,
+        Cmd::Upload { selector, files } => run_upload(cli, human, selector, files)?,
         Cmd::Scroll {
             count,
             pause_ms,
@@ -674,13 +764,25 @@ fn rpc(
     apply_timeout_hint(&mut p, cli.timeout)?;
     filters::Registry::load().attach_to(&mut p);
 
-    let socket = resolve_socket(cli.profile.as_deref())?;
+    let socket = match resolve_socket_wait(cli.profile.as_deref(), cli.wait_online) {
+        Ok(s) => s,
+        Err(e) => emit_transport_error("OFFLINE", e),
+    };
     let request = json!({"jsonrpc":"2.0","method":method,"params":p});
     let bytes = cli_frame::encode(&request)?;
-    let mut stream = dial_with_retry(&socket, 3, Duration::from_millis(200))?;
-    std::io::Write::write_all(&mut stream, &bytes)?;
-    std::io::Write::flush(&mut stream)?;
-    let envelope = cli_frame::read_response(&mut stream, Duration::from_secs(cli.timeout))?;
+    let mut stream = match dial_with_retry(&socket, 3, Duration::from_millis(200)) {
+        Ok(s) => s,
+        Err(e) => emit_transport_error("OFFLINE", e),
+    };
+    let write_res = std::io::Write::write_all(&mut stream, &bytes)
+        .and_then(|_| std::io::Write::flush(&mut stream));
+    if let Err(e) = write_res {
+        emit_transport_error("OFFLINE", anyhow!("write to instance socket failed: {e}"));
+    }
+    let envelope = match cli_frame::read_response(&mut stream, Duration::from_secs(cli.timeout)) {
+        Ok(r) => r,
+        Err(e) => emit_transport_error("OFFLINE", anyhow!("read from instance socket failed: {e}")),
+    };
 
     let mut response = match envelope.get("result") {
         Some(r) => r.clone(),
@@ -701,6 +803,8 @@ fn rpc(
 
     if human {
         print_human(&response);
+    } else if cli.raw {
+        print_raw_result(&response);
     } else {
         println!("{}", serde_json::to_string(&response)?);
     }
@@ -898,8 +1002,8 @@ fn save_screenshot(resp: &mut Value, out: &str, annotate: bool, full: bool) {
     }
 }
 
-fn run_status(_cli: &Cli, human: bool) -> Result<()> {
-    let profiles = discover_profiles()?;
+fn run_status(cli: &Cli, human: bool) -> Result<()> {
+    let profiles = discover_profiles_wait(cli.wait_online)?;
     let current = read_current_profile().ok().flatten();
     if human {
         println!(
@@ -1155,6 +1259,35 @@ fn discover_profiles() -> Result<Vec<ProfileInfo>> {
     Ok(out)
 }
 
+/// `discover_profiles` with a bounded wait for the first socket to appear.
+/// This is the scripting replacement for the old "poll `ap-browser status`
+/// in a loop until Chrome comes back" workaround: `ap-browser status
+/// --wait-online 60` blocks once instead.
+fn discover_profiles_wait(wait_secs: u64) -> Result<Vec<ProfileInfo>> {
+    let wait_secs = wait_secs.min(600);
+    if wait_secs == 0 {
+        return discover_profiles();
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(wait_secs);
+    let mut delay = Duration::from_millis(250);
+    let mut announced = false;
+    loop {
+        let profiles = discover_profiles()?;
+        let now = std::time::Instant::now();
+        if !profiles.is_empty() || now >= deadline {
+            return Ok(profiles);
+        }
+        if !announced {
+            announced = true;
+            eprintln!(
+                "[ap-browser] no socket online yet; waiting up to {wait_secs}s (--wait-online / AP_BROWSER_WAIT_ONLINE)"
+            );
+        }
+        std::thread::sleep(delay.min(deadline - now));
+        delay = (delay * 2).min(Duration::from_millis(2_000));
+    }
+}
+
 fn read_current_profile() -> Result<Option<String>> {
     if let Ok(v) = std::env::var(ENV_OVERRIDE) {
         return Ok(Some(v));
@@ -1210,12 +1343,50 @@ pub fn print_human(resp: &Value) {
     }
 }
 
+/// `--raw` renderer: success responses with a `data.result` member print only
+/// that value (strings verbatim, everything else as compact JSON). Anything
+/// else — failures, envelopes without `data.result` — prints the full JSON
+/// envelope so stdout stays parseable and errors stay visible.
+/// `--raw` payload selection: success responses with a `data.result` member
+/// yield that value; failures and envelopes without it yield None (caller
+/// prints the full envelope so stdout stays parseable and errors stay visible).
+fn raw_payload(resp: &Value) -> Option<&Value> {
+    if resp.get("ok").and_then(Value::as_bool) == Some(true) {
+        resp.pointer("/data/result")
+    } else {
+        None
+    }
+}
+
+fn print_raw_result(resp: &Value) {
+    match raw_payload(resp) {
+        Some(Value::String(s)) => println!("{s}"),
+        Some(other) => println!("{}", serde_json::to_string(other).unwrap_or_default()),
+        None => println!("{}", serde_json::to_string(resp).unwrap_or_default()),
+    }
+}
+
+/// `ap-browser upload <selector> <file>...` — first-class wrapper over the
+/// CDP `DOM.setFileInputFiles` path shared with `dev upload`.
+fn run_upload(cli: &Cli, human: bool, selector: &str, files: &[String]) -> Result<()> {
+    let resp = dev::upload_files(selector, files, cli.tab, cli.profile.as_deref())?;
+    if human {
+        print_human(&resp);
+    } else {
+        println!("{}", serde_json::to_string(&resp)?);
+    }
+    if resp.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+        std::process::exit(error_to_exit_code(&resp));
+    }
+    Ok(())
+}
+
 /// Leading global flags before a dynamic adapter command
 /// (`ap-browser --tab 5 hackernews top --limit 3`) get rewritten to the tail
 /// (`ap-browser hackernews top --limit 3 --tab 5`) when argv[1] matches a
 /// known adapter site. Only flags the adapter path understands are moved:
-/// the value-taking `--tab/--profile/--timeout/--format/--map` and the
-/// valueless `--human/--read-stdin`. Returns None when the first token is not
+/// the value-taking `--tab/--profile/--timeout/--format/--map/--wait-online`
+/// and the valueless `--human/--read-stdin/--raw`. Returns None when the first token is not
 /// a flag or argv[1] is not a site.
 fn reorder_leading_flags(raw: &[String]) -> Option<Vec<String>> {
     reorder_leading_flags_against(raw, &sites::Registry::load())
@@ -1237,7 +1408,7 @@ fn reorder_leading_flags_against(
         i += 1;
         if matches!(
             a.as_str(),
-            "--tab" | "--profile" | "--timeout" | "--format" | "--map"
+            "--tab" | "--profile" | "--timeout" | "--format" | "--map" | "--wait-online"
         ) && i < raw.len()
         {
             leading.push(raw[i].clone());
@@ -1410,6 +1581,7 @@ fn error_to_exit_code(resp: &Value) -> i32 {
         | "INTERNAL" => 4,
         "TIMEOUT" => 5,
         "MULTIPLE_PROFILES" => 6,
+        "OFFLINE" => 7,
         _ => 1,
     }
 }
@@ -1669,6 +1841,35 @@ fn run_sites_command(args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_payload_extracts_eval_string_result() {
+        let resp = json!({"ok": true, "data": {"result": "hello"}, "meta": {}});
+        assert_eq!(raw_payload(&resp), Some(&json!("hello")));
+    }
+
+    #[test]
+    fn raw_payload_extracts_non_string_results() {
+        let resp = json!({"ok": true, "data": {"result": {"n": 1}}});
+        assert_eq!(raw_payload(&resp), Some(&json!({"n": 1})));
+    }
+
+    #[test]
+    fn raw_payload_none_on_failure_even_with_result_shape() {
+        let resp = json!({"ok": false, "error": {"code": "JS_EXCEPTION", "message": "x"}});
+        assert_eq!(raw_payload(&resp), None);
+    }
+
+    #[test]
+    fn raw_payload_none_when_result_missing() {
+        let resp = json!({"ok": true, "data": {"url": "https://x"}});
+        assert_eq!(raw_payload(&resp), None);
+    }
+
+    #[test]
+    fn offline_transport_failures_exit_seven() {
+        assert_eq!(exit_code_for("OFFLINE"), 7);
+    }
 
     #[test]
     fn tag_untrusted_stamps_response_envelope() {

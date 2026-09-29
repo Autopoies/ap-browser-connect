@@ -35,7 +35,7 @@ Structured debugging commands wrapping Chrome DevTools Protocol (CDP). Use these
 | `dev hover <selector>` | Dispatch hover (triggers :hover state) |
 | `dev drag <from> <to>` | Drag-and-drop between two elements |
 | `dev fill-form <json>` | Fill multiple form fields at once |
-| `dev upload <selector> <filepath>` | Set file on `<input type="file">` |
+| `dev upload <selector> <file> [file...]` | Set file(s) on `<input type="file">` — prefer the first-class `ap-browser upload <selector> <file>...` |
 | `dev dialog accept\|dismiss [text]` | Handle JS dialogs (alert/confirm/prompt) |
 | **Extension management** | |
 | `dev extension list` | List all installed extensions (id/name/version/enabled/installType) |
