@@ -32,6 +32,39 @@
 
 ---
 
+## Quickstart
+
+Paste this into **Claude Code**, **Codex**, **Pi**, **Cursor**, or **OpenCode**:
+
+```text
+Install ap-browser: run `npx skills add autopoies/ap-browser-connect/skill` if the skill isn't already installed, then read that skill's `install.md` and follow the 4 steps it describes (release binaries, extension load-unpacked, native manifest, adapters/filters). Verify with `ap-browser ping`.
+```
+
+<details>
+<summary><strong>Manual setup (4 steps)</strong></summary>
+
+1. **Install the Skill**:
+   ```bash
+   npx skills add autopoies/ap-browser-connect/skill
+   ```
+2. **Install the CLI & Native Host**:
+   ```bash
+   npm install -g ap-browser-connect
+   ```
+   *(Or grab binaries from [Releases](https://github.com/autopoies/ap-browser-connect/releases/latest).)*
+3. **Load the Extension**: Unzip `ap-browser-extension-*.zip` from [Releases](https://github.com/autopoies/ap-browser-connect/releases/latest), open `chrome://extensions/`, enable **Developer mode**, and click **Load unpacked**.
+4. **Register Host & Adapters**:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/autopoies/ap-browser-connect/main/install/install.sh | bash
+   git clone https://github.com/autopoies/ap-browser-connect-adapters.git /tmp/abc-adapters
+   mkdir -p ~/.ap-browser && cp -R /tmp/abc-adapters/sites /tmp/abc-adapters/filters /tmp/abc-adapters/download-config.yml /tmp/abc-adapters/adapters-version.yml ~/.ap-browser/
+   ap-browser ping
+   ```
+
+</details>
+
+---
+
 ## Why ap-browser-connect?
 
 ### Built for both you and your agent
@@ -141,39 +174,6 @@ ap-browser zhihu hot                                   # Zhihu trending topics
 ```
 
 See all 47 sites in [ap-browser-connect-adapters](https://github.com/autopoies/ap-browser-connect-adapters) or add your own with the [Adapter Guide](skill/references/create-site.md).
-
----
-
-## Make your agents actually good at browsing
-
-Paste this into **Claude Code**, **Codex**, **Pi**, **Cursor**, or **OpenCode**:
-
-```text
-Install ap-browser: run `npx skills add autopoies/ap-browser-connect/skill` if the skill isn't already installed, then read that skill's `install.md` and follow the 4 steps it describes (release binaries, extension load-unpacked, native manifest, adapters/filters). Verify with `ap-browser ping`.
-```
-
-<details>
-<summary><strong>Manual setup (4 steps)</strong></summary>
-
-1. **Install the Skill**:
-   ```bash
-   npx skills add autopoies/ap-browser-connect/skill
-   ```
-2. **Install the CLI & Native Host**:
-   ```bash
-   npm install -g ap-browser-connect
-   ```
-   *(Or grab binaries from [Releases](https://github.com/autopoies/ap-browser-connect/releases/latest).)*
-3. **Load the Extension**: Unzip `ap-browser-extension-*.zip` from [Releases](https://github.com/autopoies/ap-browser-connect/releases/latest), open `chrome://extensions/`, enable **Developer mode**, and click **Load unpacked**.
-4. **Register Host & Adapters**:
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/autopoies/ap-browser-connect/main/install/install.sh | bash
-   git clone https://github.com/autopoies/ap-browser-connect-adapters.git /tmp/abc-adapters
-   mkdir -p ~/.ap-browser && cp -R /tmp/abc-adapters/sites /tmp/abc-adapters/filters /tmp/abc-adapters/download-config.yml /tmp/abc-adapters/adapters-version.yml ~/.ap-browser/
-   ap-browser ping
-   ```
-
-</details>
 
 ---
 

@@ -32,6 +32,32 @@
 
 ---
 
+## 快速开始
+
+将以下指令发给 **Claude Code**、**Codex**、**Pi**、**Cursor** 或 **OpenCode**：
+
+```text
+Install ap-browser: run `npx skills add autopoies/ap-browser-connect/skill` if the skill isn't already installed, then read that skill's `install.md` and follow the 4 steps it describes (release binaries, extension load-unpacked, native manifest, adapters/filters). Verify with `ap-browser ping`.
+```
+
+<details>
+<summary><strong>手动安装步骤（共 4 步）</strong></summary>
+
+1. **安装 Skill**：`npx skills add autopoies/ap-browser-connect/skill`
+2. **安装 CLI**：`npm install -g ap-browser-connect`（或从 [Releases](https://github.com/autopoies/ap-browser-connect/releases/latest) 下载预编译包）
+3. **加载 Chrome 扩展**：解压 [Releases](https://github.com/autopoies/ap-browser-connect/releases/latest) 中的 `ap-browser-extension-*.zip`，打开 `chrome://extensions/` 开启**开发者模式**，点击**加载已解压的扩展程序**。
+4. **注册通信清单与适配器**：
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/autopoies/ap-browser-connect/main/install/install.sh | bash
+   git clone https://github.com/autopoies/ap-browser-connect-adapters.git /tmp/abc-adapters
+   mkdir -p ~/.ap-browser && cp -R /tmp/abc-adapters/sites /tmp/abc-adapters/filters /tmp/abc-adapters/download-config.yml /tmp/abc-adapters/adapters-version.yml ~/.ap-browser/
+   ap-browser ping
+   ```
+
+</details>
+
+---
+
 ## 为什么选择 ap-browser-connect？
 
 ### 人与 Agent 双向协同：终端可调用，网页内可直接对话
@@ -139,32 +165,6 @@ ap-browser zhihu hot                                   # 知乎热榜
 ```
 
 完整列表见 [ap-browser-connect-adapters](https://github.com/autopoies/ap-browser-connect-adapters)，也可参考 [适配器指南](skill/references/create-site.md) 通过 YAML + JS 扩展新站点。
-
----
-
-## 快速开始
-
-将以下指令发给 **Claude Code**、**Codex**、**Pi**、**Cursor** 或 **OpenCode**：
-
-```text
-Install ap-browser: run `npx skills add autopoies/ap-browser-connect/skill` if the skill isn't already installed, then read that skill's `install.md` and follow the 4 steps it describes (release binaries, extension load-unpacked, native manifest, adapters/filters). Verify with `ap-browser ping`.
-```
-
-<details>
-<summary><strong>手动安装步骤（共 4 步）</strong></summary>
-
-1. **安装 Skill**：`npx skills add autopoies/ap-browser-connect/skill`
-2. **安装 CLI**：`npm install -g ap-browser-connect`（或从 [Releases](https://github.com/autopoies/ap-browser-connect/releases/latest) 下载预编译包）
-3. **加载 Chrome 扩展**：解压 [Releases](https://github.com/autopoies/ap-browser-connect/releases/latest) 中的 `ap-browser-extension-*.zip`，打开 `chrome://extensions/` 开启**开发者模式**，点击**加载已解压的扩展程序**。
-4. **注册通信清单与适配器**：
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/autopoies/ap-browser-connect/main/install/install.sh | bash
-   git clone https://github.com/autopoies/ap-browser-connect-adapters.git /tmp/abc-adapters
-   mkdir -p ~/.ap-browser && cp -R /tmp/abc-adapters/sites /tmp/abc-adapters/filters /tmp/abc-adapters/download-config.yml /tmp/abc-adapters/adapters-version.yml ~/.ap-browser/
-   ap-browser ping
-   ```
-
-</details>
 
 ---
 
