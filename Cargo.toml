@@ -3,7 +3,7 @@ resolver = "2"
 members = ["core", "cli", "host", "bridge"]
 
 [workspace.package]
-version = "0.1.6"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
@@ -12,7 +12,7 @@ homepage = "https://github.com/autopoies/ap-browser-connect"
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 thiserror = "1.0"
 tokio = { version = "1", features = [
   "rt-multi-thread",

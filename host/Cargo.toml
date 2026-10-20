@@ -18,3 +18,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 interprocess.workspace = true
 dirs.workspace = true
+base64 = "0.22"
+sha2 = "0.10"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

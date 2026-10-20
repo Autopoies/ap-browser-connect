@@ -34,7 +34,20 @@ import {
 	waitForUrlChange,
 	withFocusEmulation,
 } from "./runtime-helpers.mjs";
-import { buildSnapshotExpression, refSelector } from "./state-snapshot.mjs";
+import {
+	buildSnapshotExpression,
+	refSelector,
+	STATE_ELEMENT_SELECTOR,
+	STATE_MAX_REFS,
+} from "./state-snapshot.mjs";
+
+import { createRecordingController, recordingCapabilities } from "./recording.mjs";
+import { createRecordingGuard } from "./recording-guard.mjs";
+
+// Every extension CDP path (including ordinary raw commands) crosses this guard.
+// Save the actual Chrome method before installing target-specific ownership checks.
+const recordingGuard = createRecordingGuard(chrome.debugger.sendCommand.bind(chrome.debugger));
+chrome.debugger.sendCommand = recordingGuard.send;
 
 // ── Autopoies brand favicon swap (inlined, no module import) ──
 const AP_ICON_SVG = `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="bg" x1="0" y1="0" x2="16" y2="16" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#313B42"/><stop offset="1" stop-color="#242B30"/></linearGradient></defs><rect width="16" height="16" rx="3" fill="url(#bg)"/><g transform="translate(2.88 3.00) scale(0.020)"><path d="M 237.4 310 L 258.2 310 Q 274.6 310 283.5 323.8 L 296.3 343.8 Q 326 390 271.1 390 L 130.9 390 Q 76 390 105.7 343.8 L 230.8 149.3 Q 256 110 281.2 149.3 L 436 390" fill="none" stroke="#5AA788" stroke-width="70" stroke-linecap="round" stroke-linejoin="round"/></g></svg>`;
@@ -86,8 +99,38 @@ let nativeReconnectDelayMs = 1000;
 let labelCache = "";
 let swNextId = 1;
 const swPending = new Map();
+let recordingController = null;
+let recordingPort = null;
+const recordingLeases = new Map();
+const normalTabUsers = new Map();
 
-async function sendToNativeHost(method, params = {}) {
+function recordingForPort(port) {
+	if (recordingController && recordingPort === port) return recordingController;
+	if (recordingController?.isActive()) throw Object.assign(new Error("Previous recording cleanup is not confirmed"), { code: "RECORD_BUSY" });
+	recordingPort = port;
+	recordingController = createRecordingController({
+		chrome,
+		acquireLease: acquireRecordingLease,
+		// Bind every capture RPC to this exact connection. Never reconnect/resume a capture.
+		sendNative: (method, params, onSent) => new Promise((resolve, reject) => {
+			if (nativePort !== port) {
+				reject(Object.assign(new Error("Recording native connection lost"), { code: "RECORD_INTERRUPTED" }));
+				return;
+			}
+			const id = `sw-${swNextId++}`;
+			const timer = setTimeout(() => {
+				swPending.delete(id);
+				reject(Object.assign(new Error("Recording native call timed out"), { code: "TIMEOUT" }));
+			}, 10000);
+			swPending.set(id, { resolve, reject, timer, port, recording: true });
+			try { port.postMessage({ id, method, params }); onSent?.(); }
+			catch (e) { clearTimeout(timer); swPending.delete(id); reject(e); }
+		}),
+	});
+	return recordingController;
+}
+
+async function sendToNativeHost(method, params = {}, timeoutMs = 15000) {
 	if (!nativePort) {
 		await connectNativePort();
 	}
@@ -99,10 +142,471 @@ async function sendToNativeHost(method, params = {}) {
 		const timer = setTimeout(() => {
 			swPending.delete(id);
 			reject(new Error(`Timeout waiting for native host: ${method}`));
-		}, 15000);
+		}, timeoutMs);
 		swPending.set(id, { resolve, reject, timer });
-		nativePort.postMessage({ id, method, params });
+		try {
+			nativePort.postMessage({ id, method, params });
+		} catch (error) {
+			clearTimeout(timer);
+			swPending.delete(id);
+			reject(error);
+		}
 	});
+}
+
+// Session state is private to this extension session (never exposed to page JS).
+const eventRoutes = new Map();
+const threadRoutes = new Map();
+const earlyRelayEvents = new Map();
+const routesReady = chrome.storage.session.get("relay_routes").then(({ relay_routes }) => {
+	for (const [id, route] of relay_routes?.events || []) eventRoutes.set(id, route);
+	for (const [id, route] of relay_routes?.threads || []) threadRoutes.set(id, route);
+});
+function persistRoutes() {
+	return chrome.storage.session.set({
+		relay_routes: { events: [...eventRoutes], threads: [...threadRoutes] },
+	});
+}
+let bindingQueue = Promise.resolve();
+
+function withBindingsLock(fn) {
+	const next = bindingQueue.then(fn);
+	bindingQueue = next.catch(() => {});
+	return next;
+}
+
+async function storedBindings() {
+	const { session_bindings } = await chrome.storage.session.get("session_bindings");
+	return Array.isArray(session_bindings) ? session_bindings : [];
+}
+
+function bindingsForTab(bindings, tabId, windowId) {
+	return bindings.filter(
+		(b) =>
+			(b.scope === "tab" && b.tab_id === tabId) ||
+			(b.scope === "window" && b.window_id === windowId),
+	);
+}
+
+function activeBindingOf(pool) {
+	const active = pool.filter((b) => b.active);
+	const timestamp = (b) => (active.length ? (b.selected_at ?? b.bound_at) : b.bound_at);
+	return (active.length ? active : pool).reduce(
+		(latest, b) => (!latest || timestamp(b) >= timestamp(latest) ? b : latest),
+		null,
+	);
+}
+
+async function affectedBindingTabs(affected) {
+	const tabs = new Map();
+	const tabIds = new Set(affected.filter((b) => b.scope === "tab").map((b) => b.tab_id));
+	const windowIds = new Set(affected.filter((b) => b.scope === "window").map((b) => b.window_id));
+	for (const windowId of windowIds) {
+		for (const tab of await chrome.tabs.query({ windowId })) tabs.set(tab.id, tab);
+	}
+	for (const tabId of tabIds) {
+		if (tabs.has(tabId)) continue;
+		const tab = await chrome.tabs.get(tabId).catch(() => null);
+		if (tab) tabs.set(tab.id, tab);
+	}
+	return [...tabs.values()];
+}
+
+async function promoteBindings(bindings, affected) {
+	for (const tab of await affectedBindingTabs(affected)) {
+		const pool = bindingsForTab(bindings, tab.id, tab.windowId);
+		if (pool.length && !pool.some((b) => b.active)) {
+			const ready = pool.filter(bindingReady);
+			activeBindingOf(ready.length ? ready : pool).active = true;
+		}
+	}
+}
+
+async function broadcastBindings(bindings, affected, reason) {
+	await Promise.all(
+		(await affectedBindingTabs(affected)).map((tab) => {
+			const pool = bindingsForTab(bindings, tab.id, tab.windowId);
+			return chrome.tabs
+				.sendMessage(tab.id, {
+					method: "annotate.binding_changed",
+					binding: activeBindingOf(pool),
+					bindings: pool,
+					...(reason ? { reason } : {}),
+				})
+				.catch(() => {});
+		}),
+	);
+}
+
+const HEALTH_CACHE_MS = 5000;
+let healthTimer = null;
+
+function bindingReady(binding) {
+	return binding?.health?.state === "ready" && binding.health.valid_until > Date.now();
+}
+
+async function bindingHealth(binding) {
+	try {
+		const res = await sendToNativeHost(
+			"relay.check_liveness",
+			{
+				pid: binding.pid,
+				inbox: binding.inbox,
+				session_id: binding.session_id,
+				receiver_epoch: binding.receiver_epoch,
+			},
+			3000,
+		);
+		if (!["ready", "unknown", "offline"].includes(res.state))
+			throw new Error("Receiver health protocol unavailable");
+		if (res.state === "ready" && (!res.receiver_epoch || !(res.valid_until > Date.now())))
+			throw new Error("Receiver evidence expired");
+		return res;
+	} catch (error) {
+		return {
+			state: "unknown",
+			reason: "HEALTH_CHECK_UNAVAILABLE",
+			checked_at: Date.now(),
+			valid_until: Date.now(),
+		};
+	}
+}
+
+function scheduleBindingHealth(bindings) {
+	clearTimeout(healthTimer);
+	if (!bindings.some((b) => b.health?.state !== "offline")) return;
+	const expiry = Math.min(...bindings.filter(bindingReady).map((b) => b.health.valid_until));
+	healthTimer = setTimeout(
+		() => refreshBindingHealth().catch(console.warn),
+		Math.max(100, Math.min(HEALTH_CACHE_MS, expiry - Date.now())),
+	);
+}
+
+// Called under bindingQueue. Keep saved bindings; health loss must not silently select another session.
+async function pruneBindings(bindings, candidates = bindings, force = false) {
+	const changed = [];
+	await Promise.all(
+		candidates.map(async (b) => {
+			if (b.health?.state === "offline") return; // Explicit rebind is required after identity loss.
+			if (
+				!force &&
+				b.health &&
+				Date.now() - b.health.checked_at < HEALTH_CACHE_MS &&
+				(b.health.state !== "ready" || bindingReady(b))
+			)
+				return;
+			const health = await bindingHealth(b);
+			if (!b.receiver_epoch && health.receiver_epoch) b.receiver_epoch = health.receiver_epoch;
+			if (JSON.stringify(b.health) !== JSON.stringify(health)) {
+				b.health = health;
+				changed.push(b);
+			}
+		}),
+	);
+	if (changed.length) {
+		await chrome.storage.session.set({ session_bindings: bindings });
+		await broadcastBindings(bindings, changed, "health");
+	}
+	scheduleBindingHealth(bindings);
+	return bindings;
+}
+
+async function expireRelayReceipts() {
+	await routesReady;
+	for (const [event_id, route] of eventRoutes) {
+		if (route.status === "queued" && route.ack_deadline <= Date.now())
+			await forwardRelayEvent({
+				event_id,
+				status: "unconfirmed",
+				message: "No receiver acknowledgement; outcome unknown. Do not automatically retry.",
+			}).catch(() => {});
+	}
+}
+
+async function refreshBindingHealth() {
+	await withBindingsLock(async () => pruneBindings(await storedBindings(), undefined, true));
+	await expireRelayReceipts();
+}
+
+async function invalidateBindingHealth(reason) {
+	await withBindingsLock(async () => {
+		const bindings = await storedBindings();
+		const changed = bindings.filter((b) => b.health?.state !== "offline");
+		for (const b of changed) b.health = { state: "unknown", reason, checked_at: 0, valid_until: 0 };
+		if (changed.length) {
+			await chrome.storage.session.set({ session_bindings: bindings });
+			await broadcastBindings(bindings, changed, "health");
+		}
+	});
+}
+
+async function liveBindings() {
+	return withBindingsLock(async () => pruneBindings(await storedBindings()));
+}
+
+async function resolveBindingsForTab(tabId, windowId, force = false) {
+	return withBindingsLock(async () => {
+		const stored = await storedBindings();
+		const live = await pruneBindings(stored, bindingsForTab(stored, tabId, windowId), force);
+		const bindings = bindingsForTab(live, tabId, windowId);
+		return { binding: activeBindingOf(bindings), bindings };
+	});
+}
+
+async function selectBinding(params) {
+	return withBindingsLock(async () => {
+		const tab = params.tab_id != null ? await chrome.tabs.get(params.tab_id) : null;
+		const tabId = tab?.id ?? null;
+		const windowId = tab?.windowId ?? params.window_id;
+		const stored = await storedBindings();
+		const live = await pruneBindings(stored, bindingsForTab(stored, tabId, windowId));
+		const bindings = bindingsForTab(live, tabId, windowId);
+		const chosen = activeBindingOf(bindings.filter((b) => b.session_id === params.session_id));
+		if (!chosen || chosen.health?.state === "offline")
+			throw Object.assign(new Error("Session is not in this tab's live pool"), {
+				code: "BINDING_OFFLINE",
+			});
+		for (const b of bindings) b.active = b === chosen;
+		chosen.selected_at = Date.now();
+		await chrome.storage.session.set({ session_bindings: live });
+		await broadcastBindings(live, bindings, "selected");
+		return { ok: true, binding: chosen, bindings };
+	});
+}
+
+async function injectBoundDock(tab) {
+	if (!tab?.id || !/^https?:/.test(tab.url || "")) return;
+	const probe = await chrome.scripting.executeScript({
+		target: { tabId: tab.id },
+		func: () => !!(window.__apAnnotatePanel && document.querySelector("#ap-annotate-root")),
+	});
+	if (!probe?.[0]?.result) {
+		await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["annotate-ui.js"] });
+	}
+}
+
+async function bindSession(params) {
+	if (!params.inbox || !params.session_id || !Number.isInteger(params.pid) || params.pid <= 0) {
+		throw Object.assign(new Error("inbox, session_id and a positive pid are required"), {
+			code: "INVALID_PARAMS",
+		});
+	}
+	const tab = params.tab_id != null ? await chrome.tabs.get(params.tab_id) : null;
+	const windowId = tab?.windowId ?? params.window_id ?? (await chrome.windows.getLastFocused()).id;
+	const binding = {
+		scope: tab ? "tab" : "window",
+		tab_id: tab?.id ?? null,
+		window_id: windowId,
+		session_id: params.session_id,
+		label: params.label || params.session_id.slice(0, 8),
+		pid: params.pid,
+		inbox: params.inbox,
+		bound_at: Date.now(),
+		active: true,
+	};
+	await withBindingsLock(async () => {
+		binding.health = await bindingHealth(binding);
+		binding.receiver_epoch = binding.health.receiver_epoch;
+		if (binding.health.state === "offline") {
+			throw Object.assign(new Error("Bound session is offline"), { code: "BINDING_OFFLINE" });
+		}
+		const { instance_id, label } = await ensureInstanceId();
+		await sendToNativeHost("relay.register_peer", {
+			instance_id,
+			label: label || "ap-browser",
+			inbox: binding.inbox,
+		});
+		const live = await pruneBindings(await storedBindings());
+		const sameTarget = (b) =>
+			b.scope === binding.scope &&
+			(binding.scope === "tab" ? b.tab_id === binding.tab_id : b.window_id === binding.window_id);
+		const bindings = live.filter((b) => !(sameTarget(b) && b.session_id === binding.session_id));
+		for (const b of bindings) if (sameTarget(b)) b.active = false;
+		await chrome.storage.session.set({ session_bindings: [...bindings, binding] });
+		await broadcastBindings([...bindings, binding], [binding], "bound");
+		scheduleBindingHealth([...bindings, binding]);
+	});
+	const active = tab || (await chrome.tabs.query({ active: true, windowId }))[0];
+	// Binding is valid even on restricted pages; injection is only a best effort.
+	await injectBoundDock(active).catch(() => {});
+	return { ok: true, data: { binding } };
+}
+
+async function unbindSessions(params = {}) {
+	return withBindingsLock(async () => {
+		const bindings = await storedBindings();
+		let windowId = params.window_id;
+		if (!params.all && params.tab_id == null && windowId == null && !params.session_id) {
+			windowId = (await chrome.windows.getLastFocused().catch(() => null))?.id;
+		}
+		const removed = bindings.filter((b) => {
+			if (params.all) return true;
+			if (params.session_id && b.session_id !== params.session_id) return false;
+			if (params.tab_id != null) return b.scope === "tab" && b.tab_id === params.tab_id;
+			if (windowId != null) return b.scope === "window" && b.window_id === windowId;
+			return !!params.session_id;
+		});
+		const remaining = await pruneBindings(bindings.filter((b) => !removed.includes(b)));
+		await promoteBindings(remaining, removed);
+		await chrome.storage.session.set({ session_bindings: remaining });
+		await broadcastBindings(remaining, removed, "unbound");
+		return { ok: true, data: { unbound: removed.length } };
+	});
+}
+
+async function replyTarget(params) {
+	const route = eventRoutes.get(params.event_id) || threadRoutes.get(params.thread_id);
+	if (params.tab_id != null || route?.tab_id != null) return params.tab_id ?? route.tab_id;
+	const bindings = (await liveBindings()).filter(bindingReady);
+	const b = bindings.find((b) => params.window_id == null || b.window_id === params.window_id);
+	if (!b) return null;
+	if (b.scope === "tab") return b.tab_id;
+	return (await chrome.tabs.query({ active: true, windowId: b.window_id }))[0]?.id ?? null;
+}
+
+async function forwardRelayEvent(params, status) {
+	await routesReady;
+	const event = eventRoutes.get(params.event_id);
+	const nextStatus = status || params.status || "done";
+	if (
+		params.receiver_epoch &&
+		event &&
+		(event.receiver_epoch !== params.receiver_epoch || event.session_id !== params.session_id)
+	)
+		return { ok: false };
+	if (event) {
+		// A late queue timeout/acceptance must not overwrite real execution progress.
+		if (
+			["accepted", "unconfirmed", "rejected", "expired"].includes(nextStatus) &&
+			!["queued", "unconfirmed"].includes(event.status)
+		)
+			return { ok: true };
+		event.status = nextStatus;
+		await persistRoutes();
+	}
+	const tabId = await replyTarget(params);
+	if (tabId == null)
+		throw Object.assign(new Error("No annotation reply target"), { code: "TAB_NOT_FOUND" });
+	const route = eventRoutes.get(params.event_id) || threadRoutes.get(params.thread_id);
+	await chrome.tabs.sendMessage(tabId, {
+		method: "annotate.relay_event",
+		event_id: params.event_id,
+		session_id: route?.session_id ?? params.session_id,
+		session_label: route?.session_label ?? params.from_label,
+		receiver_epoch: route?.receiver_epoch ?? params.receiver_epoch,
+		thread_id: params.thread_id || eventRoutes.get(params.event_id)?.thread_id || params.event_id,
+		status: nextStatus,
+		message: params.message,
+		...(params.from_label ? { from_label: params.from_label } : {}),
+		ts: Date.now(),
+	});
+	return { ok: true, data: { delivered: true, tab_id: tabId } };
+}
+
+async function sendAnnotationRelay(msg, sender) {
+	const tab = sender.tab;
+	if (!tab?.id) throw new Error("relay.send requires a content-script tab");
+	const pool = await resolveBindingsForTab(tab.id, tab.windowId, true);
+	await routesReady;
+	const owner = threadRoutes.get(msg.thread_id);
+	const sessionId = owner?.session_id ?? msg.session_id;
+	const binding =
+		sessionId != null
+			? activeBindingOf(pool.bindings.filter((b) => b.session_id === sessionId))
+			: pool.binding;
+	if (
+		!binding ||
+		binding.health?.state === "offline" ||
+		(msg.receiver_epoch && msg.receiver_epoch !== binding.receiver_epoch) ||
+		(owner && owner.receiver_epoch !== binding.receiver_epoch)
+	)
+		return {
+			ok: false,
+			code: "BINDING_OFFLINE",
+			error: "Target session is offline or replaced",
+			...pool,
+		};
+	if (!bindingReady(binding))
+		return {
+			ok: false,
+			code: "BINDING_UNVERIFIED",
+			error: "Receiver readiness is not verified",
+			...pool,
+		};
+	const { instance_id, label } = await ensureInstanceId();
+	let res;
+	try {
+		res = await sendToNativeHost("relay.deliver", {
+			instance_id,
+			profile_label: label || "Chrome",
+			session_id: binding.session_id,
+			label: binding.label,
+			pid: binding.pid,
+			inbox: binding.inbox,
+			receiver_epoch: binding.receiver_epoch,
+			window_id: tab.windowId,
+			tab_id: tab.id,
+			action: msg.action,
+			raw_text: msg.raw_text,
+			user_note: msg.user_note,
+			is_command: msg.is_command,
+			url: msg.url || tab.url,
+			title: msg.title || tab.title,
+			element: msg.element,
+			thread_id: msg.thread_id,
+		});
+	} catch (error) {
+		await refreshBindingHealth();
+		return {
+			ok: false,
+			code: error.code || "RELAY_FAILED",
+			error: error.message,
+			...(await resolveBindingsForTab(tab.id, tab.windowId)),
+		};
+	}
+	const delivered = res.result;
+	const route = {
+		tab_id: tab.id,
+		window_id: tab.windowId,
+		session_id: binding.session_id,
+		session_label: binding.label,
+		receiver_epoch: binding.receiver_epoch,
+	};
+	eventRoutes.set(delivered.event_id, {
+		...route,
+		thread_id: delivered.thread_id,
+		status: "queued",
+		ack_deadline: delivered.ack_deadline || Date.now() + 60000,
+	});
+	threadRoutes.set(delivered.thread_id, route);
+	await persistRoutes();
+	const early = earlyRelayEvents.get(delivered.event_id);
+	if (early) {
+		earlyRelayEvents.delete(delivered.event_id);
+		await forwardRelayEvent(early);
+	}
+	return { ok: true, data: res };
+}
+
+async function removeClosedBindings(tabId, windowId) {
+	await routesReady;
+	await withBindingsLock(async () => {
+		const bindings = await storedBindings();
+		await chrome.storage.session.set({
+			session_bindings: bindings.filter((b) =>
+				windowId != null ? b.window_id !== windowId : !(b.scope === "tab" && b.tab_id === tabId),
+			),
+		});
+	});
+	for (const [id, route] of eventRoutes) {
+		if (windowId != null ? route.window_id === windowId : route.tab_id === tabId)
+			eventRoutes.delete(id);
+	}
+	for (const [id, route] of threadRoutes) {
+		if (windowId != null ? route.window_id === windowId : route.tab_id === tabId)
+			threadRoutes.delete(id);
+	}
+	await persistRoutes();
 }
 
 function scheduleNativeReconnect() {
@@ -177,6 +681,17 @@ async function connectNativePort() {
 			if (!isCurrentPort(nativePort, port)) return;
 			console.warn("[ap-browser] native port disconnected");
 			nativePort = null;
+			if (recordingPort === port) recordingController?.interrupt("native_disconnected");
+			for (const [id, pending] of swPending) {
+				clearTimeout(pending.timer);
+				swPending.delete(id);
+				if (pending.recording && pending.port === port) {
+					pending.reject(Object.assign(new Error("Recording native connection lost"), { code: "RECORD_INTERRUPTED" }));
+				} else {
+					pending.reject(new Error("Native host disconnected"));
+				}
+			}
+			invalidateBindingHealth("HOST_DISCONNECTED").catch(console.warn);
 			scheduleNativeReconnect();
 		});
 		// Minimal hello FIRST, no awaits. SW may be torn down before async work completes.
@@ -204,6 +719,7 @@ async function connectNativePort() {
 			if (isCurrentPort(nativePort, port)) nativeReconnectDelayMs = 1000;
 		}, 30_000);
 		console.log("[ap-browser] native port connected, hello pushed");
+		refreshBindingHealth().catch(console.warn);
 		return port;
 	} catch (e) {
 		console.error("[ap-browser] connectNative failed:", e);
@@ -217,11 +733,15 @@ async function handleNativeMessage(msg, port) {
 	if (!msg || typeof msg !== "object") return;
 	if (typeof msg.id === "string" && msg.id.startsWith("sw-")) {
 		const pending = swPending.get(msg.id);
-		if (pending) {
+		if (pending && (!pending.port || pending.port === port)) {
 			clearTimeout(pending.timer);
 			swPending.delete(msg.id);
 			if (msg.ok === false || msg.error) {
-				pending.reject(new Error(msg.error?.message || msg.error || "Host error"));
+				pending.reject(
+					Object.assign(new Error(msg.error?.message || msg.error || "Host error"), {
+						code: msg.error?.code,
+					}),
+				);
 			} else {
 				pending.resolve(msg.result === undefined ? msg : msg.result);
 			}
@@ -229,16 +749,54 @@ async function handleNativeMessage(msg, port) {
 		return;
 	}
 	if (msg.jsonrpc !== "2.0") return;
+	if (msg.method === "relay.delivery_status" || msg.method === "relay.incoming_reply") {
+		await routesReady;
+		if (msg.method === "relay.delivery_status" && !eventRoutes.has(msg.params?.event_id)) {
+			if (earlyRelayEvents.size >= 100)
+				earlyRelayEvents.delete(earlyRelayEvents.keys().next().value);
+			earlyRelayEvents.set(msg.params?.event_id, msg.params);
+			return;
+		}
+		await forwardRelayEvent(msg.params || {}).catch((e) =>
+			console.warn("[ap-browser] relay notification:", e),
+		);
+		return;
+	}
 	if (!("id" in msg)) return;
 
 	const id = msg.id;
 	const method = msg.method;
 	const params = msg.params || {};
+	// All record.* calls bypass generic targeting, locks, favicon writes and 3s restore.
+	// Status/artifact/wrong-direction calls are rejected here if the host misroutes them.
+	if (typeof method === "string" && method.startsWith("record.")) {
+		try {
+			if (nativePort !== port) throw Object.assign(new Error("Stale recording connection"), { code: "RECORD_INTERRUPTED" });
+			const data = method === "record.capabilities" ? recordingCapabilities(msg.params === undefined ? {} : msg.params) : await recordingForPort(port).dispatch(method, params);
+			postToNative(port, { jsonrpc: "2.0", id, result: { ok: true, data } });
+		} catch (e) {
+			postToNative(port, { jsonrpc: "2.0", id, error: { code: e.code || "RECORD_INTERRUPTED", message: e.message || "Recording failed" } });
+		}
+		return;
+	}
 	const lockedTab = params.tab_id != null;
-	const META_METHODS = new Set(["ping", "info", "keepalive", "hello"]);
+	const META_METHODS = new Set([
+		"ping",
+		"info",
+		"keepalive",
+		"hello",
+		"session.bind",
+		"session.unbind",
+		"session.bindings",
+		"session.reply",
+	]);
 	// Tab management never attaches the active tab — it must keep working even
 	// when the active tab is a chrome:// or chrome-extension:// page.
 	const NO_TAB_METHODS = new Set([
+		"session.bind",
+		"session.unbind",
+		"session.bindings",
+		"session.reply",
 		"download.browser",
 		"tabs.new",
 		"tabs.list",
@@ -248,6 +806,7 @@ async function handleNativeMessage(msg, port) {
 	]);
 	const NO_RESTORE_PREFIX = "dev.";
 	let operatedTab = null;
+	let normalOperationTabId = null;
 	try {
 		if (!META_METHODS.has(method) && !NO_TAB_METHODS.has(method)) {
 			// dev.* without explicit tab_id skips attach: avoids throwing on chrome:// active tab
@@ -258,13 +817,15 @@ async function handleNativeMessage(msg, port) {
 				} catch (_) {}
 			}
 		}
-		if (NO_TAB_METHODS.has(method)) {
+		if (NO_TAB_METHODS.has(method) && !method.startsWith("session.")) {
 			try {
 				operatedTab = await resolveTab(params);
 			} catch (_) {}
 		}
 
 		if (operatedTab) {
+			normalOperationTabId = operatedTab.id;
+			normalTabUsers.set(operatedTab.id, (normalTabUsers.get(operatedTab.id) || 0) + 1);
 			if (lockedTab) {
 				await unlockOtherTabs(operatedTab.id);
 				lockedTabs.add(operatedTab.id);
@@ -283,11 +844,24 @@ async function handleNativeMessage(msg, port) {
 				}
 			}
 			try {
-				await swapFaviconToSparkle(operatedTab?.id);
+				if (!recordingLeases.has(operatedTab?.id)) await swapFaviconToSparkle(operatedTab?.id);
 			} catch (_) {}
 			chrome.action.setIcon({ path: "icons/active-128.png" }).catch(() => {});
 		}
 
+		if (operatedTab && !META_METHODS.has(method) && !NO_TAB_METHODS.has(method)) {
+			const binding = await resolveBindingsForTab(operatedTab.id, operatedTab.windowId)
+				.then((pool) => pool.binding)
+				.catch(() => null);
+			if (bindingReady(binding))
+				chrome.tabs
+					.sendMessage(operatedTab.id, {
+						method: "annotate.agent_activity",
+						command: method,
+						ts: Date.now(),
+					})
+					.catch(() => {});
+		}
 		const result = await dispatch(method, params, operatedTab);
 		postToNative(port, { jsonrpc: "2.0", id, result });
 	} catch (e) {
@@ -299,6 +873,11 @@ async function handleNativeMessage(msg, port) {
 		if (e.data) error.data = { ...(error.data || {}), ...e.data };
 		postToNative(port, { jsonrpc: "2.0", id, error });
 	} finally {
+		if (normalOperationTabId != null) {
+			const remaining = (normalTabUsers.get(normalOperationTabId) || 1) - 1;
+			if (remaining) normalTabUsers.set(normalOperationTabId, remaining);
+			else normalTabUsers.delete(normalOperationTabId);
+		}
 		if (operatedTab) {
 			if (!method.startsWith(NO_RESTORE_PREFIX)) {
 				scheduleRestore(operatedTab.id, 3000);
@@ -324,6 +903,14 @@ async function dispatch(method, params, operatedTab) {
 
 async function dispatchUnfiltered(method, params, operatedTab) {
 	switch (method) {
+		case "session.bind":
+			return bindSession(params);
+		case "session.unbind":
+			return unbindSessions(params);
+		case "session.bindings":
+			return { ok: true, data: { bindings: await liveBindings() } };
+		case "session.reply":
+			return forwardRelayEvent(params);
 		case "ping":
 			return { ok: true, data: { pong: true }, meta: await buildMeta(null) };
 
@@ -1162,9 +1749,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				if (!host || !want || host !== want) {
 					try {
 						const allTabs = await chrome.tabs.query({});
-						const matchingTabs = allTabs.filter(
-							(t) => t.url && safeHostOf(t.url) === want,
-						);
+						const matchingTabs = allTabs.filter((t) => t.url && safeHostOf(t.url) === want);
 						if (matchingTabs.length >= 3) {
 							existingCandidates = matchingTabs.map((t) => ({
 								tab_id: t.id,
@@ -1721,22 +2306,71 @@ async function attachUserAnnotations(tabId, data) {
 	const k = `annotations:${tabId}`;
 	const stored = (await chrome.storage.session.get(k))[k];
 	if (!Array.isArray(stored) || stored.length === 0) return data;
-	data.annotated = stored;
-	const refs = new Set(stored.filter((a) => a.ref != null).map((a) => String(a.ref)));
+	// UI refs are lazy and need not equal the snapshot's freshly enumerated refs.
+	// Resolve identity in the page, not by comparing unrelated stored numbers.
+	const evaluated = await chrome.debugger.sendCommand({ tabId }, "Runtime.evaluate", {
+		expression: `(() => {
+			const stored = ${JSON.stringify(stored)};
+			const snapshot = new Map(${JSON.stringify(data.elements || [])}.map(item => [item.ref, item]));
+			const liveRefs = new Map();
+			let n = 0;
+			for (const el of document.querySelectorAll(${JSON.stringify(STATE_ELEMENT_SELECTOR)})) {
+				if (n >= ${STATE_MAX_REFS}) break;
+				if (el.getAttribute('tabindex') === '-1' || el.getAttribute('role') === 'presentation') continue;
+				const r = el.getBoundingClientRect();
+				if (r.width < 2 || r.height < 2 || r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) continue;
+				const match = snapshot.get(n);
+				// Do not match a different element if layout changed between evaluations.
+				if (match && match.x === Math.round(r.x) && match.y === Math.round(r.y) && match.w === Math.round(r.width) && match.h === Math.round(r.height)) liveRefs.set(el, n);
+				n++;
+			}
+			const elementFor = a => {
+				let root = document;
+				for (const selector of a.shadow_hosts || []) {
+					root = root.querySelector(selector)?.shadowRoot;
+					if (!root) return null;
+				}
+				return a.selector ? root.querySelector(a.selector) : a.ref != null ? root.querySelector('[data-ap-ref="' + Number(a.ref) + '"]') : null;
+			};
+			const boundaryNode = boundary => {
+				let target = elementFor(boundary);
+				for (const index of boundary.path) target = target?.childNodes[index];
+				return target;
+			};
+			return JSON.stringify(stored.map(a => {
+				try {
+					if (a.selection) {
+						const { start, end, quote } = a.selection;
+						const first = boundaryNode(start), last = boundaryNode(end);
+						if (!first || !last || first.getRootNode() !== last.getRootNode()) throw new Error('Missing selection boundary');
+						const range = document.createRange();
+						range.setStart(first, start.offset);
+						range.setEnd(last, end.offset);
+						if (range.collapsed || range.toString() !== quote) throw new Error('Stale selection');
+						const r = range.getBoundingClientRect();
+						if (r.width <= 0 || r.height <= 0) throw new Error('Hidden selection');
+						return { ...a, ref: null, x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+					}
+					const el = elementFor(a);
+					if (el) {
+						const r = el.getBoundingClientRect();
+						return { ...a, ref: liveRefs.get(el) ?? null, x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+					}
+				} catch (_) {}
+				return { ...a, ref: null, x: null, y: null };
+			}));
+		})()`,
+		returnByValue: true,
+	});
+	const resolved = JSON.parse(runtimeEvaluateValue(evaluated) || "[]");
+	data.annotated = resolved;
+	const refs = new Set(resolved.filter((a) => a.ref != null).map((a) => a.ref));
 	for (const el of data.elements || []) {
-		if (refs.has(String(el.ref))) el.user = true;
+		if (refs.has(el.ref)) el.user = true;
 	}
-	// Non-ref picks (any element): push their geometry so screenshot
-	// --annotate draws a green box without a ref badge.
-	for (const a of stored) {
+	for (const a of resolved) {
 		if (a.ref == null && a.x != null && a.y != null) {
-			(data.elements ||= []).push({
-				x: a.x,
-				y: a.y,
-				w: a.w ?? 10,
-				h: a.h ?? 10,
-				user: true,
-			});
+			(data.elements ||= []).push({ x: a.x, y: a.y, w: a.w, h: a.h, user: true });
 		}
 	}
 	return data;
@@ -1754,23 +2388,16 @@ async function toggleAnnotation() {
 		};
 	}
 	try {
-		// True toggle: if the picker is already injected, remove it (pins
-		// stay in storage); otherwise inject.
+		// Preserve the dock and its shortcut listener when hiding it.
 		const probe = await chrome.scripting.executeScript({
 			target: { tabId: tab.id },
-			func: () => !!document.querySelector("#ap-annotate-root"),
+			func: () => !!(window.__apAnnotatePanel && document.querySelector("#ap-annotate-root")),
 		});
 		if (probe?.[0]?.result) {
 			await chrome.scripting.executeScript({
 				target: { tabId: tab.id },
 				func: () => {
-					if (typeof window.__apAnnotateCleanup === "function") {
-						window.__apAnnotateCleanup();
-					} else {
-						const h = document.querySelector("#ap-annotate-root");
-						if (h) h.remove();
-						window.__apAnnotatePanel = null;
-					}
+					window.__apAnnotatePanel?.toggle?.();
 				},
 			});
 			return { ok: true, toggled: false };
@@ -1855,6 +2482,7 @@ function waitForXhr(tabId, urlSubstr, timeoutMs) {
 // Attach debugger if not already attached.
 const attachedTabs = new Set();
 const attachingTabs = new Map();
+const recordingOnlyTabs = new Set();
 const lockedTabs = new Set();
 const pendingRestoreTimers = new Map();
 const CLEANUP_TIMEOUT_MS = 500;
@@ -1888,6 +2516,8 @@ function upsertNetwork(tabId, requestId, patch) {
 }
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
+	// An unrelated owner's stream is not our source and not ours to ACK or stop.
+	if (method === "Page.screencastFrame") return;
 	const tabId = source.tabId;
 	if (tabId === null || tabId === undefined) return;
 	const ts = Date.now();
@@ -1962,10 +2592,11 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
 	}
 });
 
-async function ensureDebugger(tabId) {
+async function ensureDebugger(tabId, recordingOnly = false) {
 	await ensureAttachedOnce(tabId, { attachedTabs, attachingTabs }, async () => {
 		try {
 			await chrome.debugger.attach({ tabId }, "1.3");
+			recordingGuard.attached(tabId, true);
 		} catch (e) {
 			if (e.message?.includes("Another debugger")) {
 				throw Object.assign(new Error(`debugger rejected for tab ${tabId}`), {
@@ -1975,16 +2606,25 @@ async function ensureDebugger(tabId) {
 			if (!e.message?.includes("Already attached")) {
 				throw e;
 			}
+			// Worker restart / unknown pre-attachment: readonly viewport facts cannot certify it.
+			recordingGuard.attached(tabId, false);
 		}
 		await Promise.allSettled(
-			["Runtime.enable", "Log.enable", "Network.enable", "Page.enable"].map((method) =>
+			(recordingOnly ? ["Page.enable"] : ["Runtime.enable", "Log.enable", "Network.enable", "Page.enable"]).map((method) =>
 				chrome.debugger.sendCommand({ tabId }, method),
 			),
 		);
+		if (recordingOnly) recordingOnlyTabs.add(tabId);
 	});
+	if (!recordingOnly && recordingOnlyTabs.has(tabId)) {
+		recordingOnlyTabs.delete(tabId);
+		await Promise.allSettled(["Runtime.enable", "Log.enable", "Network.enable"].map((method) => chrome.debugger.sendCommand({ tabId }, method)));
+	}
 }
 
 function clearTabState(tabId) {
+	recordingGuard.detached(tabId);
+	recordingOnlyTabs.delete(tabId);
 	clearTabRuntimeState(tabId, {
 		attachedTabs,
 		attachingTabs,
@@ -1996,24 +2636,89 @@ function clearTabState(tabId) {
 }
 
 chrome.debugger.onDetach.addListener((source) => {
-	if (source.tabId != null) clearTabState(source.tabId);
+	if (source.tabId != null) {
+		recordingController?.interrupt("debugger_detached", source.tabId);
+		clearTabState(source.tabId);
+	}
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => clearTabState(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => {
+	recordingController?.interrupt("tab_closed", tabId);
+	clearTabState(tabId);
+	removeClosedBindings(tabId, null).catch(() => {});
+});
+chrome.windows.onRemoved.addListener((windowId) =>
+	removeClosedBindings(null, windowId).catch(() => {}),
+);
+chrome.tabs.onActivated?.addListener(({ tabId, windowId }) => {
+	(async () => {
+		const bindings = bindingsForTab(await storedBindings(), tabId, windowId);
+		if (!bindings.length) return;
+		const tab = await chrome.tabs.get(tabId).catch(() => null);
+		if (tab) await injectBoundDock(tab).catch(() => {});
+	})();
+});
+chrome.tabs.onUpdated?.addListener((tabId, changeInfo, tab) => {
+	if (changeInfo?.status !== "complete") return;
+	(async () => {
+		const bindings = bindingsForTab(await storedBindings(), tabId, tab?.windowId);
+		if (!bindings.length) return;
+		await injectBoundDock(tab || (await chrome.tabs.get(tabId).catch(() => null))).catch(() => {});
+	})();
+});
+
+function acquireRecordingLease(tabId) {
+	const token = Symbol("recording lease");
+	const wasAttached = attachedTabs.has(tabId);
+	let cancelled = false, access = null;
+	recordingLeases.set(tabId, token);
+	const cleanup = async () => {
+		if (recordingLeases.has(tabId)) return { capture_shutdown: false };
+		// Preserve normal command ownership; let its ordinary restore path do cleanup.
+		if (lockedTabs.has(tabId) || pendingRestoreTimers.has(tabId) || normalTabUsers.has(tabId)) {
+			// In-flight commands schedule their own restore when they finish. Never
+			// start that timer early or detach underneath an unlocked normal command.
+			if (pendingRestoreTimers.has(tabId) && !normalTabUsers.has(tabId)) scheduleRestore(tabId, 3000);
+			return { capture_shutdown: false };
+		}
+		if (!wasAttached && recordingGuard.ownsAttachment(tabId)) return { capture_shutdown: await detachDebugger(tabId) };
+		return { capture_shutdown: false };
+	};
+	const release = async () => {
+		cancelled = true;
+		if (recordingLeases.get(tabId) !== token) return { capture_shutdown: false };
+		access?.release();
+		recordingLeases.delete(tabId);
+		return cleanup();
+	};
+	const ready = ensureDebugger(tabId, true).then(async () => {
+		// Timeout/disconnect may precede attach/enable completion. Do not leak a
+		// late attachment, and never detach a replacement lease or normal user.
+		if (cancelled) { await cleanup(); throw Object.assign(new Error("Recording lease cancelled"), { code: "RECORD_INTERRUPTED" }); }
+		access = recordingGuard.reserve(tabId);
+		return access;
+	}).catch(async (e) => { await release(); throw e; });
+	return { ready, release };
+}
 
 async function detachDebugger(tabId) {
-	if (!attachedTabs.has(tabId)) return;
+	if (recordingLeases.has(tabId)) return false;
+	if (!attachedTabs.has(tabId)) return true;
 	try {
 		await chrome.debugger.detach({ tabId });
-	} catch (_) {}
+	} catch (_) { return false; }
 	clearTabState(tabId);
+	return true;
 }
 
 async function releaseTab(tabId) {
+	if (recordingLeases.has(tabId)) return;
 	cancelPendingRestore(tabId);
 	await settleWithin(restoreFavicon(tabId), CLEANUP_TIMEOUT_MS);
+	// A recording may have acquired ownership while favicon restoration awaited CDP.
+	if (recordingLeases.has(tabId)) return;
 	await settleWithin(detachDebugger(tabId), CLEANUP_TIMEOUT_MS);
-	clearTabState(tabId);
+	if (!recordingLeases.has(tabId)) clearTabState(tabId);
 }
 
 async function unlockOtherTabs(keepTabId) {
@@ -2103,6 +2808,7 @@ function safeJsonParse(value) {
 chrome.alarms.onAlarm.addListener((alarm) => {
 	if (alarm.name !== KEEPALIVE_ALARM) return;
 	ensureKeepaliveAlarm(); // self-heal if the alarm ever went missing
+	refreshBindingHealth().catch(console.warn);
 	if (nativePort) {
 		const port = nativePort;
 		postToNative(port, { jsonrpc: "2.0", method: "keepalive", params: {} });
@@ -2149,7 +2855,10 @@ chrome.runtime.onStartup.addListener(async () => {
 // Alarm ensure here too: if the SW was disposed while the alarm was missing
 // (e.g. onInstalled never ran after a reload), this recreates it so the
 // wake-net is never lost.
-ensureInstanceId().then(() => connectNativePort());
+invalidateBindingHealth("WORKER_RESTARTED")
+	.then(() => ensureInstanceId())
+	.then(() => connectNativePort())
+	.catch(console.warn);
 ensureKeepaliveAlarm();
 
 chrome.action.onClicked.addListener(() => {});
@@ -2187,7 +2896,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 		return true;
 	}
 	if (msg?.method === "annotations.tab") {
-		sendResponse({ ok: true, tab_id: _sender.tab?.id ?? null });
+		sendResponse({
+			ok: true,
+			tab_id: _sender.tab?.id ?? null,
+			window_id: _sender.tab?.windowId ?? null,
+		});
 		return false;
 	}
 	if (msg?.method === "annotations.get") {
@@ -2215,16 +2928,51 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 		})();
 		return true;
 	}
-	if (msg?.method === "host.capabilities") {
-		sendToNativeHost("host.capabilities", msg.params || {})
-			.then((data) => sendResponse({ ok: true, data }))
-			.catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
-		return true;
-	}
-	if (msg?.method === "agent.launch") {
-		sendToNativeHost("agent.launch", msg.params || {})
-			.then((data) => sendResponse({ ok: true, data }))
-			.catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+	if (
+		[
+			"session.get_binding",
+			"session.select_binding",
+			"session.bindings",
+			"session.unbind",
+			"relay.send",
+		].includes(msg?.method)
+	) {
+		(async () => {
+			if (msg.method === "session.get_binding") {
+				const tabId = msg.tab_id ?? _sender.tab?.id;
+				const windowId =
+					msg.window_id ??
+					_sender.tab?.windowId ??
+					(tabId != null ? (await chrome.tabs.get(tabId)).windowId : null);
+				return { ok: true, ...(await resolveBindingsForTab(tabId, windowId, msg.force === true)) };
+			}
+			if (msg.method === "session.select_binding")
+				return selectBinding({
+					...msg,
+					tab_id: msg.tab_id ?? _sender.tab?.id,
+					window_id: msg.window_id ?? _sender.tab?.windowId,
+				});
+			if (msg.method === "relay.send") return sendAnnotationRelay(msg, _sender);
+			const params = { ...(msg.params || msg) };
+			if (
+				msg.method === "session.unbind" &&
+				_sender.tab &&
+				!params.all &&
+				!params.session_id &&
+				params.tab_id == null &&
+				params.window_id == null
+			) {
+				const bindings = await storedBindings();
+				const tabBinding = bindings.find((b) => b.scope === "tab" && b.tab_id === _sender.tab.id);
+				if (tabBinding) params.tab_id = _sender.tab.id;
+				else params.window_id = _sender.tab.windowId;
+			}
+			return dispatchUnfiltered(msg.method, params, null);
+		})()
+			.then(sendResponse)
+			.catch((e) =>
+				sendResponse({ ok: false, code: e.code || "RELAY_FAILED", error: e.message || String(e) }),
+			);
 		return true;
 	}
 	if (msg?.method === "profile.set_label") {

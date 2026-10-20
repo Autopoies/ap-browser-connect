@@ -53,6 +53,80 @@ pub fn read_frame<R: Read>(r: &mut R) -> Result<Value, FrameError> {
 mod tests {
     use super::*;
 
+    fn raw_json_frame(text: &str) -> Vec<u8> {
+        let mut bytes = (text.len() as u32).to_le_bytes().to_vec();
+        bytes.extend_from_slice(text.as_bytes());
+        bytes
+    }
+
+    #[test]
+    fn precision_captured_js_lexeme_survives_actual_frame_parser_and_serializer() {
+        // Actual live JS mark lexeme: default serde_json previously parsed +1 ULP.
+        let lexeme = "1106.2999999523163";
+        let expected = lexeme.parse::<f64>().unwrap(); // independent std float parser
+        let text = format!(r#"{{"t_ms":{lexeme}}}"#);
+        let mut framed = raw_json_frame(&text); // intentionally NOT json!/Value first
+        for hop in 0..8 {
+            let parsed = read_frame(&mut framed.as_slice()).unwrap();
+            let actual = parsed["t_ms"].as_f64().unwrap();
+            assert_eq!(
+                actual.to_bits(),
+                expected.to_bits(),
+                "parser hop {hop}: {lexeme} -> {actual}"
+            );
+            framed = encode(&parsed).unwrap();
+        }
+        // Check the serializer separately, using std to parse its numeric output.
+        let encoded = encode(&Value::from(expected)).unwrap();
+        let serialized = std::str::from_utf8(&encoded[4..]).unwrap();
+        assert_eq!(
+            serialized.parse::<f64>().unwrap().to_bits(),
+            expected.to_bits()
+        );
+    }
+
+    #[test]
+    fn precision_deterministic_timestamp_corpus_preserves_bits_across_eight_hops() {
+        let captured = [
+            "1106.2999999523163",
+            "1076.1000000953675",
+            "1000.1000000238419",
+            "29.700000047683716",
+            "0.19999999999708962",
+            "90.30000000000291",
+        ];
+        let cases = captured
+            .iter()
+            .map(|s| s.parse::<f64>().unwrap())
+            .chain((0..10_000).map(|n| (100_000.0 + f64::from(n) / 10.0) - 100_000.0));
+        let mut mismatches = Vec::new();
+        for (index, expected) in cases.enumerate() {
+            let lexeme = expected.to_string();
+            let mut framed = raw_json_frame(&format!(r#"{{"t_ms":{lexeme}}}"#));
+            let mut bad = false;
+            for _ in 0..8 {
+                let parsed = read_frame(&mut framed.as_slice()).unwrap();
+                bad |= parsed["t_ms"].as_f64().unwrap().to_bits() != expected.to_bits();
+                framed = encode(&parsed).unwrap();
+            }
+            if bad {
+                mismatches.push((index, lexeme));
+            }
+            let serialized = serde_json::to_string(&expected).unwrap();
+            assert_eq!(
+                serialized.parse::<f64>().unwrap().to_bits(),
+                expected.to_bits(),
+                "serializer case {index}"
+            );
+        }
+        assert!(
+            mismatches.is_empty(),
+            "{} / 10006 parser/framing mismatches; first: {:?}",
+            mismatches.len(),
+            &mismatches[..mismatches.len().min(6)]
+        );
+    }
+
     #[test]
     fn roundtrip_simple() {
         let val = serde_json::json!({"hello": "world", "n": 42});

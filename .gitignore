@@ -17,3 +17,4 @@
 
 # ap-browser runtime (never part of repo)
 .ap-browser/
+.pi-watcher/

@@ -1,0 +1,66 @@
+{
+  "protocol_version": 2,
+  "backend": "cdp_capture_screenshot",
+  "identity": {"host_epoch":"host_02","record_id":"rec_02"},
+  "operation_id": "op_start_2",
+  "instance_id": "browser_02",
+  "tab_id": 7,
+  "state": "sealed",
+  "config": {"max_duration_ms":1500,"capture_fps":2,"jpeg_quality":70,"region":{"kind":"viewport"},"labels":{"project":"arena","test.case":"碰撞"},"run_id":"R042"},
+  "resolved_region_css": {"x":0.0,"y":0.0,"width":16.0,"height":16.0},
+  "clock": {"source":"extension_performance","origin":"before_first_recorded_screenshot_request"},
+  "end": {
+    "final_seq":2,"duration_ms":1106.4,"duration_observed":true,"reason":"stopped",
+    "cutoff":{"t_ms":1106.4,"provenance":"final_geometry_validation"},
+    "stop_requested_ms":1000.0,
+    "final_observation":{"disposition":"accepted","request_id":"shot_final_2","seq":2},
+    "counters":{"preparation_requests":3,"preparation_responses":3,"requests_started":2,"responses_received":2,"request_failures":0,"observations_rejected":0,"late_responses":0,"frames_sent":2,"scheduling_delays":1}
+  },
+  "frames": [
+    {
+      "seq":1,"t_ms":20.0,
+      "observation":{"request_id":"shot_sample_1","purpose":"sample","request_started_ms":0.0,"response_received_ms":20.0,"geometry_validated_ms":25.0},
+      "width":16,"height":16,
+      "geometry":{
+        "viewport_css":{"x":0.0,"y":0.0,"width":16.0,"height":16.0},
+        "crop_css":{"x":0.0,"y":0.0,"width":16.0,"height":16.0},
+        "css_to_image":{"scale_x":1.0,"scale_y":1.0,"offset_x":0.0,"offset_y":0.0},
+        "before":{
+          "dom":{"inner_width":16.0,"inner_height":16.0,"client_width":16.0,"client_height":16.0,"device_scale_factor":1.0,"scroll_x":0.0,"scroll_y":0.0,"document_width":16.0,"document_height":100.0,"visual":{"width":16.0,"height":16.0,"offset_x":0.0,"offset_y":0.0,"page_x":0.0,"page_y":0.0,"scale":1.0}},
+          "cdp":{"layout_width":16.0,"layout_height":16.0,"page_x":0.0,"page_y":0.0,"visual":{"width":16.0,"height":16.0,"offset_x":0.0,"offset_y":0.0,"page_x":0.0,"page_y":0.0,"scale":1.0},"zoom":1.0,"content_width":16.0,"content_height":100.0},
+          "emulation":"fresh_known_unemulated"
+        },
+        "after":{
+          "dom":{"inner_width":16.0,"inner_height":16.0,"client_width":16.0,"client_height":16.0,"device_scale_factor":1.0,"scroll_x":0.0,"scroll_y":2.0,"document_width":16.0,"document_height":110.0,"visual":{"width":16.0,"height":16.0,"offset_x":0.0,"offset_y":0.0,"page_x":0.0,"page_y":2.0,"scale":1.0}},
+          "cdp":{"layout_width":16.0,"layout_height":16.0,"page_x":0.0,"page_y":2.0,"visual":{"width":16.0,"height":16.0,"offset_x":0.0,"offset_y":0.0,"page_x":0.0,"page_y":2.0,"scale":1.0},"zoom":1.0,"content_width":16.0,"content_height":110.0},
+          "emulation":"fresh_known_unemulated"
+        }
+      },
+      "offset":0,"length":221,"sha256":"1c3592debabc2c91a49906c1f34079c55575eced9163f14b77ba0bb90369556a"
+    },
+    {
+      "seq":2,"t_ms":1106.2999999523163,
+      "observation":{"request_id":"shot_final_2","purpose":"final","request_started_ms":1000.25,"response_received_ms":1106.2999999523163,"geometry_validated_ms":1106.4},
+      "width":16,"height":16,
+      "geometry":{
+        "viewport_css":{"x":0.0,"y":0.0,"width":16.0,"height":16.0},
+        "crop_css":{"x":0.0,"y":0.0,"width":16.0,"height":16.0},
+        "css_to_image":{"scale_x":1.0,"scale_y":1.0,"offset_x":0.0,"offset_y":0.0},
+        "before":{
+          "dom":{"inner_width":16.0,"inner_height":16.0,"client_width":16.0,"client_height":16.0,"device_scale_factor":1.0,"scroll_x":0.0,"scroll_y":4.0,"document_width":16.0,"document_height":110.0,"visual":{"width":16.0,"height":16.0,"offset_x":0.0,"offset_y":0.0,"page_x":0.0,"page_y":4.0,"scale":1.0}},
+          "cdp":{"layout_width":16.0,"layout_height":16.0,"page_x":0.0,"page_y":4.0,"visual":{"width":16.0,"height":16.0,"offset_x":0.0,"offset_y":0.0,"page_x":0.0,"page_y":4.0,"scale":1.0},"zoom":1.0,"content_width":16.0,"content_height":110.0},
+          "emulation":"fresh_known_unemulated"
+        },
+        "after":{
+          "dom":{"inner_width":16.0,"inner_height":16.0,"client_width":16.0,"client_height":16.0,"device_scale_factor":1.0,"scroll_x":0.0,"scroll_y":5.0,"document_width":16.0,"document_height":120.0,"visual":{"width":16.0,"height":16.0,"offset_x":0.0,"offset_y":0.0,"page_x":0.0,"page_y":5.0,"scale":1.0}},
+          "cdp":{"layout_width":16.0,"layout_height":16.0,"page_x":0.0,"page_y":5.0,"visual":{"width":16.0,"height":16.0,"offset_x":0.0,"offset_y":0.0,"page_x":0.0,"page_y":5.0,"scale":1.0},"zoom":1.0,"content_width":16.0,"content_height":120.0},
+          "emulation":"fresh_known_unemulated"
+        }
+      },
+      "offset":221,"length":221,"sha256":"1c3592debabc2c91a49906c1f34079c55575eced9163f14b77ba0bb90369556a"
+    }
+  ],
+  "events":[{"event_index":1,"operation_id":"op_phase_2","t_ms":200.0,"kind":"phase","text":"air collision"}],
+  "spool_bytes":442,
+  "spool_sha256":"f2e239ed195df3741f3255209a42705b34cea6a2a2508b78e505a2981fd677c9"
+}

@@ -6,6 +6,7 @@ mod cli_frame;
 mod dev;
 mod doctor;
 mod filters;
+mod record;
 mod sites;
 mod socket_client;
 mod update;
@@ -53,6 +54,40 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
+    /// Record viewport video or manage recordings and offline task watermarks.
+    Record(Box<record::RecordArgs>),
+    /// Bind this tab or window to a live local session mailbox.
+    Bind {
+        #[arg(long)]
+        inbox: String,
+        #[arg(long)]
+        session_id: Option<String>,
+        /// Human-readable session title or purpose shown in the browser floating window.
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        pid: Option<u32>,
+    },
+    /// Remove saved bindings; health checks retain offline targets for inspection.
+    Unbind {
+        #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long)]
+        all: bool,
+    },
+    /// List saved session bindings with receiver readiness and evidence expiry.
+    Bindings,
+    /// Send progress or a reply to the originating annotation tab.
+    Reply {
+        #[arg(long)]
+        event_id: String,
+        #[arg(long, default_value = "done")]
+        status: String,
+        #[arg(long)]
+        message: String,
+        #[arg(long)]
+        thread_id: Option<String>,
+    },
     Ping,
     State,
     Status,
@@ -248,13 +283,18 @@ fn main() {
 /// `json.load` / `jq` never sees empty output or a decode error.
 /// (Transport-level failures use `emit_transport_error` for a coded exit.)
 fn fail_cli(err: anyhow::Error) -> ! {
-    eprintln!("Error: {err}");
+    let message = if record::error_code(&err).is_some() {
+        format!("{err:#}")
+    } else {
+        err.to_string()
+    };
+    eprintln!("Error: {message}");
     if !atty_is_tty() {
         println!(
             "{}",
             serde_json::to_string(&json!({
                 "ok": false,
-                "error": {"code": "CLI_ERROR", "message": err.to_string()}
+                "error": {"code": record::error_code(&err).unwrap_or("CLI_ERROR"), "message": message}
             }))
             .unwrap_or_default()
         );
@@ -384,7 +424,9 @@ fn run(raw_args: &[String]) -> Result<()> {
             // `ap-browser --profile X tabs close N`: a static clap command, not
             // an adapter site. Parse the rewritten argv with clap instead of
             // misrouting it to dispatch_site ("unknown site: tabs").
-            if sites::RESERVED.contains(&site.as_str()) && registry.match_site(site).is_none() {
+            if site == "record"
+                || (sites::RESERVED.contains(&site.as_str()) && registry.match_site(site).is_none())
+            {
                 let argv = std::iter::once("ap-browser".to_string())
                     .chain(reordered.iter().cloned())
                     .collect::<Vec<String>>();
@@ -398,7 +440,7 @@ fn run(raw_args: &[String]) -> Result<()> {
             });
             return sites::dispatch_site(&registry, site, &cmd, &reordered[2..]);
         }
-        if !sites::RESERVED.contains(&first.as_str()) {
+        if first != "record" && !sites::RESERVED.contains(&first.as_str()) {
             let registry = sites::Registry::load();
             if registry.match_site(first).is_some() {
                 let cmd = raw_args.get(1).cloned().unwrap_or_else(|| {
@@ -438,6 +480,43 @@ fn run(raw_args: &[String]) -> Result<()> {
 /// by the leading-global-flag rewrite path (`--profile X tabs close N`).
 fn run_static_match(cli: &Cli, human: bool) -> Result<()> {
     match &cli.command {
+        Cmd::Record(args) => record::run(cli, args)?,
+        Cmd::Bind {
+            inbox,
+            session_id,
+            label,
+            pid,
+        } => {
+            let mut params = binding_params(inbox, session_id.as_deref(), label.as_deref(), *pid)?;
+            params["window_id"] = json!(cli.window);
+            params["tab_id"] = json!(cli.tab);
+            rpc(cli, "session.bind", params, human, |_| {})?;
+        }
+        Cmd::Unbind { session_id, all } => rpc(
+            cli,
+            "session.unbind",
+            json!({
+                "session_id": session_id, "all": all, "window_id": cli.window, "tab_id": cli.tab
+            }),
+            human,
+            |_| {},
+        )?,
+        Cmd::Bindings => rpc(cli, "session.bindings", json!({}), human, |_| {})?,
+        Cmd::Reply {
+            event_id,
+            status,
+            message,
+            thread_id,
+        } => rpc(
+            cli,
+            "session.reply",
+            json!({
+                "event_id": event_id, "thread_id": thread_id, "status": status, "message": message,
+                "tab_id": cli.tab, "window_id": cli.window
+            }),
+            human,
+            |_| {},
+        )?,
         Cmd::Ping => rpc(cli, "ping", json!({}), human, |_| {})?,
         Cmd::Info => rpc(cli, "info", json!({}), human, |_| {})?,
         Cmd::Status => run_status(cli, human)?,
@@ -743,6 +822,60 @@ fn run_static_match(cli: &Cli, human: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn binding_params(
+    inbox: &str,
+    session_id: Option<&str>,
+    label: Option<&str>,
+    pid: Option<u32>,
+) -> Result<Value> {
+    let inbox = std::fs::canonicalize(inbox)
+        .or_else(|_| std::env::current_dir().map(|cwd| cwd.join(inbox)))?;
+    let session_id = session_id
+        .map(str::to_owned)
+        .or_else(|| inbox.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .context("cannot infer session_id from inbox; pass --session-id")?;
+    // Only read a peer name, never an arbitrary path supplied as a session ID.
+    let peer = if std::path::Path::new(&session_id).components().count() == 1
+        && !matches!(session_id.as_str(), "." | "..")
+    {
+        inbox
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|root| {
+                std::fs::read(root.join("peers").join(format!("{session_id}.json"))).ok()
+            })
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    let pid = pid
+        .or_else(|| peer["pid"].as_u64().and_then(|n| u32::try_from(n).ok()))
+        .unwrap_or_else(|| {
+            #[cfg(unix)]
+            {
+                std::os::unix::process::parent_id()
+            }
+            #[cfg(not(unix))]
+            {
+                std::process::id()
+            }
+        });
+    let label = label
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| peer["name"].as_str().filter(|s| !s.trim().is_empty()))
+        .map(str::to_owned)
+        .or_else(|| {
+            peer["cwd"]
+                .as_str()
+                .and_then(|p| std::path::Path::new(p).file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_else(|| session_id.chars().take(8).collect());
+    Ok(json!({"inbox": inbox, "session_id": session_id, "label": label, "pid": pid}))
 }
 
 fn rpc(
@@ -1418,7 +1551,10 @@ fn reorder_leading_flags_against(
     if i >= raw.len() {
         return None;
     }
-    if sites::RESERVED.contains(&raw[i].as_str()) || registry.match_site(&raw[i]).is_some() {
+    if raw[i] == "record"
+        || sites::RESERVED.contains(&raw[i].as_str())
+        || registry.match_site(&raw[i]).is_some()
+    {
         let mut reordered: Vec<String> = raw[i..].to_vec();
         reordered.extend(leading);
         Some(reordered)
@@ -2042,5 +2178,85 @@ mod tests {
         assert_eq!(response["data"]["file"], path.to_str().unwrap());
         assert_eq!(response["data"]["bytes"], 3);
         let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod session_binding_tests {
+    use super::*;
+
+    #[test]
+    fn discovers_peer_and_respects_explicit_values() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("ap-bind-test-{}", std::process::id()));
+        let inbox = root.join("inbox/session-123456");
+        std::fs::create_dir_all(&inbox)?;
+        std::fs::create_dir_all(root.join("peers"))?;
+        std::fs::write(
+            root.join("peers/session-123456.json"),
+            r#"{"pid":42,"name":"Local session"}"#,
+        )?;
+        let p = binding_params(inbox.to_str().unwrap(), None, None, None)?;
+        assert_eq!(p["session_id"], "session-123456");
+        assert_eq!(p["label"], "Local session");
+        assert_eq!(p["pid"], 42);
+        let p = binding_params(inbox.to_str().unwrap(), None, Some("Override"), Some(24))?;
+        assert_eq!(p["label"], "Override");
+        assert_eq!(p["pid"], 24);
+        std::fs::remove_file(root.join("peers/session-123456.json"))?;
+        let p = binding_params(inbox.to_str().unwrap(), None, None, None)?;
+        assert_eq!(p["label"], "session-");
+        assert!(p["pid"].as_u64().unwrap() > 0);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn parses_session_commands_and_global_scope() {
+        for name in ["bind", "unbind", "bindings", "reply"] {
+            assert!(
+                sites::RESERVED.contains(&name),
+                "{name} must not be shadowed by a site"
+            );
+        }
+        let cli = Cli::try_parse_from([
+            "ap-browser",
+            "--window",
+            "7",
+            "bind",
+            "--inbox",
+            "/tmp/inbox",
+            "--tab",
+            "12",
+        ])
+        .unwrap();
+        assert_eq!(cli.window, Some(7));
+        assert_eq!(cli.tab, Some(12));
+        assert!(matches!(cli.command, Cmd::Bind { .. }));
+        assert!(matches!(
+            Cli::try_parse_from(["ap-browser", "unbind", "--all"])
+                .unwrap()
+                .command,
+            Cmd::Unbind { all: true, .. }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["ap-browser", "bindings"])
+                .unwrap()
+                .command,
+            Cmd::Bindings
+        ));
+        match Cli::try_parse_from([
+            "ap-browser",
+            "reply",
+            "--event-id",
+            "mail-test",
+            "--message",
+            "Finished",
+        ])
+        .unwrap()
+        .command
+        {
+            Cmd::Reply { status, .. } => assert_eq!(status, "done"),
+            _ => panic!("expected reply"),
+        }
     }
 }

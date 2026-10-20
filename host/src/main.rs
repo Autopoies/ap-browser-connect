@@ -17,8 +17,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use tracing::{debug, error, info, warn};
 
-mod capabilities;
-mod spawner;
+mod recording;
+mod relay;
 
 const KEEPALIVE_METHOD: &str = "keepalive";
 const HELLO_METHOD: &str = "hello";
@@ -29,6 +29,8 @@ type Pending = Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>;
 
 struct Host {
     instance_id: Mutex<Option<String>>,
+    relay: relay::RelayManager,
+    recording: Option<Arc<recording::Manager>>,
     pending: Pending,
     next_id: AtomicU64,
     stdout_tx: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
@@ -38,6 +40,10 @@ impl Host {
     fn new() -> Self {
         Self {
             instance_id: Mutex::new(None),
+            relay: relay::RelayManager::default(),
+            recording: recording::Manager::new()
+                .map_err(|e| warn!("recording unavailable: {e}"))
+                .ok(),
             pending: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
             stdout_tx: Mutex::new(None),
@@ -121,6 +127,25 @@ fn main() -> Result<()> {
 
     {
         let host = Arc::clone(&host);
+        thread::spawn(move || loop {
+            thread::sleep(std::time::Duration::from_millis(100));
+            if let Some(manager) = &host.recording {
+                for identity in manager.maintenance() {
+                    // Reconcile by identity only. This response is deliberately not a seal.
+                    let id = host.next_id.fetch_add(1, Ordering::SeqCst);
+                    if let Some(tx) = host.stdout_tx.lock().unwrap().as_ref() {
+                        if let Ok(buf) = encode(&serde_json::json!({"jsonrpc":"2.0","id":id,
+                            "method":"record.stop","params":{"identity":identity,"operation_id":"host_watchdog"}}))
+                        {
+                            let _ = tx.send(buf);
+                        }
+                    }
+                }
+            }
+        });
+    }
+    {
+        let host = Arc::clone(&host);
         thread::spawn(move || {
             let stdin = std::io::stdin();
             let mut stdin = stdin.lock();
@@ -141,6 +166,9 @@ fn main() -> Result<()> {
                         break;
                     }
                 }
+            }
+            if let Some(manager) = &host.recording {
+                manager.shutdown(std::time::Duration::from_millis(200));
             }
             unregister_host_instance(&host);
             std::process::exit(0);
@@ -195,6 +223,46 @@ fn handle_sw_message(host: &Arc<Host>, msg: serde_json::Value) -> Result<()> {
         .to_string();
     let id = msg.get("id").and_then(|v| v.as_u64());
 
+    if method.starts_with("record.") {
+        let Some(tx) = host.stdout_tx.lock().unwrap().clone() else {
+            return Ok(());
+        };
+        let rpc_id = msg.get("id").cloned().unwrap_or(serde_json::Value::Null);
+        let valid_source_id = rpc_id
+            .as_str()
+            .is_some_and(|s| s.starts_with("sw-") && s.len() <= 128);
+        let reply: recording::Reply = Box::new(move |result| {
+            let response = match result {
+                Ok(v) => serde_json::json!({"id":rpc_id,"ok":true,"result":v}),
+                Err(e) => {
+                    serde_json::json!({"id":rpc_id,"ok":false,"error":{"code":e.0,"message":e.1}})
+                }
+            };
+            if let Ok(buf) = encode(&response) {
+                let _ = tx.send(buf);
+            }
+        });
+        if !valid_source_id {
+            reply(Err(recording::Error(
+                "RECORD_INVALID_PARAMS",
+                "source recording calls require a bounded sw-* RPC id",
+            )));
+            return Ok(());
+        }
+        match &host.recording {
+            Some(manager) => manager.source(
+                &method,
+                msg.get("params").cloned().unwrap_or_default(),
+                reply,
+            ),
+            None => reply(Err(recording::Error(
+                "RECORD_STORAGE",
+                "recording storage is unavailable",
+            ))),
+        }
+        return Ok(());
+    }
+
     match (method.as_str(), id) {
         (HELLO_METHOD, _) => {
             let params: HelloParams = serde_json::from_value(
@@ -216,51 +284,70 @@ fn handle_sw_message(host: &Arc<Host>, msg: serde_json::Value) -> Result<()> {
             Ok(())
         }
 
-        ("host.capabilities", _) => {
-            let caps = capabilities::detect_all();
-            let resp = serde_json::json!({
-                "id": msg.get("id"),
-                "ok": true,
-                "result": caps
-            });
-            let encoded = encode(&resp)?;
-            if let Ok(guard) = host.stdout_tx.lock() {
-                if let Some(tx) = guard.as_ref() {
-                    let _ = tx.send(encoded);
-                }
-            }
-            Ok(())
-        }
-
-        ("agent.launch", _) => {
-            let params_val = msg
+        ("relay.check_liveness" | "relay.register_peer" | "relay.deliver", _) => {
+            let tx = host
+                .stdout_tx
+                .lock()
+                .unwrap()
+                .clone()
+                .context("stdout unavailable")?;
+            let params = msg
                 .get("params")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
-            let launch_params: spawner::LaunchParams =
-                serde_json::from_value(params_val).context("parse agent.launch params")?;
-            let launch_res = spawner::launch(launch_params);
-            let resp = match launch_res {
-                Ok(res) => serde_json::json!({
-                    "id": msg.get("id"),
-                    "ok": true,
-                    "result": res
-                }),
-                Err(e) => serde_json::json!({
-                    "id": msg.get("id"),
-                    "ok": false,
-                    "error": {
-                        "code": "LAUNCH_FAILED",
-                        "message": format!("{e:#}")
+            let result = (|| -> Result<serde_json::Value> {
+                match method.as_str() {
+                    "relay.check_liveness" => {
+                        #[derive(serde::Deserialize)]
+                        struct Liveness {
+                            pid: u32,
+                            inbox: String,
+                            session_id: Option<String>,
+                            receiver_epoch: Option<String>,
+                        }
+                        let p: Liveness = serde_json::from_value(params)?;
+                        Ok(relay::check_liveness(
+                            p.pid,
+                            &p.inbox,
+                            p.session_id.as_deref(),
+                            p.receiver_epoch.as_deref(),
+                        ))
                     }
-                }),
-            };
-            let encoded = encode(&resp)?;
-            if let Ok(guard) = host.stdout_tx.lock() {
-                if let Some(tx) = guard.as_ref() {
-                    let _ = tx.send(encoded);
+                    "relay.register_peer" => {
+                        #[derive(serde::Deserialize)]
+                        struct Peer {
+                            instance_id: String,
+                            label: Option<String>,
+                            inbox: String,
+                        }
+                        let p: Peer = serde_json::from_value(params)?;
+                        let registered = host.relay.register_peer(
+                            &p.instance_id,
+                            p.label.as_deref(),
+                            &p.inbox,
+                            tx.clone(),
+                        )?;
+                        Ok(serde_json::json!({"registered": registered}))
+                    }
+                    _ => host
+                        .relay
+                        .deliver(serde_json::from_value(params)?, tx.clone()),
                 }
-            }
+            })();
+            let resp = match result {
+                Ok(result) => {
+                    serde_json::json!({"id": msg.get("id"), "ok": true, "result": result})
+                }
+                Err(e) => serde_json::json!({"id": msg.get("id"), "ok": false, "error": {
+                    "code": match e.to_string().as_str() {
+                        "BINDING_OFFLINE" => "BINDING_OFFLINE",
+                        "BINDING_UNVERIFIED" => "BINDING_UNVERIFIED",
+                        _ => "RELAY_FAILED",
+                    },
+                    "message": format!("{e:#}")
+                }}),
+            };
+            let _ = tx.send(encode(&resp)?);
             Ok(())
         }
 
@@ -305,6 +392,15 @@ fn handle_cli_connection(host: Arc<Host>, mut stream: transport::Stream) -> Resu
     debug!("cli request method={}", req.method);
 
     let id = host.next_id.fetch_add(1, Ordering::SeqCst);
+    if req.method.starts_with("record.") {
+        return handle_record_cli(
+            &host,
+            &mut stream,
+            id,
+            &req.method,
+            req_value.get("params").cloned().unwrap_or_default(),
+        );
+    }
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     host.pending.lock().unwrap().insert(id, tx);
 
@@ -367,9 +463,179 @@ fn handle_cli_connection(host: Arc<Host>, mut stream: transport::Stream) -> Resu
     Ok(())
 }
 
+fn forward_record_control(
+    host: &Arc<Host>,
+    id: u64,
+    method: &str,
+    params: &serde_json::Value,
+) -> std::result::Result<serde_json::Value, recording::Error> {
+    let (tx, rx) = mpsc::channel();
+    host.pending.lock().unwrap().insert(id, tx);
+    let forwarded = serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
+    let sent = host.stdout_tx.lock().unwrap().as_ref().is_some_and(|tx| {
+        encode(&forwarded)
+            .ok()
+            .is_some_and(|buf| tx.send(buf).is_ok())
+    });
+    let response = if sent {
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .map_err(|_| recording::Error("TIMEOUT", "recording control timed out"))
+            .and_then(|buf| {
+                read_frame(&mut buf.as_slice()).map_err(|_| {
+                    recording::Error(
+                        "RECORD_INVALID_PARAMS",
+                        "invalid recording control response",
+                    )
+                })
+            })
+            .and_then(|v| {
+                if v["result"]["ok"] == true {
+                    Ok(v["result"]["data"].clone())
+                } else {
+                    let code = v["error"]["code"]
+                        .as_str()
+                        .or_else(|| v["result"]["error"]["code"].as_str());
+                    let missing_method = v["error"]["code"].as_i64() == Some(-32601)
+                        || v["result"]["error"]["code"].as_i64() == Some(-32601);
+                    Err(recording::Error::remote(if missing_method {
+                        Some("METHOD_NOT_FOUND")
+                    } else {
+                        code
+                    }))
+                }
+            })
+    } else {
+        Err(recording::Error(
+            "EXTENSION_DISCONNECTED",
+            "recording native port disconnected",
+        ))
+    };
+    host.pending.lock().unwrap().remove(&id);
+    response
+}
+
+fn handle_record_cli(
+    host: &Arc<Host>,
+    stream: &mut transport::Stream,
+    id: u64,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<()> {
+    let result = (|| {
+        let manager = host.recording.as_ref().ok_or(recording::Error(
+            "RECORD_STORAGE",
+            "recording storage is unavailable",
+        ))?;
+        let instance = host.instance_id.lock().unwrap().clone().unwrap_or_default();
+        if method == ap_browser_core::recording::method::START
+            && manager.needs_start_preflight(&params)?
+        {
+            // Never trust a prior CLI assertion or cache support across native ports.
+            // This pure negotiation happens before a recording identity/slot exists.
+            let cap_id = host.next_id.fetch_add(1, Ordering::SeqCst);
+            let capability = forward_record_control(
+                host,
+                cap_id,
+                ap_browser_core::recording::v2::method::CAPABILITIES,
+                &serde_json::json!({}),
+            );
+            manager.complete(recording::Context::Capabilities, capability)?;
+        }
+        match manager.prepare(method, params, &instance)? {
+            recording::Route::Local(v) => Ok(v),
+            recording::Route::Forward(params, context) => {
+                let response = forward_record_control(host, id, method, &params);
+                let recover = match (&context, &response) {
+                    (recording::Context::Start(identity), Err(e))
+                        if e.0 != "EXTENSION_DISCONNECTED" =>
+                    {
+                        manager.begin_start_recovery(identity)
+                    }
+                    _ => false,
+                };
+                let result = manager.complete(context.clone(), response);
+                if recover {
+                    if let recording::Context::Start(identity) = &context {
+                        // Replay byte-for-byte-equivalent augmented params, not prepare(start):
+                        // only the extension's original cached Started may supply provenance.
+                        let recovery_id = host.next_id.fetch_add(1, Ordering::SeqCst);
+                        let recovered = forward_record_control(host, recovery_id, method, &params);
+                        let _ = manager.complete(
+                            recording::Context::RecoverStart(identity.clone()),
+                            recovered,
+                        );
+                    }
+                }
+                // A lost start response never allocates another slot; stop the reserved identity.
+                if result
+                    .as_ref()
+                    .map_or(true, |v| v["state"] == "stopping" || v["state"] == "failed")
+                {
+                    if let recording::Context::Start(identity) = context {
+                        if let Some(tx) = host.stdout_tx.lock().unwrap().as_ref() {
+                            let stop_id = host.next_id.fetch_add(1, Ordering::SeqCst);
+                            if let Ok(buf) = encode(
+                                &serde_json::json!({"jsonrpc":"2.0","id":stop_id,"method":"record.stop",
+                                "params":{"identity":identity,"operation_id":"host_start_reconcile"}}),
+                            ) {
+                                let _ = tx.send(buf);
+                            }
+                        }
+                    }
+                }
+                result
+            }
+        }
+    })();
+    let response = match result {
+        Ok(v) => serde_json::json!({"jsonrpc":"2.0","id":id,"result":{"ok":true,"data":v}}),
+        Err(e) => serde_json::json!({"jsonrpc":"2.0","id":id,"error":{"code":e.0,"message":e.1}}),
+    };
+    stream.write_all(&encode(&response)?)?;
+    let _ = stream.flush();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relay_rpc_responds_to_string_ids_and_recovers_from_bad_params() -> Result<()> {
+        let host = Arc::new(Host::new());
+        let (tx, rx) = mpsc::channel();
+        *host.stdout_tx.lock().unwrap() = Some(tx);
+        for (id, params, expected_ok) in [
+            (
+                "sw-1",
+                serde_json::json!({"pid": std::process::id(), "inbox": std::env::temp_dir(), "session_id": "rpc-test"}),
+                true,
+            ),
+            ("sw-2", serde_json::json!({"pid": "invalid"}), false),
+            (
+                "sw-3",
+                serde_json::json!({"pid": 0, "inbox": std::env::temp_dir()}),
+                true,
+            ),
+        ] {
+            handle_sw_message(
+                &host,
+                serde_json::json!({"id": id, "method": "relay.check_liveness", "params": params}),
+            )?;
+            let frame = rx.recv_timeout(std::time::Duration::from_secs(1))?;
+            let response = read_frame(&mut frame.as_slice())?;
+            assert_eq!(response["id"], id);
+            assert_eq!(response["ok"], expected_ok);
+            if id == "sw-1" {
+                assert_eq!(response["result"]["state"], "unknown");
+                assert_eq!(response["result"]["reason"], "RECEIVER_UNVERIFIED");
+            }
+            if id == "sw-3" {
+                assert_eq!(response["result"]["state"], "offline");
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn accepts_long_bounded_response_timeout_hints() {

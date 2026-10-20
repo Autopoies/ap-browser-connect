@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8"><title>Recording Live Arena — synthetic only</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#a80076;color:white;font:20px monospace}header{height:80px;padding:12px;background:#182032}button{font:20px monospace;margin-left:20px}#arena{position:absolute;left:80px;top:100px;width:640px;height:360px;border:8px solid #00ffff;background:#102030;overflow:hidden}canvas{display:block;width:624px;height:344px}footer{position:absolute;left:80px;top:480px}#sentinel{position:absolute;left:760px;top:140px;color:#ffff00}
+</style>
+<header>LIVE ARENA / network-free <button id="start">START</button><button id="step">STEP +1</button></header>
+<div id="arena"><canvas width="624" height="344"></canvas></div>
+<div id="sentinel">OUTSIDE<br>MAGENTA</div><footer>Fixed viewport. Cyan bounds. No scrolling. Motion 2s then HOLD.</footer>
+<script>
+const viewportHistory=[{at:performance.now(),width:innerWidth,height:innerHeight,event:'init'}];addEventListener('resize',()=>viewportHistory.push({at:performance.now(),width:innerWidth,height:innerHeight,event:'resize'}));
+const c=document.querySelector('canvas'),ctx=c.getContext('2d');let score=0,start=null,t=0,mode='READY',raf;
+function draw(){ctx.fillStyle='#102030';ctx.fillRect(0,0,624,344);ctx.strokeStyle='#536779';ctx.lineWidth=1;for(let x=0;x<624;x+=80){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,344);ctx.stroke()}for(let y=0;y<344;y+=80){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(624,y);ctx.stroke()}ctx.font='18px monospace';ctx.fillStyle='white';ctx.fillText('ARENA x=80 y=100 / 640x360',12,26);ctx.fillText('STATE '+mode+'  SCORE '+score,12,54);drawStateMarker();ctx.fillStyle='white';ctx.fillText('0,0',12,330);ctx.fillText('640,360',526,330);ctx.fillStyle='#ffff00';ctx.fillRect(40+Math.round(t*200),140,40,40);ctx.fillStyle='#ffffff';ctx.fillRect(0,280,624,8);}
+// Fixed high-contrast cells in the SAME draw as the visible text; no new ticks,
+// heartbeat, post-action frame, timer or animation. Guard/mode/score/checksum,
+// followed by a complementary row, survives JPEG/H264 and 32-color GIF export.
+function drawStateMarker(){const m=['READY','RUN','HOLD'].indexOf(mode),bits=(v,n)=>Array.from({length:n},(_,i)=>(v>>(n-1-i))&1),cells=[1,0,1,1,0,1,...bits(m,2),...bits(score,8),...bits(score^((m+1)*0x39)^0xa7,8)];for(let row=0;row<2;row++)for(let col=0;col<24;col++){ctx.fillStyle=(cells[col]^row)?'#ffffff':'#000000';ctx.fillRect(12+col*24,70+row*24,24,24)}}
+function animate(now){if(start===null)start=now;t=Math.min(2,(now-start)/1000);mode=t<2?'RUN':'HOLD';draw();if(t<2)raf=requestAnimationFrame(animate)}
+document.querySelector('#start').onclick=()=>{cancelAnimationFrame(raf);start=null;t=0;score=0;mode='RUN';raf=requestAnimationFrame(animate)};document.querySelector('#step').onclick=()=>{score++;draw()};
+window.fixtureState=()=>({score,mode,t,scrollX,scrollY,viewportHistory,arena:{x:80,y:100,width:640,height:360},viewport:{width:innerWidth,height:innerHeight},rect:document.querySelector('#arena').getBoundingClientRect().toJSON()});draw();
+</script>

@@ -7,6 +7,7 @@ import {
 	cleanupAutoCreatedTab,
 	clearTabRuntimeState,
 	ensureAttachedOnce,
+	evaluateDoneCondition,
 	isCurrentPort,
 	nextReconnectDelay,
 	runtimeEvaluateValue,
@@ -16,7 +17,6 @@ import {
 	waitForMediaEnd,
 	waitForUrlChange,
 	withFocusEmulation,
-	evaluateDoneCondition,
 } from "./runtime-helpers.mjs";
 
 test("focus emulation wraps work and always restores", async () => {
@@ -187,7 +187,11 @@ test("cleanupAutoCreatedTab releases debugger and removes tab", async () => {
 
 	// No-op for null/undefined
 	log.length = 0;
-	await cleanupAutoCreatedTab(null, async () => log.push("fail"), async () => log.push("fail"));
+	await cleanupAutoCreatedTab(
+		null,
+		async () => log.push("fail"),
+		async () => log.push("fail"),
+	);
 	assert.equal(log.length, 0);
 });
 

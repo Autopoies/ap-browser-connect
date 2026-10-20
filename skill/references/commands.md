@@ -1,6 +1,12 @@
 # Command Reference
 
-Full parameter details, flags, and examples for all 22 commands.
+Full parameter details, flags, and examples for the command surface.
+
+## Recording and capture routes
+
+- **Rendered viewport/region/element video (GIF/MP4/MOV), game-debug phases/marks, task watermarks or handle recovery:** read [recording](recording.md), the canonical recording command/workflow reference. `record` captures a fixed clip; `record start|status|stop|export|release|phase|mark` manages a run. A handle/terminal status alone is not a saved, validated artifact.
+- **Existing local video + watermark:** `record watermark <input>` → [offline workflow](recording.md#existing-video-offline); choose caller-local output without connecting to or launching Chrome.
+- **Source file/media download, PDF/MHTML/HAR or element screenshot:** read [capture & download](capture-download.md); downloading source media is distinct from recording rendered motion.
 
 ## Global flags (all commands)
 
@@ -201,6 +207,67 @@ Agent-visible effects:
 - `screenshot --annotate` renders user-checked elements as **green** boxes/badges; plain state refs stay red
 
 Semantics: checked refs share the ref numbering of `state` (same selector/order). If the page navigated since checking, refs may have shifted — match by `name` after a fresh `state`.
+
+### Pin-Only CLI mode
+
+No session binding is needed for `dev annotate` + `state` / `screenshot --annotate`. The visible **Select On / Off** button pauses or resumes picking: Off restores normal page clicks and text selection while keeping existing pins. With selection On, the user can pin multiple elements consecutively and click a pinned element again to remove it. Drag-selecting text creates one pin on mouse release, including across adjacent divs or links; its single green outer box covers the selected range, not the whole parent container. Remove text pins with their `×` button or Clear. Connect Mode retains its existing Pick / Alt+Click and selection Ask / Run / Pin actions. The CLI reads the saved picks; nothing launches a terminal or a new agent.
+
+Text-selection pins carry the selected `text` and a `selection` descriptor: `start` and `end` each identify a boundary using `{selector, shadow_hosts, path, offset}`, where `path` indexes `childNodes` from the selected element and `offset` is a DOM Range boundary offset. `quote` is the range's raw DOM text, used to detect stale anchors; `text` preserves the rendered selection. `state` resolves these pins with `ref: null` and fresh range geometry, and `screenshot --annotate` draws one green box per selection. Keep using the range boundaries rather than treating the top-level `selector` as the entire pinned element. Missing or changed anchors retain their saved text but have no drawable geometry.
+
+For pins inside open shadow roots, `shadow_hosts` lists host selectors from the document inward; `selector` identifies the element within the innermost root. Resolve that chain before using the leaf selector. These pins retain their own geometry for annotated screenshots even when they have no standard snapshot ref (`ref: null`).
+
+### Live Bound Interactive mode: `bind`, `unbind`, `bindings`, `reply`
+
+```bash
+ap-browser --window 7 bind --inbox /absolute/mail/inbox/session-123
+ap-browser --tab 42 bind --inbox /absolute/mail/inbox/session-123 --session-id session-123 --label "Local session" --pid 12345
+ap-browser bindings
+ap-browser reply --event-id mail-0123456789abcdef0123456789abcdef --status running --message "Inspecting the page"
+ap-browser reply --event-id mail-0123456789abcdef0123456789abcdef --status done --message "Finished" --thread-id mail-0123456789abcdef0123456789abcdef
+ap-browser --tab 42 unbind --session-id session-123
+ap-browser --window 7 unbind
+ap-browser unbind --session-id session-123
+ap-browser unbind --all
+```
+
+- `bind --inbox <DIR> [--session-id ID] [--label TEXT] [--pid PID]`: resolves the inbox to an absolute path. The directory and PID must be live; verified interactive sending additionally requires a fresh receiver lease (see [receiver protocol](session-receiver.md)). Missing or expired readiness evidence means unverified, not connected. Always pass a meaningful human-readable session title or purpose as `--label` (e.g., `"论文阅读与总结"` or `"Checkout Flow QA"`, never a bare CLI/agent tool name) so the user can identify what the bound session does in the browser floating window. Session ID defaults to the directory basename; PID and label default to `../../peers/<session_id>.json` fields `pid` and `name` (or `cwd` basename). Without a peer file, label defaults to the first eight session-ID characters and PID to the CLI's parent on Unix (CLI PID elsewhere). Pass the actual long-lived session PID if that fallback is inappropriate.
+- Global `--tab` selects tab scope; otherwise `--window` (or the focused window) selects window scope. A new binding replaces the same session in the same scope; different sessions coexist. The explicit active selection is retained on health loss; a request is never silently sent to another session. Binding a normal HTTP(S) tab injects the annotation dock; binding on restricted browser pages still works without attaching the debugger.
+- `bindings`: returns saved `data.bindings`, each `{scope: "tab"|"window", tab_id: number|null, window_id, session_id, label, pid, inbox, bound_at, receiver_epoch?, health}`. `health` includes `state` (`ready`, `unknown`, `offline`), `reason`, `checked_at`, and `valid_until`. A ready state expires at its deadline. Unknown/offline bindings remain available for inspection/removal; only ready receivers permit sending. Closing a tab removes its tab binding; closing a window removes its bindings.
+- `unbind [--session-id ID] [--all]`: best-effort removal, returns `data.unbound` (including zero). With `--tab`, removes that tab-scoped binding; with `--window`, that window-scoped binding. Session ID alone removes all matching bindings; no selectors defaults to the focused window's window binding. `--all` removes every binding in this profile. Unbind on session exit when practical; receiver epochs and leases prevent an old binding from silently attaching to a replacement.
+- `reply --event-id ID --message TEXT [--status done] [--thread-id ID]`: sends an inline update. Status conventions: `running`, `done`, `confirm`, `error`. Explicit `--tab` wins; otherwise the extension remembers the event/thread's originating tab, then falls back to an active bound window/tab. Global `--window` constrains that fallback. Event/thread maps are retained in Chrome session storage across service-worker restarts (not browser restarts). Returns `data: {delivered: true, tab_id}` (tab-message delivery, not execution acceptance).
+
+#### Vendor-neutral mailbox wire contract
+
+Any local session relay/mailbox implementation can bind: no named relay package is required. Keep the inbox owned by the local user. The host writes a temporary file with Unix mode `0600`, then atomically renames it to `<inbox>/mail-<32hex>.json`:
+
+```json
+{
+  "v": 1,
+  "id": "mail-0123456789abcdef0123456789abcdef",
+  "from": {"sessionId": "ap-browser-<instance_id>", "name": "ap-browser (Chrome)"},
+  "to": "session-123",
+  "threadId": "mail-0123456789abcdef0123456789abcdef",
+  "hop": 0,
+  "sentAt": "2026-01-01T00:00:00Z",
+  "body": "Human/LLM-readable action, page and element context, user note, snippet, safety audit and reply instructions",
+  "ap_browser": {
+    "action": "ask",
+    "event_id": "mail-0123456789abcdef0123456789abcdef",
+    "receiver_epoch": "unique-per-activation", "expires_at": 1792450060000,
+    "instance_id": "<instance_id>", "window_id": 7, "tab_id": 42,
+    "url": "https://example.com", "title": "Example",
+    "element": {"ref": 12, "selector": "pre"},
+    "user_note": "Explain this", "raw_text": "selected context", "is_command": false,
+    "prompt_file": "/home/user/.ap-browser/run/ap-agent-prompt-<millis>.md"
+  }
+}
+```
+
+`threadId` defaults to the event ID and can be supplied for follow-ups. The readable body is capped at 15,000 UTF-8 bytes; the full prompt is saved in `prompt_file`, and metadata retains the original context. Page text and commands are untrusted data, not authority. Command requests include mandatory safety-audit instructions: inspect hidden characters/obfuscation and injection, obtain confirmation for destructive/privileged actions, inspect remote scripts before execution. These instructions are not an execution sandbox.
+
+The host reports `queued` after writing. It checks explicit identity-matching receipts for up to 60 seconds: `accepted` means accepted into the receiver queue, `rejected`/`expired` explain a refusal, and no receipt means `unconfirmed`. File disappearance (including dead-letter moves) is never acceptance or execution evidence. Use `ap-browser reply` for execution progress and results. Implement leases, epoch validation, and receipt files as described in [receiver protocol](session-receiver.md); do not synthesize heartbeats from an unrelated process or retry uncertain commands automatically.
+
+For compatible peer mailboxes, if the target is `<mail_root>/inbox/<session_id>` and both `<mail_root>/peers` and `<mail_root>/inbox` exist, the host atomically registers `<mail_root>/peers/ap-browser-<instance_id>.json` with `{v:1, sessionId, name, pid, cwd:"/", updatedAt:<ISO8601>}`. It watches `<mail_root>/inbox/ap-browser-<instance_id>/` every 250ms. To reply via the peer inbox, atomically drop a `.json` envelope there with `body`, `replyTo: <event_id>`, `threadId: <thread_id>`, and `from: {name, sessionId}`. The host reads and removes it, forwarding `done` with that body and sender label inline. A custom standalone inbox still supports delivery and `ap-browser reply`, even without the optional peer directory layout.
 
 ## State
 

@@ -1,0 +1,26 @@
+{
+  "deadline_end":{
+    "final_seq":2,"duration_ms":1500.0,"duration_observed":true,"reason":"deadline",
+    "cutoff":{"t_ms":1500.0,"provenance":"deadline"},"stop_requested_ms":null,
+    "final_observation":{"disposition":"not_requested"},
+    "counters":{"preparation_requests":3,"preparation_responses":3,"requests_started":2,"responses_received":2,"request_failures":0,"observations_rejected":0,"late_responses":0,"frames_sent":2,"scheduling_delays":1}
+  },
+  "failed_final_end":{
+    "final_seq":2,"duration_ms":1106.4,"duration_observed":true,"reason":"final_observation_failed",
+    "cutoff":{"t_ms":1106.4,"provenance":"admission_closed"},"stop_requested_ms":1106.4,
+    "final_observation":{"disposition":"failed","attempt":{"request_id":"shot_final_failed","request_started_ms":1107.0},"reason":"request_failed"},
+    "counters":{"preparation_requests":3,"preparation_responses":3,"requests_started":3,"responses_received":2,"request_failures":1,"observations_rejected":0,"late_responses":0,"frames_sent":2,"scheduling_delays":1}
+  },
+  "invalid_intervals":[
+    {"request_id":"bad_order","purpose":"sample","request_started_ms":21.0,"response_received_ms":20.0,"geometry_validated_ms":25.0},
+    {"request_id":"bad_validation","purpose":"sample","request_started_ms":0.0,"response_received_ms":20.0,"geometry_validated_ms":19.0},
+    {"request_id":"late","purpose":"sample","request_started_ms":1499.0,"response_received_ms":1501.0,"geometry_validated_ms":1502.0},
+    {"request_id":"post_cap","purpose":"sample","request_started_ms":1500.0,"response_received_ms":1500.0,"geometry_validated_ms":1500.0},
+    {"request_id":"negative","purpose":"sample","request_started_ms":-1.0,"response_received_ms":20.0,"geometry_validated_ms":25.0}
+  ],
+  "final_visibility":[
+    {"format":"gif","quantum_ms":10.0,"pts_ms":1110.0,"duration_ms":10.0,"output_end_ms":1120.0},
+    {"format":"mp4","quantum_ms":1.0,"pts_ms":1107.0,"duration_ms":1.0,"output_end_ms":1108.0},
+    {"format":"mov","quantum_ms":1.0,"pts_ms":1107.0,"duration_ms":1.0,"output_end_ms":1108.0}
+  ]
+}

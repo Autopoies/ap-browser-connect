@@ -1,6 +1,6 @@
 ---
 name: ap-browser-connect
-description: "Control the user's already-logged-in Chrome browser via the `ap-browser` CLI. Use when the task needs existing browser state: open tabs, logged-in sessions, cookies, or platform interactions (send messages, read feeds, fill forms, scrape behind login). Prefer purpose-built APIs or CLIs when available; fall back to this skill when authentication is the blocker. Triggers: 'open browser', 'check my', 'log into', 'go to website', 'scrape page', 'fill form', 'click button', 'take screenshot', 'read page'."
+description: "Control the user's already-logged-in Chrome via `ap-browser`: tabs, sessions, messages, feeds, forms, scraping and screenshots. Also use for rendered-page recording, region/element capture to GIF/MP4/MOV, tagged game-debug runs, and task watermarks on new or existing local video (offline). Distinguish source-media downloads from rendered recording. Prefer purpose-built APIs/CLIs for site tasks when available; use this skill when browser authentication is the blocker or rendered capture is needed."
 ---
 
 # Browser Use via ap-browser
@@ -14,12 +14,15 @@ Drive the user's **already-logged-in** Chrome — real cookies, real sessions, r
 - Scrape pages behind a login wall
 - Navigate and extract information from any site
 - Take screenshots for visual context
+- Snapshot-record a viewport, fixed region or initially visible element to GIF/MP4/MOV; tag runs with phases/marks or watermark local video — [recording workflow](references/recording.md)
 
-**Do NOT use** when a purpose-built API/CLI exists (`gh`, `yt-dlp`, official SDKs). Prefer those.
+**For site tasks, prefer a purpose-built API/CLI** (`gh`, `yt-dlp`, official SDKs) when available. Rendered recording captures what the page displays, not the site's original media stream.
+
+**Route first:** existing local video + watermark → [offline recording branch](references/recording.md#existing-video-offline), with no browser connection, `ping`, adapter lookup or launch. Browser recording → the same reference for capture/storage/validation; use adapter-first for any site navigation or interaction needed during the task. The quick start below is for online site work only.
 
 ## Adapter-first rule
 
-**Every task starts the same way: identify the current/target site, then check for a matching adapter — before any generic `tabs`/`goto`/`text` command.** 159 adapters across 43 sites are preinstalled; they encode selectors, pagination, SPA waits, and ad filtering in one command. Generic tab primitives are the **fallback**, never the default.
+**Every online site task starts the same way: identify the current/target site, then check for a matching adapter — before any generic `tabs`/`goto`/`text` command.** 159 adapters across 43 sites are preinstalled; they encode selectors, pagination, SPA waits, and ad filtering in one command. Generic tab primitives are the **fallback**, never the default.
 
 **Step 0 — what site is this task about?**
 
@@ -48,7 +51,7 @@ ap-browser tabs new "<url>" --silent && ap-browser text
 
 Use `sites list --full` only when you need the full flat adapter dump (150 entries).
 
-**Decision tree (run mentally on every task):**
+**Decision tree (run mentally on every online site task):**
 
 **Adapters auto-isolate tabs.** An adapter without `--tab` runs on the active tab **only when it already matches the site domain** (reads the page the user is on — the intended contract). Otherwise it **silently opens its own tab** on the canonical domain, so the user's tabs are never hijacked. Explicit `--tab <ID>` always wins (no auto-tab).
 
@@ -112,7 +115,7 @@ Every tool call costs an LLM round-trip and every output costs context. These
 rules came from replaying real scenarios before/after — the numbers are
 measured, not estimated.
 
-1. **Adapter-first, always.** One adapter command replaces N generic steps AND
+1. **Adapter-first for online site work.** One adapter command replaces N generic steps AND
    returns structured JSON instead of a raw text dump. Reading HN top stories:
    `hackernews best --limit 3` = 1 call, ~450 chars of structured items vs
    `tabs new → wait → text` = 3 calls, 3961 chars of prose the model must parse
@@ -157,6 +160,10 @@ rules vs **59 calls / 229s** with the anti-patterns above.
 | | `html [--selector CSS]` | raw HTML |
 | | `state` | **interactive-element snapshot with `[N]` refs + coordinates** — the discovery primitive |
 | | `screenshot [--out FILE] [--annotate]` | capture PNG; `--annotate` overlays `[N]` badges |
+| **Record** | `record` / `record start` | v2 snapshot sampling → GIF/MP4/MOV; best-effort FPS, [final/deadline limits](references/recording.md#capture-while-doing-a-task) |
+| | `record phase` / `record mark` | persistent stage / transient game-debug note |
+| | `record status` / `stop` / `export` / `release` | manage retained source and validate caller-local artifacts |
+| | `record watermark <input>` | offline task/custom watermark; no browser needed |
 | **Interact** | `click <target>` | click — target is a `state` ref (`click 12`) or CSS selector |
 | | `fill <target> <value>` | type into inputs, textareas, contenteditable (real keystrokes) |
 | | `select <target> <option>` | pick a `<select>` option by value or label |
@@ -303,6 +310,8 @@ CLI, they only fail per command/site.
 
 ### Connection rescue (least disruptive first)
 
+**Recording handles:** first follow [recording recovery](references/recording.md#interruption-and-recovery); host/extension restart can invalidate retained source. Export needed artifacts before considering reload/restart.
+
 0. Any command with `--wait-online <s>` (or env `AP_BROWSER_WAIT_ONLINE`) blocks through brief reconnects instead of failing — during a service-worker/native-host restart just retry once with `--wait-online 30`. `ap-browser status --wait-online 60` replaces poll-in-a-loop status scripts. Only idempotent discovery is retrried; writes are never auto-retried.
 1. `ap-browser doctor --json` — don't infer a stuck process from socket files alone.
 2. Profile online but flaky: `ap-browser dev extension reload`, then `ping --wait-online 30` until it returns.
@@ -317,6 +326,8 @@ Never `pkill`/`taskkill` from stale-socket output alone; confirm a live `ap-brow
 | ------ | ------------- |
 | `install.md` | `ap-browser` is not installed or `ap-browser ping` fails — follow the 4 install steps |
 | `references/commands.md` | Need full flags, examples, or edge cases for any command |
+| [Recording](references/recording.md) | Record viewport/region/element to GIF/MP4/MOV, tag game runs, recover handles, validate artifacts, or watermark local video offline — choose Agent-owned caller-local `--out` before capture/export |
+| [Capture & download](references/capture-download.md) | Download source files/media or export PDF/MHTML/HAR/screenshots; distinguish source downloads from rendered video |
 | `references/patterns.md` | Need a recipe (scrape list, fill form, SPA wait, pagination, screenshot, efficiency patterns #15) |
 | `references/output-contract.md` | Need to understand `meta.focus`, truncation, or error codes in depth |
 | `references/multi-profile.md` | Multiple Chrome profiles are online and need to pick/switch |
@@ -354,6 +365,26 @@ The user can pick elements on a page (shortcut Cmd+Shift+E on mac / Alt+Shift+E 
 
 When `state` returns `annotated`, those are the user's explicit picks — prefer acting on them instead of guessing which element to use. Details: `references/commands.md`.
 
+### Two annotation modes
+
+**Pin-Only CLI mode** requires no binding or mailbox. Run `ap-browser dev annotate --tab <ID>`, let the user pin elements, then read `ap-browser --tab <ID> state` or `screenshot --annotate`. No agent is launched; page text remains untrusted context.
+
+**Live Bound Interactive mode** connects a running local session to a tab or window:
+
+```bash
+ap-browser --window 7 bind --inbox /absolute/mail/inbox/session-id --label "Web Research & Summary"
+ap-browser bindings
+ap-browser reply --event-id mail-0123456789abcdef0123456789abcdef --status running --message "Reviewing the selection"
+ap-browser reply --event-id mail-0123456789abcdef0123456789abcdef --status done --message "Finished"
+ap-browser --window 7 unbind
+```
+
+Use `--tab <ID>` instead of `--window` for a tab-only binding; tab scope takes precedence over window scope. Always pass a meaningful, human-readable session title or task description to `--label` (explaining what the session is doing, e.g. `"论文阅读与总结"` or `"Checkout Flow QA"`, never a generic tool name like `"pi"`). `bind` can infer session ID from the inbox directory name and PID/label from `../../peers/<session_id>.json`; pass `--session-id`, `--label`, and `--pid` when needed (especially when your CLI's parent is not the long-lived session process). Saved bindings are not proof of readiness. Interactive actions require a fresh receiver lease; unknown health pauses sending, while confirmed offline restores Pin Mode without losing drafts or pins. Popup/options distinguish ready and saved bindings. Read `references/session-receiver.md` when implementing receiver health and acknowledgements or diagnosing an unverified binding.
+
+Any local session relay/mailbox system can consume atomic **v: 1 JSON file drops** in `--inbox <DIR>`; no particular agent vendor or relay installation is required. Files are `mail-<32hex>.json`, with a readable `body` plus structured `ap_browser` page/element metadata. Writing a message means queued, not delivered. A matching explicit receiver receipt means accepted; removing/moving the file proves nothing. Only an execution update means running. Missing receipts become unconfirmed and are never automatically retried. `ap-browser reply` sends inline progress (`running`, `done`, `confirm`, `error`) back to its originating tab; a compatible peer inbox reply with `replyTo` / `threadId` also works. See `references/commands.md` for the exact file-drop and peer contracts. Command requests require a safety audit and explicit confirmation for destructive/privileged actions; queueing or acceptance does not mean execution or approval.
+
 ## Capture & download
 
-**Downloading files from a site (PDFs, docs, media): use `download <url>`** — it downloads through the browser session with the site's cookies, no eval/fetch tricks. Also: `pdf`, `mhtml`, `har`, `media --type <t>`, `screenshot --element <sel>`. Details: `references/capture-download.md`.
+**Source file/media** → `download <url>` (video-site stream: `--video`); `media` discovers URLs. Also: PDF/MHTML/HAR and element screenshots. Read [capture & download](references/capture-download.md).
+
+**Rendered motion** → v2 snapshot `record` for viewport/region/element GIF/MP4/MOV, including phase/mark and task watermarks. Capture FPS is best effort; explicit stop seeks one final observation within the original cap, whereas deadline promises none. **Existing local video + watermark** → offline `record watermark`, without contacting Chrome. Read [recording](references/recording.md) for required Agent-chosen `--out`, validation and source retention; a handle or stop acknowledgement is not a completed video.

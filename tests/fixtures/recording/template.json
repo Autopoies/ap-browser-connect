@@ -1,0 +1,9 @@
+{
+  "version":1,
+  "layout":"strip",
+  "strip_height":48,
+  "items":[
+    {"text":{"kind":"template","value":"{label.project} / {label.test.case} | {phase} | {marks}"},"anchor":"top_left","x":8,"y":4,"font_size":16,"color":"#ffffff","background":"#101010","opacity":1.0,"update_interval_ms":100},
+    {"text":{"kind":"template","value":"run={run_id} t={pts_ms}ms frame={output_frame}"},"anchor":"bottom_left","x":8,"y":-4,"font_size":12,"color":"#ffffff","opacity":0.9,"interval":{"start_ms":0,"end_ms":1500},"update_interval_ms":500}
+  ]
+}

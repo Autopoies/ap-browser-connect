@@ -12,42 +12,42 @@ export const AP_ICON_SVG = `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/20
 </svg>`;
 
 function apIconDataUrl() {
-  const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(AP_ICON_SVG)));
-  return `data:image/svg+xml;base64,${b64}`;
+	const b64 = btoa(String.fromCharCode(...new TextEncoder().encode(AP_ICON_SVG)));
+	return `data:image/svg+xml;base64,${b64}`;
 }
 
 const AP_ICON_URL = apIconDataUrl();
 
 export async function swapFaviconToSparkle(tabId) {
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    func: (iconUrl) => {
-      if (window.__apOriginalIcon === undefined) {
-        window.__apOriginalIcon = document.querySelector('link[rel*="icon"]')?.href || null;
-      }
-      let link = document.querySelector("link[rel~='icon']");
-      if (!link) {
-        link = document.createElement('link');
-        link.rel = 'icon';
-        document.head.appendChild(link);
-      }
-      link.href = iconUrl;
-    },
-    args: [AP_ICON_URL],
-  });
+	await chrome.scripting.executeScript({
+		target: { tabId },
+		func: (iconUrl) => {
+			if (window.__apOriginalIcon === undefined) {
+				window.__apOriginalIcon = document.querySelector('link[rel*="icon"]')?.href || null;
+			}
+			let link = document.querySelector("link[rel~='icon']");
+			if (!link) {
+				link = document.createElement("link");
+				link.rel = "icon";
+				document.head.appendChild(link);
+			}
+			link.href = iconUrl;
+		},
+		args: [AP_ICON_URL],
+	});
 }
 
 export async function restoreFavicon(tabId) {
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    func: () => {
-      if (window.__apOriginalIcon === undefined) return;
-      const link = document.querySelector("link[rel~='icon']");
-      if (link) {
-        if (window.__apOriginalIcon) link.href = window.__apOriginalIcon;
-        else link.remove();
-      }
-      delete window.__apOriginalIcon;
-    },
-  });
+	await chrome.scripting.executeScript({
+		target: { tabId },
+		func: () => {
+			if (window.__apOriginalIcon === undefined) return;
+			const link = document.querySelector("link[rel~='icon']");
+			if (link) {
+				if (window.__apOriginalIcon) link.href = window.__apOriginalIcon;
+				else link.remove();
+			}
+			delete window.__apOriginalIcon;
+		},
+	});
 }

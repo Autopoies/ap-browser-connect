@@ -7,12 +7,12 @@ const hostDot = document.getElementById("hostDot");
 const hostState = document.getElementById("hostState");
 const opsDot = document.getElementById("opsDot");
 const opsCount = document.getElementById("opsCount");
+const sessionsDot = document.getElementById("sessionsDot");
+const sessionsCount = document.getElementById("sessionsCount");
+const manageSessionsBtn = document.getElementById("manageSessionsBtn");
 const settingsBtn = document.getElementById("settingsBtn");
 const settingsPanel = document.getElementById("settingsPanel");
 const openFullOptionsLink = document.getElementById("openFullOptionsLink");
-const agentSelect = document.getElementById("agentSelect");
-const terminalSelect = document.getElementById("terminalSelect");
-const workspaceCwdInput = document.getElementById("workspaceCwd");
 
 const annotateBtn = document.getElementById("annotateBtn");
 const annotateLabel = annotateBtn.querySelector(".ab-label");
@@ -28,9 +28,9 @@ annotateBtn.addEventListener("click", async () => {
 		const r = await chrome.runtime.sendMessage({ method: "toggle-annotate" });
 		if (r && r.ok === false && r.error) {
 			annotateBtn.title = r.error;
-			annotateLabel.textContent = "✗ " + r.error.slice(0, 22);
+			annotateLabel.textContent = r.error.slice(0, 22);
 		} else {
-			annotateLabel.textContent = "✓ Toggled";
+			annotateLabel.textContent = "Toggled";
 		}
 		setTimeout(() => (annotateLabel.textContent = original), 1200);
 	} catch (_) {}
@@ -52,9 +52,6 @@ async function init() {
 		"instance_id",
 		"label",
 		"custom_annotate_shortcut",
-		"default_agent",
-		"default_terminal",
-		"workspace_cwd",
 	]);
 	const idStr = stored.instance_id || "(not set)";
 	instanceIdEl.textContent = idStr;
@@ -64,23 +61,13 @@ async function init() {
 	if (stored.custom_annotate_shortcut?.display) {
 		document.getElementById("annotateKbd").textContent = stored.custom_annotate_shortcut.display;
 	}
-
-	if (stored.default_agent) {
-		agentSelect.value = stored.default_agent;
-	}
-	if (stored.default_terminal) {
-		terminalSelect.value = stored.default_terminal;
-	}
-	if (stored.workspace_cwd) {
-		workspaceCwdInput.value = stored.workspace_cwd;
-	}
 }
 
 // Toggle Inline Settings Panel
 settingsBtn?.addEventListener("click", (e) => {
 	e.preventDefault();
 	settingsPanel.hidden = !settingsPanel.hidden;
-	settingsBtn.textContent = settingsPanel.hidden ? "⚙ Settings" : "▲ Close";
+	settingsBtn.textContent = settingsPanel.hidden ? "Settings" : "Close";
 });
 
 // Open Full Page Options
@@ -90,18 +77,9 @@ function openFullOptions(e) {
 }
 
 openFullOptionsLink?.addEventListener("click", openFullOptions);
-
-// Save quick settings changes
-agentSelect?.addEventListener("change", async () => {
-	await chrome.storage.local.set({ default_agent: agentSelect.value });
-});
-
-terminalSelect?.addEventListener("change", async () => {
-	await chrome.storage.local.set({ default_terminal: terminalSelect.value });
-});
-
-workspaceCwdInput?.addEventListener("input", async (e) => {
-	await chrome.storage.local.set({ workspace_cwd: e.target.value.trim() });
+manageSessionsBtn?.addEventListener("click", (e) => {
+	e?.preventDefault?.();
+	chrome.tabs.create({ url: `${chrome.runtime.getURL("options.html")}#sessions` });
 });
 
 function withTimeout(p, ms) {
@@ -146,10 +124,10 @@ copyBtn.addEventListener("click", async () => {
 	if (instance_id) {
 		try {
 			await navigator.clipboard.writeText(instance_id);
-			copyBtn.textContent = "✓";
+			copyBtn.textContent = "Copied";
 			setTimeout(() => (copyBtn.textContent = "Copy"), 1000);
 		} catch (_) {
-			copyBtn.textContent = "✗";
+			copyBtn.textContent = "Failed";
 			setTimeout(() => (copyBtn.textContent = "Copy"), 1000);
 		}
 	}
@@ -159,3 +137,33 @@ init();
 refreshStatus();
 refreshAnnotateCount();
 setInterval(refreshStatus, 1000);
+
+async function refreshBindings() {
+	try {
+		const res = await withTimeout(chrome.runtime.sendMessage({ method: "session.bindings" }), 1200);
+		if (!res?.ok) throw new Error(res?.error || "Bindings unavailable");
+		const bindings = Array.isArray(res.data?.bindings) ? res.data.bindings : [];
+		const count = bindings.filter(
+			(b) => b.health?.state === "ready" && b.health.valid_until > Date.now(),
+		).length;
+		sessionsDot.className = count > 0 ? "dot connected" : "dot idle";
+		sessionsCount.textContent = `${count} ready / ${bindings.length} saved`;
+		sessionsCount.title =
+			bindings.length > 0
+				? bindings
+						.map(
+							(b) =>
+								`${b.label} (${b.scope}, ${b.health?.state === "ready" && b.health.valid_until > Date.now() ? "ready" : b.health?.state === "offline" ? "offline" : "unverified"})`,
+						)
+						.join(", ")
+				: "No active session bindings (Pin-only mode)";
+	} catch (_) {
+		sessionsDot.className = "dot idle";
+		sessionsCount.textContent = "Connection unverified";
+	}
+}
+chrome.storage.onChanged.addListener((changes, area) => {
+	if (area === "session" && changes.session_bindings) refreshBindings();
+});
+refreshBindings();
+setInterval(refreshBindings, 2000);

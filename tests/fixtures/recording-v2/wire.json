@@ -1,0 +1,12 @@
+{
+  "capabilities":{"jsonrpc":"2.0","method":"record.capabilities","params":{}},
+  "capabilities_result":{"jsonrpc":"2.0","id":40,"result":{"ok":true,"data":{"host":{"protocol_version":2,"backend":"cdp_capture_screenshot"},"extension":{"protocol_version":2,"backend":"cdp_capture_screenshot"},"legacy_v1_read_only":true}}},
+  "start":{"jsonrpc":"2.0","method":"record.start","params":{"protocol_version":2,"backend":"cdp_capture_screenshot","operation_id":"op_start_2","tab_id":7,"config":{"max_duration_ms":1500,"capture_fps":2,"jpeg_quality":70,"region":{"kind":"viewport"},"labels":{"project":"arena","test.case":"碰撞"},"run_id":"R042"}}},
+  "extension_start":{"jsonrpc":"2.0","id":41,"method":"record.start","params":{"protocol_version":2,"backend":"cdp_capture_screenshot","operation_id":"op_start_2","tab_id":7,"config":{"max_duration_ms":1500,"capture_fps":2,"jpeg_quality":70,"region":{"kind":"viewport"},"labels":{"project":"arena","test.case":"碰撞"},"run_id":"R042"},"identity":{"host_epoch":"host_02","record_id":"rec_02"},"initial_credit":{"identity":{"host_epoch":"host_02","record_id":"rec_02"},"next_seq":1,"max_frame_bytes":4194304}}},
+  "started":{"jsonrpc":"2.0","id":41,"result":{"ok":true,"data":{"protocol_version":2,"backend":"cdp_capture_screenshot","identity":{"host_epoch":"host_02","record_id":"rec_02"},"tab_id":7,"clock":{"source":"extension_performance","origin":"before_first_recorded_screenshot_request"},"resolved_region_css":{"x":0.0,"y":0.0,"width":16.0,"height":16.0}}}},
+  "stop":{"jsonrpc":"2.0","method":"record.stop","params":{"identity":{"host_epoch":"host_02","record_id":"rec_02"},"operation_id":"op_stop_2"}},
+  "stop_ack":{"id":42,"result":{"ok":true,"data":{"protocol_version":2,"backend":"cdp_capture_screenshot","identity":{"host_epoch":"host_02","record_id":"rec_02"},"operation_id":"op_start_2","instance_id":"browser_02","tab_id":7,"state":"stopping","persisted_seq":1,"spool_bytes":221}}},
+  "frame_accepted":{"id":"sw-1","ok":true,"result":{"accepted_seq":1,"credit":{"identity":{"host_epoch":"host_02","record_id":"rec_02"},"next_seq":2,"max_frame_bytes":4194304}}},
+  "unsupported_version":{"jsonrpc":"2.0","id":44,"error":{"code":"RECORD_UNSUPPORTED_VERSION","message":"Recording requires protocol 2 in CLI, host and extension; upgrade matching components."}},
+  "unsupported_backend":{"jsonrpc":"2.0","id":45,"error":{"code":"RECORD_UNSUPPORTED_BACKEND","message":"Recording requires cdp_capture_screenshot in host and extension; no legacy fallback."}}
+}

@@ -1,11 +1,7 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 import vm from "node:vm";
-import {
-	buildSnapshotExpression,
-	isRefTarget,
-	refSelector,
-} from "./state-snapshot.mjs";
+import { buildSnapshotExpression, isRefTarget, refSelector } from "./state-snapshot.mjs";
 
 test("refSelector builds attribute query", () => {
 	assert.equal(refSelector(12), '[data-ap-ref="12"]');

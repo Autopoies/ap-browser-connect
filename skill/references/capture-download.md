@@ -1,6 +1,8 @@
 # Capture & Download
 
-Save and export content from web pages: files, videos, PDFs, archives, media, screenshots.
+Save and export content from web pages: files, source media, PDFs, archives and screenshots.
+
+**Choose by intent:** download the site's original file/stream → `download` (use `--video` for video-site extraction); discover source URLs → `media`. Capture **what the page renders over time**, including a region/element or game-debug run → [recording](recording.md) for GIF/MP4/MOV, phases/marks, task watermarks and required Agent-chosen output/validation. Watermark an **existing local video** → that reference's [offline branch](recording.md#existing-video-offline), with no browser/adapter lookup or launch. Recording is not a substitute for source-media download.
 
 ## Commands at a glance
 
@@ -13,6 +15,7 @@ Save and export content from web pages: files, videos, PDFs, archives, media, sc
 | `har` | Export captured network requests as HAR 1.2 |
 | `media` | List all image/video/audio URLs on page |
 | `screenshot --element <sel>` | Screenshot a specific element |
+| `record` / `record watermark <input>` | Rendered video / offline task watermarks — [canonical recording workflow](recording.md) |
 
 ## download
 

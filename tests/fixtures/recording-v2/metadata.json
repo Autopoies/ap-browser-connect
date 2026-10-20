@@ -1,0 +1,15 @@
+{
+  "schema_version":2,
+  "export_id":"offline_02",
+  "provenance":"offline_unverified",
+  "labels":{"test.case":"离线"},
+  "settings":{"format":"mp4","fps":2,"max_edge":16,"crf":25,"colors":128,"upscale":false,"watermark":{"mode":"none"}},
+  "video":{"sha256":"0000000000000000000000000000000000000000000000000000000000000000","bytes":0},
+  "timeline":{"sha256":"0000000000000000000000000000000000000000000000000000000000000000","bytes":0},
+  "input_video":{"sha256":"0000000000000000000000000000000000000000000000000000000000000000","bytes":0},
+  "partial":false,
+  "duration_ms":1000.0,
+  "final_visibility_extension_ms":0.0,
+  "width":16,
+  "height":16
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version":1,
+  "export_id":"export_01",
+  "provenance":"recording",
+  "identity":{"host_epoch":"host_01","record_id":"rec_01"},
+  "run_id":"R042",
+  "labels":{"project":"arena","test.case":"碰撞"},
+  "settings":{
+    "format":"mp4","fps":2,"max_edge":16,"crf":25,"colors":128,"upscale":false,
+    "watermark":{"mode":"task","template":{"version":1,"layout":"strip","strip_height":48,"items":[
+      {"text":{"kind":"template","value":"{label.project} / {label.test.case} | {phase} | {marks}"},"anchor":"top_left","x":8,"y":4,"font_size":16,"color":"#ffffff","background":"#101010","opacity":1.0,"update_interval_ms":100},
+      {"text":{"kind":"template","value":"run={run_id} t={pts_ms}ms frame={output_frame}"},"anchor":"bottom_left","x":8,"y":-4,"font_size":12,"color":"#ffffff","opacity":0.9,"interval":{"start_ms":0,"end_ms":1500},"update_interval_ms":500}
+    ]}}
+  },
+  "video":{"sha256":"0000000000000000000000000000000000000000000000000000000000000000","bytes":0},
+  "timeline":{"sha256":"6ff7161d22bb669beff3e2fd22e6d4fa404ffe1831adc2d05807554a9e1b99b9","bytes":600},
+  "source_manifest_sha256":"a26e86722e62cc7af02e3f64d78fa1589791cfa1c64b69f127441973db51be07",
+  "source_manifest_json":"{\n  \"protocol_version\":1,\n  \"identity\":{\"host_epoch\":\"host_01\",\"record_id\":\"rec_01\"},\n  \"operation_id\":\"op_start_1\",\n  \"instance_id\":\"browser_01\",\n  \"tab_id\":7,\n  \"state\":\"sealed\",\n  \"config\":{\"max_duration_ms\":1500,\"capture_fps\":2,\"jpeg_quality\":70,\"region\":{\"kind\":\"viewport\"},\"labels\":{\"project\":\"arena\",\"test.case\":\"碰撞\"},\"run_id\":\"R042\"},\n  \"resolved_region_css\":{\"x\":0.0,\"y\":0.0,\"width\":16.0,\"height\":16.0},\n  \"clock\":{\"source\":\"extension_performance\",\"origin\":\"before_start_screencast\"},\n  \"end\":{\"final_seq\":2,\"duration_ms\":1500.0,\"reason\":\"deadline\",\"duration_observed\":true,\"drops\":{\"sampled\":3,\"backpressured\":1,\"invalid\":0}},\n  \"frames\":[\n    {\"seq\":1,\"t_ms\":0.0,\"cdp_timestamp_s\":1234.0,\"width\":16,\"height\":16,\"geometry\":{\"viewport_css\":{\"x\":0.0,\"y\":0.0,\"width\":16.0,\"height\":16.0},\"crop_css\":{\"x\":0.0,\"y\":0.0,\"width\":16.0,\"height\":16.0},\"css_to_image\":{\"scale_x\":1.0,\"scale_y\":1.0,\"offset_x\":0.0,\"offset_y\":0.0},\"device_scale_factor\":1.0,\"page_scale_factor\":1.0,\"scroll_x\":0.0,\"scroll_y\":0.0},\"offset\":0,\"length\":221,\"sha256\":\"1c3592debabc2c91a49906c1f34079c55575eced9163f14b77ba0bb90369556a\"},\n    {\"seq\":2,\"t_ms\":1000.0,\"cdp_timestamp_s\":1235.0,\"width\":16,\"height\":16,\"geometry\":{\"viewport_css\":{\"x\":0.0,\"y\":0.0,\"width\":16.0,\"height\":16.0},\"crop_css\":{\"x\":0.0,\"y\":0.0,\"width\":16.0,\"height\":16.0},\"css_to_image\":{\"scale_x\":1.0,\"scale_y\":1.0,\"offset_x\":0.0,\"offset_y\":0.0},\"device_scale_factor\":1.0,\"page_scale_factor\":1.0,\"scroll_x\":0.0,\"scroll_y\":0.0},\"offset\":221,\"length\":221,\"sha256\":\"1c3592debabc2c91a49906c1f34079c55575eced9163f14b77ba0bb90369556a\"}\n  ],\n  \"events\":[\n    {\"event_index\":1,\"operation_id\":\"op_phase_1\",\"t_ms\":200.0,\"kind\":\"phase\",\"text\":\"air collision\"},\n    {\"event_index\":2,\"operation_id\":\"op_mark_1\",\"t_ms\":500.0,\"kind\":\"mark\",\"text\":\"observed overlap\",\"duration_ms\":1000}\n  ],\n  \"spool_bytes\":442,\n  \"spool_sha256\":\"f2e239ed195df3741f3255209a42705b34cea6a2a2508b78e505a2981fd677c9\"\n}\n",
+  "partial":false,
+  "end_reason":"deadline",
+  "duration_ms":1500.0,
+  "width":16,
+  "height":64
+}

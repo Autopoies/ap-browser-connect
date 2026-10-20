@@ -140,6 +140,14 @@ pub fn run(fix: bool, json_out: bool) -> Result<()> {
         check_skill_sync(17),
         check_download_config(18),
         check_adapters_compat(19),
+        check_dep(
+            20,
+            "ffprobe",
+            &["-version"],
+            "recording validation unavailable; install ffmpeg/ffprobe locally",
+            Severity::Warning,
+        ),
+        check_recording(21),
     ];
 
     if json_out {
@@ -177,6 +185,13 @@ pub fn run(fix: bool, json_out: bool) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+fn check_recording(id: usize) -> Check {
+    match crate::record::check_capabilities() {
+        Ok(()) => Check::pass(id, "recording encoders", Severity::Warning, "local H.264/GIF/palette and literal text rasterizer ready (custom/CJK fonts validated per export)".into()),
+        Err(e) => Check::warn(id, "recording encoders", Severity::Warning, e.to_string(), Some("provide local ffmpeg/ffprobe with libx264, GIF, PNG and palette filters; no automatic installation".into())),
+    }
 }
 
 // ── Critical checks ────────────────────────────────────────────────────────

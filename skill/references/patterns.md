@@ -2,7 +2,9 @@
 
 Recipes for common browser automation tasks. Each pattern shows the exact command sequence.
 
-> **Before any pattern: check for a site adapter first** (`ap-browser sites search <site>`). If the site has an adapter, its command beats every generic pattern below — it already handles selectors, pagination, and waits. These patterns are the generic fallback, not the default. See SKILL.md → Adapter-first rule.
+> **Before online site patterns: check for a site adapter first** (`ap-browser sites search <site>`). If the site has an adapter, its command beats every generic site pattern below — it already handles selectors, pagination, and waits. These patterns are the generic fallback, not the default. See SKILL.md → Adapter-first rule.
+
+**Recording route:** viewport/region/element GIF/MP4/MOV, tagged game-debug phase/mark runs and task watermarks → [canonical recording workflow](recording.md), including Agent-chosen `--out`, artifact validation, retention and recovery. For an existing local video, take its [offline watermark branch](recording.md#existing-video-offline) directly; skip adapter lookup/browser connection/launch.
 
 ## 1. Navigate, discover, act
 
@@ -193,6 +195,8 @@ Use `download <url>` — it fetches through the browser session, so logged-in/co
 ap-browser download "https://learn.ivey.ca/courses/6143/files/916751/download?download_frd=1"
 ap-browser download "https://example.com/video.mp4" --video   # yt-dlp for media sites
 ```
+
+This downloads **source files/streams**, not rendered page motion. For rendered video or a cropped game run, use the [recording workflow](recording.md) instead.
 
 `download` saves to the current directory and reports the file path. Fall back to `eval` fetch only when `download` fails on a specific endpoint (some sites validate referer — open the page first, then `download` the file's own URL from the page's DOM).
 

@@ -113,122 +113,39 @@
           </div>
         </section>
 
-        <!-- 3. CLI Agent & Terminal Configuration -->
-        <section class="card">
-          <h2>CLI Agent &amp; Terminal Runner</h2>
-
-          <div class="form-group">
-            <label for="agentSelect">Default CLI Agent</label>
-            <select id="agentSelect">
-              <option value="dsh">DeepSeek Harness (dsh)</option>
-              <option value="agent">Cursor CLI Agent (agent)</option>
-              <option value="pi">Pi Agent (pi)</option>
-              <option value="claude">Claude Code (claude)</option>
-              <option value="codex">Codex CLI (codex)</option>
-              <option value="gemini">Gemini CLI (gemini)</option>
-              <option value="aider">Aider (aider)</option>
-              <option value="opencode">OpenCode (opencode)</option>
-              <option value="custom">Custom Agent Command...</option>
-            </select>
-            <div id="detectedAgentsList" class="badge-list"></div>
+        <!-- 3. Saved Session Bindings -->
+        <section class="card" id="sessions">
+          <div class="card-header-row">
+            <h2>Session Bindings</h2>
+            <div class="card-header-actions">
+              <span class="badge" id="sessionCountBadge">Checking…</span>
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
+                id="disconnectAllBtn"
+                hidden
+              >
+                Disconnect All
+              </button>
+            </div>
           </div>
-
-          <div class="form-group" id="customAgentGroup" hidden>
-            <label for="customAgentCmd">Custom Agent Command</label>
-            <input
-              type="text"
-              id="customAgentCmd"
-              placeholder="e.g. my-agent run {prompt_file}"
-            />
-            <p class="help-text">
-              Use <code>{prompt_file}</code> placeholder where the prompt file
-              path should be injected.
-            </p>
-          </div>
-
-          <div class="form-group">
-            <label for="terminalSelect">Default Terminal Emulator</label>
-            <select id="terminalSelect">
-              <option value="auto">
-                Auto (Default / Ghostty / iTerm / WT)
-              </option>
-            </select>
-            <div id="detectedTerminalsList" class="badge-list"></div>
-          </div>
-
-          <div class="form-group">
-            <label for="workspaceCwd">Default Workspace Directory (CWD)</label>
-            <input
-              type="text"
-              id="workspaceCwd"
-              placeholder="Default: ~/.ap-browser/workspace"
-            />
-            <p class="help-text">
-              Initial directory where the agent runs (defaults to
-              <code>~/.ap-browser/workspace</code> or
-              <code>%USERPROFILE%\.ap-browser\workspace</code>).
-            </p>
-          </div>
-        </section>
-
-        <!-- 4. Safety Harness Protocols -->
-        <section class="card">
-          <h2>Safety Harness Protocols (Mandatory &amp; Enforced)</h2>
           <p class="section-intro">
-            Mandatory security protocols unconditionally injected into every
-            agent prompt:
+            Saved agent sessions bound via <code>ap-browser bind</code>.
+            Only verified, ready receivers can accept interactive requests.
+            Offline bindings stay here until disconnected.
           </p>
-
-          <div class="checkbox-group">
-            <div class="checkbox-item">
-              <span style="color: #22c55e; font-weight: bold; margin-top: 2px"
-                >✔</span
-              >
-              <div class="checkbox-content">
-                <strong>Anti-Injection &amp; Pastjacking Check</strong>
-                <span
-                  >Always inspects commands for hidden zero-width characters,
-                  obfuscation, or prompt injection payloads.</span
-                >
-              </div>
-            </div>
-
-            <div class="checkbox-item">
-              <span style="color: #22c55e; font-weight: bold; margin-top: 2px"
-                >✔</span
-              >
-              <div class="checkbox-content">
-                <strong
-                  >Destructive &amp; Irreversible Command Interception</strong
-                >
-                <span
-                  >Requires confirmation before running destructive operations
-                  (e.g. <code>rm -rf</code>, <code>sudo</code>, disk
-                  formatting).</span
-                >
-              </div>
-            </div>
-
-            <div class="checkbox-item">
-              <span style="color: #22c55e; font-weight: bold; margin-top: 2px"
-                >✔</span
-              >
-              <div class="checkbox-content">
-                <strong>Remote Script Pre-Audit</strong>
-                <span
-                  >Enforces downloading and inspecting source code before
-                  running remote scripts (e.g. <code>curl | sh</code>).</span
-                >
-              </div>
-            </div>
-          </div>
+          <div
+            class="session-list"
+            id="sessionBindings"
+            aria-live="polite"
+          ></div>
         </section>
 
         <div class="actions">
           <button type="button" class="btn btn-primary" id="saveBtn">
             Save Settings
           </button>
-          <span class="save-msg" id="saveMsg" hidden>✓ Settings saved</span>
+          <span class="save-msg" id="saveMsg" hidden>Settings saved</span>
         </div>
       </main>
     </div>

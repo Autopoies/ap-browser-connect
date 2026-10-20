@@ -151,6 +151,18 @@
         align-items: center;
         gap: 6px;
       }
+      .status-line-between {
+        justify-content: space-between;
+      }
+      .status-line-left {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       .status-line strong {
         color: var(--fg);
         font-weight: 500;
@@ -255,43 +267,14 @@
         AP Browser Connect
       </h1>
       <button class="settings-btn" id="settingsBtn" title="Toggle Settings">
-        ⚙ Settings
+        Settings
       </button>
     </div>
 
     <!-- Inline Expandable Settings Panel -->
     <div class="settings-panel" id="settingsPanel" hidden>
-      <label for="agentSelect">Default CLI Agent</label>
-      <select id="agentSelect">
-        <option value="dsh">DeepSeek Harness (dsh)</option>
-        <option value="agent">Cursor CLI Agent (agent)</option>
-        <option value="pi">Pi Agent (pi)</option>
-        <option value="claude">Claude Code (claude)</option>
-        <option value="codex">Codex CLI (codex)</option>
-        <option value="gemini">Gemini CLI (gemini)</option>
-        <option value="aider">Aider (aider)</option>
-        <option value="opencode">OpenCode (opencode)</option>
-        <option value="custom">Custom...</option>
-      </select>
-
-      <label for="terminalSelect">Default Terminal</label>
-      <select id="terminalSelect">
-        <option value="auto">Auto (Default / Ghostty / iTerm / WT)</option>
-        <option value="ghostty">Ghostty</option>
-        <option value="iterm2">iTerm2</option>
-        <option value="terminal">Terminal.app</option>
-        <option value="wt">Windows Terminal</option>
-      </select>
-
-      <label for="workspaceCwd">Default Workspace (CWD)</label>
-      <input
-        type="text"
-        id="workspaceCwd"
-        placeholder="Default: ~/.ap-browser/workspace"
-      />
-
       <a class="full-options-link" id="openFullOptionsLink"
-        >Open Full Settings Page ↗</a
+        >Open Full Settings Page</a
       >
     </div>
 
@@ -331,6 +314,13 @@
       <div class="status-line">
         <span class="dot idle" id="opsDot"></span>
         <span>active ops: <strong id="opsCount">0</strong></span>
+      </div>
+      <div class="status-line status-line-between">
+        <div class="status-line-left">
+          <span class="dot idle" id="sessionsDot"></span>
+          <span>sessions: <strong id="sessionsCount">checking…</strong></span>
+        </div>
+        <button type="button" class="copy-btn" id="manageSessionsBtn">Manage</button>
       </div>
     </div>
 

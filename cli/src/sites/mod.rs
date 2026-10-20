@@ -12,6 +12,11 @@ use std::path::{Path, PathBuf};
 
 // ── Reserved names that can never be site folders ─────────────────────────
 pub const RESERVED: &[&str] = &[
+    "record",
+    "bind",
+    "unbind",
+    "bindings",
+    "reply",
     "ping",
     "info",
     "status",
@@ -1337,6 +1342,15 @@ pub fn send_single_step(step: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recording_builtin_cannot_be_shadowed_by_an_adapter() {
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from(["ap-browser", "record", "status", "i:e:r"])
+            .expect("record remains a built-in command");
+        assert!(matches!(cli.command, crate::Cmd::Record(_)));
+        assert!(RESERVED.contains(&"record"));
+    }
 
     #[test]
     fn clamp_wait_timeouts_bounds_inner_loop_below_host_cap() {

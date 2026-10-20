@@ -4,6 +4,7 @@
 
 pub mod frame;
 pub mod protocol;
+pub mod recording;
 pub mod transport;
 
 pub use frame::{encode, read_frame, FrameError, MAX_FRAME_SIZE};
