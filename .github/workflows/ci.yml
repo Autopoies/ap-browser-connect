@@ -35,7 +35,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
       - name: Install ffmpeg (macOS)
         if: runner.os == 'macOS'
-        uses: FedericoCarboni/setup-ffmpeg@v3
+        run: HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 brew install ffmpeg
       - name: rustfmt
         run: cargo fmt --check
       - name: clippy
