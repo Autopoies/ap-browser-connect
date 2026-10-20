@@ -419,12 +419,20 @@ impl RelayManager {
         // Exclusive creation also prevents cross-profile host processes from
         // overwriting one another's reference prompt in the same millisecond.
         let prompt_file = loop {
-            let previous = PROMPT_MILLIS
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |last| {
-                    Some(now.max(last + 1))
-                })
-                .unwrap();
-            let path = run.join(format!("ap-agent-prompt-{}.md", now.max(previous + 1)));
+            let mut last = PROMPT_MILLIS.load(Ordering::SeqCst);
+            let next = loop {
+                let candidate = now.max(last + 1);
+                match PROMPT_MILLIS.compare_exchange_weak(
+                    last,
+                    candidate,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                ) {
+                    Ok(_) => break candidate,
+                    Err(actual) => last = actual,
+                }
+            };
+            let path = run.join(format!("ap-agent-prompt-{next}.md"));
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
             #[cfg(unix)]
