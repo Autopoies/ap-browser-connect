@@ -248,8 +248,8 @@ T1=$(ap-browser tabs new "https://news.ycombinator.com/" --silent | jq '.data.id
 ap-browser hackernews top --tab $T1 --limit 5
 ap-browser tabs close $T1
 
-T2=$(ap-browser tabs new "https://www.reddit.com/r/programming/hot/.json?limit=5" --silent | jq '.data.id')
-ap-browser reddit hot programming --tab $T2 --limit 5
+T2=$(ap-browser tabs new "https://www.reddit.com/r/programming/hot/" --silent | jq '.data.id')
+ap-browser reddit hot --subreddit programming --tab $T2 --limit 5
 ap-browser tabs close $T2
 ```
 
