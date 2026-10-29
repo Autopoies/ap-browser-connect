@@ -1,6 +1,6 @@
 {
 	"name": "ap-browser-connect",
-	"version": "0.2.0",
+	"version": "0.2.6",
 	"description": "Drive your logged-in Chrome from any agent \u2014 CLI, native messaging host, and bridge",
 	"license": "Apache-2.0",
 	"repository": {

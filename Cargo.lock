@@ -81,7 +81,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "ap-browser"
-version = "0.2.0"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "ap-browser-core",
@@ -102,7 +102,7 @@ dependencies = [
 
 [[package]]
 name = "ap-browser-bridge"
-version = "0.2.0"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "ap-browser-core",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "ap-browser-core"
-version = "0.2.0"
+version = "0.2.6"
 dependencies = [
  "interprocess",
  "serde",
@@ -123,7 +123,7 @@ dependencies = [
 
 [[package]]
 name = "ap-browser-host"
-version = "0.2.0"
+version = "0.2.6"
 dependencies = [
  "anyhow",
  "ap-browser-core",

@@ -194,7 +194,7 @@ ap-browser zhihu hot                                   # 知乎热榜
 | **站点适配器** | `sites list`, `sites search <q>`, `sites doc <site>`, `<site> <cmd>` | 一条命令调用 47 个网站的 196+ 项操作，后台标签页自动隔离 |
 | **页面交互** | `goto`, `click`, `fill`, `select`, `upload`, `press`, `scroll`, `wait`, `tabs` | 按 `[N]` 编号（`click 12`）或选择器点击输入；支持多文件 `upload` |
 | **批量与底层接口** | `batch`, `eval`, `cdp` | 一次往返执行多步 JSON；`--raw` 裸输出 JS 结果或调用 CDP |
-| **下载与导出** | `text`, `html`, `download [--video]`, `pdf`, `mhtml`, `har`, `media` | 携带 Cookie 下载文件或 `yt-dlp` 视频流，导出 PDF/MHTML/HAR |
+| **下载与导出** | `text`, `html`, `download [--video]`, `pdf`, `mhtml`, `har`, `media` | 携带 Cookie 下载文件，探测 HLS/DASH 并分段下载，或提取 `yt-dlp` 视频流；导出 PDF/MHTML/HAR |
 | **调试与维护** | `dev console/network/errors/perf`, `profiles`, `use`, `doctor`, `update` | 查看控制台/网络/性能指标，切换多 Profile，自检与更新适配器 |
 
 详见 [CLI 命令参考](skill/references/commands.md)、[视频录制指南](skill/references/recording.md)、[会话接收端协议](skill/references/session-receiver.md)、[常见操作范式](skill/references/patterns.md)、[安全策略](skill/references/safety.md) 与 [多 Profile 指南](skill/references/multi-profile.md)。
@@ -206,7 +206,7 @@ ap-browser zhihu hot                                   # 知乎热榜
 ![System Architecture](docs/assets/architecture.svg)
 
 - **需要在浏览器扩展里配置 API Key 吗？** 不需要。它直接连接你终端里正在使用的编程 Agent，扩展本身不内置大模型。
-- **`download --video` 和 `record` 有什么区别？** `download --video` 调用 `yt-dlp` 下载网站的原始视频流；`record` 将网页在屏幕上的实时渲染画面录制为 `GIF`/`MP4`/`MOV`。
+- **`download --video` 和 `record` 有什么区别？** `download` 通过页面码流/ffmpeg（Vimeo、HLS/DASH）或 `yt-dlp`（其他视频网站）下载原始媒体；对已发现的码流加 `--start 01:29:00 --duration 120` 可只截取两分钟。`record` 将网页实时渲染画面录制为 `GIF`/`MP4`/`MOV`。详见[源码流下载](skill/references/capture-download.md)。
 - **会干扰我正在浏览的标签页吗？** 不会。如果你当前不在目标网站，适配器会在后台打开临时标签页，完成后自动关闭。
 - **支持哪些系统？** macOS 与 Linux 已完整测试支持；Windows 目前为 **experimental（实验性支持）**。
 

@@ -72,20 +72,20 @@ extension → adapters).
 
 ## Failure discipline (mandatory)
 
-**A hanging CLI call is a broken install, not a wrong tool choice.** Never
-switch tool family (other CLIs, APIs, skills) because an `ap-browser` command
-hangs — diagnose the binary first:
+**A hang needs diagnosis, not blind retries.** A renderer, service worker,
+connection or wrong executable can each be responsible:
 
-1. Retest bounded: `timeout 3 ap-browser ping`. A shim overwritten by a
-   native-host binary hangs forever waiting on stdin; a healthy CLI answers in
-   under a second.
-2. Diagnose: `which ap-browser && file "$(which ap-browser)"`. The npm
-   install is a Node launcher script; `Mach-O`/`ELF` at that path means the
-   package is corrupted.
-3. Repair: `npm install -g ap-browser-connect`, or bypass the shim directly:
-   `ln -sf /opt/homebrew/lib/node_modules/ap-browser-connect/bin/aarch64-apple-darwin/ap-browser /opt/homebrew/bin/ap-browser`
-   (Apple silicon; use the matching `bin/<target>/` dir otherwise).
-4. Only after `ap-browser ping` answers may you fall back to another tool.
+1. Run `ap-browser ping --timeout 3`, then `ap-browser doctor --json`.
+   Doctor probes each extension end-to-end; a socket alone is not health.
+2. If the CLI itself prints nothing, inspect `which ap-browser`,
+   `file "$(which ap-browser)"`, and `ap-browser --version` (externally bound
+   the probe with `timeout` if available). Both a Node launcher and a native
+   CLI binary are valid; an accidentally installed native *host* is not.
+3. Use [connection rescue](#connection-rescue-least-disruptive-first) for a
+   disconnected worker; repair the install only if the executable is wrong.
+4. After an interaction times out, inspect a fresh `state` before retrying:
+   the input may already have executed. A healthy ping does not prove that
+   a WebGL-heavy page's renderer is responsive.
 
 **Check the profile before login-dependent work.** Multiple Chrome profiles
 may be online. `ap-browser status` marks the current one with `*` (and every
@@ -103,8 +103,8 @@ ap-browser <site> <cmd>            # 4. USE the adapter (auto silent tab when of
 # no adapter matched? then generic:
 ap-browser goto "https://..."      # 5. navigate
 ap-browser text                    # 6. read page
-# deterministic multi-step sequences → ONE batch (state→click→wait→text in 1 round-trip):
-echo '[{"method":"state"},{"method":"click","ref":12},{"method":"text"}]' | ap-browser batch
+# deterministic selectors, with no decisions between steps → ONE batch:
+echo '[{"method":"click","selector":"#search"},{"method":"wait","selector":".results"},{"method":"text","selector":".results"}]' | ap-browser batch
 ```
 
 The generic flow (goto → text → click) only runs when **no adapter exists** for the site. Any deterministic 3+ step sequence becomes a `batch` (one round-trip, one `meta` block — see `references/patterns.md` #11). See **Adapter-first rule** for the full match recipe.
@@ -164,7 +164,7 @@ rules vs **59 calls / 229s** with the anti-patterns above.
 | | `record phase` / `record mark` | persistent stage / transient game-debug note |
 | | `record status` / `stop` / `export` / `release` | manage retained source and validate caller-local artifacts |
 | | `record watermark <input>` | offline task/custom watermark; no browser needed |
-| **Interact** | `click <target>` | click — target is a `state` ref (`click 12`) or CSS selector |
+| **Interact** | `click <target> [--expect-text TEXT]` | click a fresh `state` ref or CSS selector; optionally verify its label |
 | | `fill <target> <value>` | type into inputs, textareas, contenteditable (real keystrokes) |
 | | `select <target> <option>` | pick a `<select>` option by value or label |
 | | `upload <selector> <file> [file...]` | set file(s) on an `<input type="file">` (CSV import etc.; same engine as `dev upload`) |
@@ -190,15 +190,22 @@ rules vs **59 calls / 229s** with the anti-patterns above.
 ```bash
 ap-browser state                    # 1. snapshot: [N] refs, tag, name, y-coordinate
 ap-browser state --human            #    compact text tree for humans
-ap-browser click 12                 # 2. act BY REF (numeric target = state ref)
-ap-browser fill 7 "hello"           #    fill by ref
-ap-browser wait 7 --timeout-ms 10000
-ap-browser state                    # 3. fresh snapshot after any page change
+ap-browser fill 7 "hello"           # 2. act by a ref from that snapshot
+ap-browser state                    # 3. refresh: fill can re-render an SPA
+ap-browser click 12 --expect-text "Search"  # use the NEW snapshot's ref
+ap-browser wait ".results" --timeout-ms 10000
+ap-browser state                    # refresh after the next mutation
 ```
 
 **Target contract:** `click`/`fill`/`wait` take either a **numeric ref** from `state` (a bare integer) or a **CSS selector** — `click 12` and `click "button.submit"` both work.
 
-**Refs are per-snapshot.** A page change invalidates them: you get `STALE_REF` → run `state` again. Never reuse a ref across navigations.
+**Fresh refs after every mutation.** After `fill`, `click`, `select`, navigation,
+scroll or a viewport change, run `state` before choosing the next ref. Live SPAs
+can replace a button during a fill; old refs fail with `STALE_REF` rather than
+silently targeting its replacement. Use `--expect-text` for an additional label
+check on consequential clicks. Keep one explicit `--tab <ID>` throughout the
+task: its debugger attachment stays open until a target switch, tab close or
+user detach, avoiding notification-bar viewport toggles between commands.
 
 **Screenshot with visual refs:**
 
@@ -212,7 +219,7 @@ The annotated screenshot maps pixels directly to refs — the element at y≈683
 
 - **Use eval freely for** scripted/structured extraction (mapping 50 cards to `{name, price, link}`), reading page JS state (`window.__INITIAL_STATE__`), fetching the page's own APIs, or any operation `text`/`html`/`state` can't express.
 - **Prefer `state`/`click`/`fill` for interaction** — they return structured results, refs, and `STALE_REF` diagnostics; eval writes are opaque.
-- **Escape hatch:** if a semantic command fails on a tricky control (custom dropdowns, intercepted clicks), eval is the legitimate fallback.
+- **On an interaction failure:** inspect fresh `state` and, if needed, a screenshot first. Use native `click`/`fill` one mutation at a time; synthetic `.click()`/`dispatchEvent`, DOM tagging and coordinate loops can silently miss React updates. Eval remains an escape hatch only after diagnosing why the semantic control is unavailable.
 - **Filter cost:** eval runs outside site-filter protection. That's fine for extraction/escape; using eval to cross a `FILTER_DENIED` is a violation (see `references/safety.md`).
 
 ## Silent tab workflow

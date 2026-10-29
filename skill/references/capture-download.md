@@ -9,7 +9,9 @@ Save and export content from web pages: files, source media, PDFs, archives and 
 | Command | What it does |
 |---|---|
 | `download <url>` | Download any file (auto-routes to best method) |
-| `download <url> --video` | Download video via yt-dlp (1000+ sites) |
+| `download <url> --video` | Video-site extraction (Vimeo: page streams; other sites: yt-dlp) |
+| `download --list` / `--auto` / `--pick <id>` | Discover/select files and HLS/DASH streams |
+| `download --hls <master> --start <time> --duration <seconds>` | Download only a source-media interval via ffmpeg |
 | `pdf` | Export page as PDF |
 | `mhtml` | Save full page as single-file MHTML archive |
 | `har` | Export captured network requests as HAR 1.2 |
@@ -24,10 +26,12 @@ Save and export content from web pages: files, source media, PDFs, archives and 
 ap-browser download "https://example.com/document.pdf"
 ap-browser download "https://example.com/large.zip" --out archive.zip
 
-# Video (explicit — uses yt-dlp with Chrome cookies)
+# Video (yt-dlp with Chrome cookies, except Vimeo's page-stream path)
 ap-browser download "https://www.youtube.com/watch?v=abc" --video
 ap-browser download "https://www.bilibili.com/video/BV1abc" --video --audio-only
-ap-browser download "https://vimeo.com/12345" --video --format "best[height<=720]"
+ap-browser download "https://www.youtube.com/watch?v=abc" --video --start 00:01:00 --duration 120 --out clip.mp4
+ap-browser download "https://www.bilibili.com/video/BV1abc" --video --start 00:01:00 --duration 120 --out clip.mp4
+ap-browser download "https://vimeo.com/12345" --video --out video.mp4
 
 # Force a specific method
 ap-browser download <url> --method fetch       # small file, inline base64
@@ -37,7 +41,7 @@ ap-browser download <url> --method yt-dlp      # force yt-dlp even for non-video
 
 ### When to use `--video`
 
-Use `--video` when you want the **video stream**. Without it, `download` fetches the URL directly (which for a video page returns HTML, not the video).
+Use `--video` when you want the **video stream**. On most video sites, omitting it fetches the page HTML. Vimeo URLs auto-discover the loaded player's streams instead; `--method yt-dlp` explicitly forces the external extractor.
 
 Without `--video` on a video site URL, the CLI prints a hint but still proceeds:
 ```
@@ -46,14 +50,37 @@ hint: this looks like a video page. Use --video to download via yt-dlp.
 
 ### yt-dlp integration
 
-When `--video` is specified, the CLI shells out to `yt-dlp` with `--cookies-from-browser chrome`, which reads the user's Chrome cookie store directly. This means:
-- Private/unlisted videos → downloadable
-- Member-only content → downloadable
-- Login-walled content → downloadable
+For non-Vimeo sites, `--video` shells out to `yt-dlp` with `--cookies-from-browser chrome`. Availability depends on the site's extractor and the account's access; cookies do not guarantee extraction of private, member-only or login-walled media.
 
 **Prerequisite**: yt-dlp must be installed (`pip install yt-dlp` or `brew install yt-dlp`).
 
 If yt-dlp is not installed and `--video` is requested, the CLI returns a structured error with install instructions.
+
+YouTube/Bilibili (and other supported extractors) accept `--video --start ... --duration ...` or `--end ...`. The CLI passes a bounded `--download-sections` request and `--force-keyframes-at-cuts` to yt-dlp; ffmpeg/ffprobe are required. Clips use a private workspace, duration validation and no-clobber publication. Choose a concrete `.mp4`/`.mov`/`.mkv` output, or `.mp3` with `--audio-only`; yt-dlp output templates and `--subtitles` sidecars apply to whole downloads only. Playlists are disabled, and extractor progress never contaminates the CLI's JSON stdout. This extractor route reads browser cookies directly and does not require the Chrome extension to be online. YouTube challenge/signature failures may require an updated yt-dlp plus its supported JavaScript runtime/EJS components; Bilibili initial-state failures may indicate extractor drift or site risk control. Report these as blocked downloads, not successful clips.
+
+### MSE/blob players and source-media intervals
+
+`download --list`, `--auto` and `media` share discovery: DOM media, Vimeo's in-page `window.playerConfig`, resource timing and captured network manifest URLs/MIME types. A `blob:` video handle is not a downloadable source. Network history covers requests made while the debugger was attached; it is not a promise to recover every MSE player. DRM streams are unsupported.
+
+For Vimeo, prefer the exact player URL (including `?h=...` for an unlisted video), or pass an already-loaded player tab. A supplied page URL without `--tab` opens an owned silent tab and closes it afterward; the CLI preserves an embedded Vimeo player's hash when following its iframe. It reads the page configuration, not the often-forbidden HTTP `/config` endpoint, and does not depend on Vimeo's yt-dlp extractor.
+
+```bash
+# Loaded player: select the default HLS master and fetch only two minutes
+ap-browser download --auto --tab 123 --start 01:29:00 --duration 120 --out clip.mp4
+# Or give the full player/page URL; no manual source extraction needed
+ap-browser download "https://player.vimeo.com/video/12345?h=UNLISTED_HASH" --auto --start 01:29:00 --end 01:31:00 --out clip.mp4
+# Explicit signed HLS URL: works without Chrome unless --tab is supplied for headers/cookies
+ap-browser download --hls "https://cdn.example/master.m3u8?signature=..." --start 01:29:00 --duration 120 --out clip.mp4
+# Select a labeled resolution/bandwidth; --pick keeps the master's separate audio group
+ap-browser download --list --tab 123
+ap-browser download --pick 4 --tab 123 --start 5340 --duration 120 --out clip.mp4
+```
+
+Requires local `ffmpeg` and `ffprobe` (`brew install ffmpeg` or the system package manager). Time values accept seconds or `HH:MM:SS[.mmm]`; `--ss` aliases `--start`, and `--to` aliases `--end`. `--end` and `--duration` are exclusive. Intervals use input seeking and H.264/AAC re-encoding, not keyframe-only stream copy or a full-video download; whole streams are remuxed. Direct `.m3u8`/`.mpd` URLs also use this path.
+
+HLS variant entries include `resolution`, `bandwidth`, `fps`, `program_index` and `variant_url`; their `url` remains the master so selecting video does not lose external audio. DASH entries expose the master and available config quality labels. If the manifest cannot be fetched from the page (e.g. CORS), its master remains listed without parsed HLS variants. Signed URLs expire: refresh `--list` before retrying. Use the same tab/profile for `--list` and `--pick`; an empty list clears previous selections.
+
+The stream path reconnects on network errors, retries HLS segments when supported by the installed ffmpeg, and checks output duration before publishing a bounded clip. Failure leaves no final file; existing output files are not overwritten. `--format`, `--subtitles` and `--cookies-from` belong to yt-dlp, not this path; use `--list/--pick` and `--profile` for page streams.
 
 ### Silent downloads (no browser UI)
 
@@ -134,7 +161,7 @@ ap-browser media --type video             # video sources only
 ap-browser media --type audio             # audio sources only
 ```
 
-Returns a list of `{type, url, filename, source}` objects. `source` indicates where the URL was found: `img`, `css` (background-image), `srcset`, `video`, `video-source`, `audio`, `audio-source`.
+Returns `{type, url, filename, source}` objects, plus stream metadata when available. Sources include `img`, `css`, `srcset`, `video`, `video-source`, `audio`, `audio-source`, `player-config`, `performance` and `network`. HLS/DASH manifests are video media; browser-local `blob:` handles are omitted.
 
 Use with `download` to fetch individual media files:
 ```bash

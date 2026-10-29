@@ -1,3 +1,36 @@
+import { resolveSnapshotRef, snapshotIdentity } from "./state-snapshot.mjs";
+
+// Include live form values without exposing passwords, hidden fields or file paths.
+// For subtree reads values follow the rendered text; filters run before this reader.
+export function readDomText(source) {
+	if (!source) return "";
+	const fieldValue = el => {
+		const type = (el.getAttribute?.("type") || "").toLowerCase();
+		if (["password", "hidden", "file", "checkbox", "radio", "submit", "button"].includes(type)) return "";
+		return String(el.value ?? "");
+	};
+	if (["INPUT", "TEXTAREA"].includes(source.tagName)) return fieldValue(source);
+	const text = String(source.innerText ?? source.textContent ?? "");
+	const values = Array.from(source.querySelectorAll("input, textarea"), fieldValue).filter(Boolean);
+	return [text, ...values].filter(Boolean).join("\n");
+}
+
+// Read-back only: numeric refs can live inside open shadow roots too.
+export function readInteractionValue(documentObject, query) {
+	const find = root => {
+		const direct = root.querySelector(query);
+		if (direct) return direct;
+		for (const host of root.querySelectorAll("*")) {
+			if (!host.shadowRoot) continue;
+			const found = find(host.shadowRoot);
+			if (found) return found;
+		}
+		return null;
+	};
+	const el = find(documentObject);
+	return el?.value ?? el?.textContent ?? "";
+}
+
 const FILTER_COUNTER_KEYS = [
 	"removed_nodes",
 	"redacted_blocks",
@@ -170,13 +203,14 @@ export function filterDomSubtree(source, rules, kind) {
 	const value =
 		kind === "html"
 			? String(clone.outerHTML ?? "")
-			: String(clone.innerText ?? clone.textContent ?? "");
+			: readDomText(clone);
 	return { value, metadata };
 }
 
 export function buildDomReadExpression(selector, kind, rules) {
 	return `(() => {
     const emptyFilterMetadata = ${emptyFilterMetadata.toString()};
+    const readDomText = ${readDomText.toString()};
     const filterDomSubtree = ${filterDomSubtree.toString()};
     const source = document.querySelector(${JSON.stringify(selector)});
     return filterDomSubtree(source, ${JSON.stringify(rules)}, ${JSON.stringify(kind)});
@@ -253,18 +287,35 @@ export function redactResult(value, policies) {
 // applies deny rules. Returns {target, metadata} or {denied: true, metadata}.
 // Serialized into Runtime.evaluate expressions, so it must stay
 // self-contained (emptyFilterMetadata is injected by the builder).
-export function guardInteractionTarget(documentObject, targetSelector, rules) {
+export function guardInteractionTarget(documentObject, targetSelector, rules, options = {}) {
 	const metadata = emptyFilterMetadata();
-	const target = documentObject.querySelector(targetSelector);
+	let target;
+	if (options.ref != null) {
+		const resolved = resolveSnapshotRef(documentObject, options.ref);
+		if (resolved.error) return { ...resolved, metadata };
+		target = resolved.target;
+	} else {
+		try {
+			if (/^text=|:has-text\(/.test(targetSelector)) throw new SyntaxError("unsupported text selector");
+			target = documentObject.querySelector(targetSelector);
+		} catch (_) {
+			return { error: { code: "INVALID_SELECTOR", message: "Use a CSS selector or a numeric state ref; text= and :has-text() are not supported" }, metadata };
+		}
+	}
 	if (!target) return { target: null, metadata };
+	if (options.expect_text != null) {
+		const name = String(target.getAttribute?.("aria-label") || target.innerText || target.textContent || "").replace(/\s+/g, " ").trim();
+		if (name !== String(options.expect_text).replace(/\s+/g, " ").trim())
+			return { error: { code: "TEXT_MISMATCH", message: "Target label does not match --expect-text; run state again" }, metadata };
+	}
 
 	const deniedPolicyIds = new Set();
 	for (const rule of rules || []) {
 		let invalidForPolicy = false;
 		for (const selector of rule.selectors || []) {
 			try {
-				if (target.matches(selector) || target.closest?.(selector)) {
-					deniedPolicyIds.add(rule.policy_id);
+				for (let node = target; node; node = node.getRootNode?.()?.host) {
+					if (node.matches(selector) || node.closest?.(selector)) deniedPolicyIds.add(rule.policy_id);
 				}
 			} catch (_) {
 				metadata.invalid_selectors += 1;
@@ -289,14 +340,22 @@ export function guardInteractionTarget(documentObject, targetSelector, rules) {
 // mouse events (Input.dispatchMouseEvent) at the element center. SPA custom
 // controls (Reddit, Radix/MUI) react to pointer/mouse events that el.click()
 // never synthesizes.
-export function resolveForNativeClick(documentObject, targetSelector, rules) {
-	const guard = guardInteractionTarget(documentObject, targetSelector, rules);
+export function resolveForNativeClick(documentObject, targetSelector, rules, options = {}) {
+	const guard = guardInteractionTarget(documentObject, targetSelector, rules, options);
+	if (guard.error) return { status: "error", error: guard.error, metadata: guard.metadata };
 	if (guard.denied) return { status: "denied", metadata: guard.metadata };
 	const target = guard.target;
 	if (!target) return { status: "not_found", metadata: guard.metadata };
 
-	target.scrollIntoView({ block: "center" });
+	// Snapshot refs are already in the viewport. Scrolling them would invalidate
+	// their geometry between resolution and the input-time revalidation.
+	if (options.ref == null) target.scrollIntoView({ block: "center", behavior: "instant" });
 	const r = target.getBoundingClientRect();
+	const style = documentObject.defaultView?.getComputedStyle(target);
+	if (r.width < 1 || r.height < 1 || style?.visibility === "hidden" || style?.display === "none" || style?.opacity === "0")
+		return { status: "error", error: { code: "NOT_VISIBLE", message: "Target is not visible" }, metadata: guard.metadata };
+	if (target.disabled)
+		return { status: "error", error: { code: "NOT_INTERACTABLE", message: "Target is disabled" }, metadata: guard.metadata };
 	// Hit-test the element center: real input events land on whatever is
 	// topmost there, so only use them when that is the target or one of its
 	// descendants. Wrapper cards / overlays covering the center (Reddit's
@@ -306,9 +365,18 @@ export function resolveForNativeClick(documentObject, targetSelector, rules) {
 	const cy = r.y + r.height / 2;
 	let hitOk = false;
 	if (r.width >= 1 && r.height >= 1 && cx >= 0 && cy >= 0) {
-		const hit = documentObject.elementFromPoint(cx, cy);
+		let hit = documentObject.elementFromPoint(cx, cy);
+		while (hit?.shadowRoot?.elementFromPoint) {
+			const inner = hit.shadowRoot.elementFromPoint(cx, cy);
+			if (!inner || inner === hit) break;
+			hit = inner;
+		}
 		hitOk = hit === target || target.contains(hit);
 	}
+	if (options.ref != null && !hitOk)
+		return { status: "error", error: { code: "ELEMENT_OBSCURED", message: "Target is covered; run state again" }, metadata: guard.metadata };
+	if (options.consume) (documentObject.defaultView || window).__apBrowserRefs?.entries.clear();
+	if (options.js_click) target.click();
 	return {
 		status: "ok",
 		metadata: guard.metadata,
@@ -324,13 +392,15 @@ export function resolveForNativeClick(documentObject, targetSelector, rules) {
 // + focus + select existing content, so the extension can replace it with
 // Input.insertText (real keystrokes — works for <input>, <textarea>, AND
 // contenteditable, which el.value assignment can't touch).
-export function resolveForNativeFill(documentObject, targetSelector, rules) {
-	const guard = guardInteractionTarget(documentObject, targetSelector, rules);
+export function resolveForNativeFill(documentObject, targetSelector, rules, options = {}) {
+	const guard = guardInteractionTarget(documentObject, targetSelector, rules, options);
+	if (guard.error) return { status: "error", error: guard.error, metadata: guard.metadata };
 	if (guard.denied) return { status: "denied", metadata: guard.metadata };
 	const target = guard.target;
 	if (!target) return { status: "not_found", metadata: guard.metadata };
 
-	target.scrollIntoView({ block: "center" });
+	if (options.consume) (documentObject.defaultView || window).__apBrowserRefs?.entries.clear();
+	target.scrollIntoView({ block: "center", behavior: "instant" });
 	target.focus();
 	// Select existing content so native insertion replaces it.
 	try {
@@ -347,28 +417,35 @@ export function resolveForNativeFill(documentObject, targetSelector, rules) {
 	return { status: "ok", metadata: guard.metadata };
 }
 
-export function buildNativeClickResolveExpression(targetSelector, rules) {
+function interactionPrelude() {
+	return `const emptyFilterMetadata = ${emptyFilterMetadata.toString()};
+    const snapshotIdentity = ${snapshotIdentity.toString()};
+    const resolveSnapshotRef = ${resolveSnapshotRef.toString()};
+    const guardInteractionTarget = ${guardInteractionTarget.toString()};`;
+}
+
+export function buildNativeClickResolveExpression(targetSelector, rules, options = {}) {
 	return `(() => {
-    const emptyFilterMetadata = ${emptyFilterMetadata.toString()};
-    const guardInteractionTarget = ${guardInteractionTarget.toString()};
+    ${interactionPrelude()}
     const resolveForNativeClick = ${resolveForNativeClick.toString()};
     return resolveForNativeClick(
       document,
       ${JSON.stringify(targetSelector)},
-      ${JSON.stringify(rules)}
+      ${JSON.stringify(rules)},
+      ${JSON.stringify(options)}
     );
   })()`;
 }
 
-export function buildNativeFillResolveExpression(targetSelector, rules) {
+export function buildNativeFillResolveExpression(targetSelector, rules, options = {}) {
 	return `(() => {
-    const emptyFilterMetadata = ${emptyFilterMetadata.toString()};
-    const guardInteractionTarget = ${guardInteractionTarget.toString()};
+    ${interactionPrelude()}
     const resolveForNativeFill = ${resolveForNativeFill.toString()};
     return resolveForNativeFill(
       document,
       ${JSON.stringify(targetSelector)},
-      ${JSON.stringify(rules)}
+      ${JSON.stringify(rules)},
+      ${JSON.stringify(options)}
     );
   })()`;
 }
@@ -377,8 +454,9 @@ export function buildNativeFillResolveExpression(targetSelector, rules) {
 // open or click them, so selecting happens by DOM mutation (opencli's
 // approach): match the option by exact value or visible label, set it, and
 // dispatch a bubbling change so React/Vue listeners fire.
-export function performNativeSelect(documentObject, targetSelector, rules, want) {
-	const guard = guardInteractionTarget(documentObject, targetSelector, rules);
+export function performNativeSelect(documentObject, targetSelector, rules, want, options = {}) {
+	const guard = guardInteractionTarget(documentObject, targetSelector, rules, options);
+	if (guard.error) return { status: "error", error: guard.error, metadata: guard.metadata };
 	if (guard.denied) return { status: "denied", metadata: guard.metadata };
 	const target = guard.target;
 	if (!target) return { status: "not_found", metadata: guard.metadata };
@@ -388,15 +466,15 @@ export function performNativeSelect(documentObject, targetSelector, rules, want)
 
 	target.scrollIntoView({ block: "center" });
 	target.focus();
-	const options = Array.from(target.options || []);
-	const available = options.map((o) => ({
+	const choices = Array.from(target.options || []);
+	const available = choices.map((o) => ({
 		value: o.value,
 		label: (o.textContent || "").trim(),
 	}));
 	const wantStr = String(want ?? "").trim();
 	let picked = null;
-	for (let i = 0; i < options.length; i++) {
-		const o = options[i];
+	for (let i = 0; i < choices.length; i++) {
+		const o = choices[i];
 		const label = (o.textContent || "").trim();
 		if (o.value === wantStr || label === wantStr) {
 			picked = { index: i, value: o.value, label };
@@ -410,6 +488,7 @@ export function performNativeSelect(documentObject, targetSelector, rules, want)
 			available,
 		};
 	}
+	if (options.consume) (documentObject.defaultView || window).__apBrowserRefs?.entries.clear();
 	target.selectedIndex = picked.index;
 	target.dispatchEvent(new Event("change", { bubbles: true }));
 	target.dispatchEvent(new Event("input", { bubbles: true }));
@@ -420,16 +499,16 @@ export function performNativeSelect(documentObject, targetSelector, rules, want)
 	};
 }
 
-export function buildNativeSelectExpression(targetSelector, rules, want) {
+export function buildNativeSelectExpression(targetSelector, rules, want, options = {}) {
 	return `(() => {
-    const emptyFilterMetadata = ${emptyFilterMetadata.toString()};
-    const guardInteractionTarget = ${guardInteractionTarget.toString()};
+    ${interactionPrelude()}
     const performNativeSelect = ${performNativeSelect.toString()};
     return performNativeSelect(
       document,
       ${JSON.stringify(targetSelector)},
       ${JSON.stringify(rules)},
-      ${JSON.stringify(want)}
+      ${JSON.stringify(want)},
+      ${JSON.stringify(options)}
     );
   })()`;
 }

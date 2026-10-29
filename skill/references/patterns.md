@@ -46,8 +46,9 @@ Mapping many elements to a compact array is **exactly what eval is for** (struct
 ap-browser goto "https://example.com/search"
 ap-browser state                    # find the field + button refs
 ap-browser fill 7 "machine learning"
-ap-browser click 12
-ap-browser wait ".results" --timeout 10000
+ap-browser state                    # fill may re-render; choose a NEW button ref
+ap-browser click 12 --expect-text "Search"
+ap-browser wait ".results" --timeout-ms 10000
 ap-browser text --selector ".results"
 ```
 
@@ -145,24 +146,23 @@ CDP method reference: <https://chromedevtools.github.io/devtools-protocol/tot/>
 Batch = **one round-trip, one meta block, one timeout envelope** for N steps. Use it when:
 
 1. **3+ steps with no decisions between them** — you would run them anyway, so run them once
-2. **The state→ref chain** — `state`, then act by ref, then read: refs stay valid because every step runs in the same page session
-3. **Retry loops** — after fixing a failed step, re-run the whole sequence (e.g. with `sites verify`-style args) in one call
+2. **One known fresh ref** — one interaction using a ref you have already inspected, followed by waits/reads
+3. **Read-only retry sequences** — after fixing a failed read, batch the deterministic reads again; inspect state before retrying a timed-out write
 4. **Long media waits** — Pattern 12
 
 Do NOT batch when you need to inspect each step's result before choosing the next (interactive debugging) — the batch stops at the first failed step.
 
-**state→ref chain in one call (the default page-operating pattern):**
+**Deterministic CSS interaction followed by wait/read:**
 
 ```bash
 echo '[
-  {"method":"state"},
-  {"method":"click","ref":12},
+  {"method":"click","selector":"#search"},
   {"method":"wait","selector":".results","timeout_ms":10000},
   {"method":"text","selector":".results"}
 ]' | ap-browser batch
 ```
 
-**Refs are known before you batch:** run `state` once first, note the target's `ref` number, then put that number in the batch JSON (the batch's own leading `state` step re-tags the DOM so refs stay valid inside the batch). Never guess a ref number — if you don't know it, run `state` first.
+**Refs require inspection:** run `state`, inspect the target, then use that fresh ref for one interaction. A batch does not keep refs valid through mutations: `fill` can replace the submit button, so inspect a new `state` before choosing the next click. Use separate calls when a step requires that decision.
 
 Method names are the same as the CLI's (`state`, `click`, `fill`, `select`, `scroll`, `goto`, `wait`, `text`, `eval`, `screenshot`…). Response is one compact JSON:
 

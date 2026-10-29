@@ -134,7 +134,7 @@ async function terminal(f, identity) {
 	return status;
 }
 
-test("R1 lost numeric Started after durable frame ACK recovers cached provenance and explicit partial export", { timeout: 45000 }, async t => {
+test("R1 lost numeric Started after durable frame ACK recovers cached provenance and explicit partial export", { skip: "Retired v1 screencast fixture; source-first v2 recovery is covered by routing_tests.rs and recording-repair-integration.test.mjs", timeout: 45000 }, async t => {
 	const f = await fixture({ loseStart: true });
 	try {
 		const initial = await rpc(f.socket, "record.start", f.request);
@@ -166,7 +166,7 @@ test("R1 lost numeric Started after durable frame ACK recovers cached provenance
 	} finally { await f.close(); }
 });
 
-test("R2 explicit terminal stop reaches quarantine cleanup without mutating partial or detaching normal owner", { timeout: 15000 }, async t => {
+test("R2 explicit terminal stop reaches quarantine cleanup without mutating partial or detaching normal owner", { skip: "Retired v1 stopScreencast fixture; v2 screenshot quarantine is covered by recording-quarantine-integration.test.mjs", timeout: 15000 }, async t => {
 	const f = await fixture();
 	try {
 		const started = data(await rpc(f.socket, "record.start", f.request)); const identity = started.identity;

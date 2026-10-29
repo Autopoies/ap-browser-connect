@@ -100,6 +100,7 @@ export function buildBatchStepParams(step, inheritedTabId) {
 		"url_change_from",
 		"media_ended",
 		"ref",
+		"expect_text",
 		"option",
 		"count",
 		"pause_ms",

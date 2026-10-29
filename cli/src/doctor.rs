@@ -206,34 +206,52 @@ fn check_extension_online(id: usize) -> Check {
             Some("open Chrome with the ap-browser-connect extension loaded".into()),
         ),
         Ok(ids) => {
-            let live: Vec<String> = ids.into_iter().filter(|s| probe_alive(s)).collect();
-            if live.is_empty() {
+            // A listening native host does not prove that the service worker
+            // responds. Probe the full info RPC for every profile, concurrently
+            // so several stalled instances share a single bounded wait.
+            let probes: Vec<_> = ids
+                .into_iter()
+                .map(|instance| {
+                    std::thread::spawn(move || {
+                        let result = socket_client::probe_info(&instance);
+                        (instance, result)
+                    })
+                })
+                .collect();
+            let mut labels = Vec::new();
+            let mut failures = Vec::new();
+            for probe in probes {
+                match probe.join() {
+                    Ok((_, Ok(info))) => labels.push(format!(
+                        "{} ({})",
+                        info.label.unwrap_or_default(),
+                        info.instance_id
+                    )),
+                    Ok((instance, Err(error))) => failures.push(format!("{instance}: {error}")),
+                    Err(_) => failures.push("instance health probe failed".into()),
+                }
+            }
+            if !failures.is_empty() {
                 Check::fail(
                     id,
                     "extension online",
                     Severity::Critical,
-                    "stale instance sockets found; no native host responds".to_string(),
+                    format!(
+                        "{} responsive instance(s); {} unresponsive: {}",
+                        labels.len(),
+                        failures.len(),
+                        failures.join("; ")
+                    ),
                     Some(restart_hint()),
                 )
             } else {
-                let mut labels = Vec::new();
-                for id in &live {
-                    if let Ok(info) = socket_client::probe_info(id) {
-                        labels.push(format!(
-                            "{} ({})",
-                            info.label.unwrap_or_default(),
-                            info.instance_id
-                        ));
-                    }
-                }
                 Check::pass(
                     id,
                     "extension online",
                     Severity::Critical,
                     format!(
-                        "{} instance{} online: {}",
-                        live.len(),
-                        if live.len() == 1 { "" } else { "s" },
+                        "{} instance(s) responsive: {}",
+                        labels.len(),
                         labels.join(", ")
                     ),
                 )

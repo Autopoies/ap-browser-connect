@@ -10,6 +10,8 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer, createConnection } from "node:net";
 import { createRecordingController } from "../../../extension/recording.mjs";
+import { createRecordingGuard } from "../../../extension/recording-guard.mjs";
+import { facts, metrics } from "../../../extension/recording-v2-harness.mjs";
 import { createRecordingTestClock } from "../../../tests/recording-test-clock.mjs";
 
 const repo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -68,19 +70,29 @@ async function harness() {
 	let received = Buffer.alloc(0), next = 0, bridge, stderr = "";
 	const clock = createRecordingTestClock();
 	const write = value => host.stdin.write(frame(value));
-	const native = (method, params) => new Promise((resolve, reject) => {
+	const native = (method, params, onSent) => new Promise((resolve, reject) => {
 		const id = `sw-${++next}`;
 		// This is the original JS value/text BEFORE any Rust parser sees it.
 		calls.push({ id, method, params: structuredClone(params), raw: JSON.stringify(params) });
-		pending.set(id, { resolve, reject }); write({ id, method, params });
+		pending.set(id, { resolve, reject }); write({ id, method, params }); onSent?.();
 	});
+	const guard = createRecordingGuard(async (_source, method) => {
+		if (method === "Runtime.evaluate") return { result: { value: facts() } };
+		if (method === "Page.getLayoutMetrics") return metrics(facts().dom);
+		if (method === "Page.captureScreenshot") {
+			clock.screenshotInvoked();
+			return { data: fixtureWire.frame.params.jpeg_base64 };
+		}
+		throw new Error(`unexpected snapshot command ${method}`);
+	});
+	guard.attached(7, true); // synthetic clean lifecycle, not live-browser evidence
 	const controller = createRecordingController({ now: clock.now, setTimer: clock.setTimer, clearTimer: clock.clearTimer,
-		sendNative: native, acquireLease: async () => async () => ({ capture_shutdown: true }),
-		chrome: { tabs: { get: async id => ({ id }) }, debugger: { sendCommand: async (_source, method) => {
-			if (method === "Runtime.evaluate") { clock.observeViewport(); return { result: { value: { width: 16, height: 16, visualWidth: 16, visualHeight: 16, dpr: 1, pageScale: 1, offsetX: 0, offsetY: 0, scrollX: 0, scrollY: 0 } } }; }
-			if (method === "Page.startScreencast") clock.captureStarted();
-			return {};
-		} } },
+		sendNative: native,
+		acquireLease(tabId) {
+			const access = guard.reserve(tabId);
+			return { ready: Promise.resolve(access), async release() { access.release(); } };
+		},
+		chrome: { tabs: { get: async id => ({ id }) } },
 	});
 	async function route(message) {
 		if (typeof message.id === "string") {
@@ -125,8 +137,7 @@ async function harness() {
 			rpc: (method, params) => authenticatedRpc(port, token, method, params),
 			async emit() {
 				await clock.atCapture(0);
-				controller.onFrame({ tabId: 7 }, "Page.screencastFrame", { sessionId: 99, data: fixtureWire.frame.params.jpeg_base64,
-					metadata: { deviceWidth: 16, deviceHeight: 16, pageScaleFactor: 1, offsetTop: 0, scrollOffsetX: 0, scrollOffsetY: 0, timestamp: 1234 } });
+				// v2 produces its initial source screenshot itself; wait for real durable credit.
 				await until(() => replies.some(v => v.result?.accepted_seq === 1));
 			},
 			async close() {

@@ -13,6 +13,8 @@ import {
 	matchingPolicies,
 	mergeFilterMetadata,
 	redactResult,
+	readDomText,
+	readInteractionValue,
 	resolveBatchStepTab,
 	resolveFilterOperationTab,
 	shouldFilterOuterResponse,
@@ -98,6 +100,24 @@ let nativeReconnectTimer = null;
 let nativeReconnectDelayMs = 1000;
 let labelCache = "";
 let swNextId = 1;
+let snapshotAllocation = Promise.resolve();
+
+function nextSnapshotExpression() {
+	const pending = snapshotAllocation.then(async () => {
+		const stored = await chrome.storage.session.get("state_next_ref");
+		const base = stored.state_next_ref || 0;
+		await chrome.storage.session.set({ state_next_ref: base + STATE_MAX_REFS });
+		return buildSnapshotExpression(base);
+	});
+	snapshotAllocation = pending.catch(() => {});
+	return pending;
+}
+
+function checkInteractionError(interaction) {
+	if (interaction?.error) {
+		throw Object.assign(new Error(interaction.error.message), { code: interaction.error.code });
+	}
+}
 const swPending = new Map();
 let recordingController = null;
 let recordingPort = null;
@@ -817,12 +837,6 @@ async function handleNativeMessage(msg, port) {
 				} catch (_) {}
 			}
 		}
-		if (NO_TAB_METHODS.has(method) && !method.startsWith("session.")) {
-			try {
-				operatedTab = await resolveTab(params);
-			} catch (_) {}
-		}
-
 		if (operatedTab) {
 			normalOperationTabId = operatedTab.id;
 			normalTabUsers.set(operatedTab.id, (normalTabUsers.get(operatedTab.id) || 0) + 1);
@@ -1010,7 +1024,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const expression =
 				dropRules.length > 0
 					? buildDomReadExpression(selector, "text", dropRules)
-					: `String(document.querySelector(${JSON.stringify(selector)})?.innerText ?? "")`;
+					: `(${readDomText.toString()})(document.querySelector(${JSON.stringify(selector)}))`;
 			const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
 				expression,
 				returnByValue: true,
@@ -1061,7 +1075,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			if (params.annotate) {
 				const evaluated = await chrome.debugger
 					.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
-						expression: buildSnapshotExpression(),
+						expression: await nextSnapshotExpression(),
 						returnByValue: true,
 					})
 					.catch(() => null);
@@ -1097,7 +1111,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const tab = await resolveTab(params);
 			await ensureDebugger(tab.id);
 			const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
-				expression: buildSnapshotExpression(),
+				expression: await nextSnapshotExpression(),
 				returnByValue: true,
 			});
 			const value = runtimeEvaluateValue(evaluated);
@@ -1122,10 +1136,11 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			// Phase 1: resolve + filter guard + scrollIntoView, returning the
 			// element's viewport rect (see resolveForNativeClick).
 			const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
-				expression: buildNativeClickResolveExpression(query, denyRules),
+				expression: buildNativeClickResolveExpression(query, denyRules, { ref: params.ref, expect_text: params.expect_text }),
 				returnByValue: true,
 			});
 			const interaction = runtimeEvaluateValue(evaluated);
+			checkInteractionError(interaction);
 			const outcome = interactionOutcome(interaction, denyRules.length > 0);
 			if (outcome === "denied") {
 				throw filterDeniedError(interaction.metadata);
@@ -1173,6 +1188,16 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				// emulation makes the page accept them without stealing focus.
 				await withFocusEmulation(tab.id, chrome.debugger.sendCommand, async () => {
 					for (const ev of events) {
+						if (ev.type === "mousePressed") {
+							const checked = runtimeEvaluateValue(await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
+								expression: buildNativeClickResolveExpression(query, denyRules, { ref: params.ref, expect_text: params.expect_text, consume: true }),
+								returnByValue: true,
+							}));
+							checkInteractionError(checked);
+							if (checked?.status !== "ok" || !checked.hitOk || Math.abs(checked.x + checked.w / 2 - cx) > 2 || Math.abs(checked.y + checked.h / 2 - cy) > 2) {
+								throw Object.assign(new Error("Target changed before input; run state again"), { code: "STALE_REF" });
+							}
+						}
 						await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchMouseEvent", ev);
 					}
 				});
@@ -1181,11 +1206,14 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					{ tabId: tab.id },
 					"Runtime.evaluate",
 					{
-						expression: `(() => { const el = document.querySelector(${JSON.stringify(query)}); if (!el) return false; el.click(); return true; })()`,
+						expression: buildNativeClickResolveExpression(query, denyRules, { expect_text: params.expect_text, consume: true, js_click: true }),
 						returnByValue: true,
 					},
 				);
-				if (runtimeEvaluateValue(clickedExpr) !== true) {
+				const clicked = runtimeEvaluateValue(clickedExpr);
+				checkInteractionError(clicked);
+				if (clicked?.status === "denied") throw filterDeniedError(clicked.metadata);
+				if (clicked?.status !== "ok") {
 					throw Object.assign(new Error(`selector not found: ${params.selector}`), {
 						code: "SELECTOR_NO_MATCH",
 					});
@@ -1211,10 +1239,11 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			// Phase 1: resolve + filter guard + scrollIntoView + focus + select
 			// existing content (see resolveForNativeFill).
 			const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
-				expression: buildNativeFillResolveExpression(query, denyRules),
+				expression: buildNativeFillResolveExpression(query, denyRules, { ref: params.ref, consume: true }),
 				returnByValue: true,
 			});
 			const interaction = runtimeEvaluateValue(evaluated);
+			checkInteractionError(interaction);
 			const outcome = interactionOutcome(interaction, denyRules.length > 0);
 			if (outcome === "denied") {
 				throw filterDeniedError(interaction.metadata);
@@ -1255,7 +1284,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			// masked fields can silently eat characters (opencli rule).
 			const verify = await chrome.debugger
 				.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
-					expression: `(() => { const el = document.querySelector(${JSON.stringify(query)}); if (!el) return ""; return el.value ?? el.textContent ?? ""; })()`,
+					expression: `(${readInteractionValue.toString()})(document, ${JSON.stringify(query)})`,
 					returnByValue: true,
 				})
 				.catch(() => null);
@@ -1277,10 +1306,11 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const denyRules = interactionDenyRules(policies);
 			const query = params.ref == null ? params.selector : refSelector(params.ref);
 			const evaluated = await chrome.debugger.sendCommand({ tabId: tab.id }, "Runtime.evaluate", {
-				expression: buildNativeSelectExpression(query, denyRules, params.option),
+				expression: buildNativeSelectExpression(query, denyRules, params.option, { ref: params.ref, consume: true }),
 				returnByValue: true,
 			});
 			const interaction = runtimeEvaluateValue(evaluated);
+			checkInteractionError(interaction);
 			const status = interaction?.status;
 			if (status === "denied") {
 				throw filterDeniedError(interaction.metadata);
@@ -2712,7 +2742,8 @@ async function detachDebugger(tabId) {
 }
 
 async function releaseTab(tabId) {
-	if (recordingLeases.has(tabId)) return;
+	lockedTabs.delete(tabId);
+	if (recordingLeases.has(tabId) || normalTabUsers.has(tabId)) return;
 	cancelPendingRestore(tabId);
 	await settleWithin(restoreFavicon(tabId), CLEANUP_TIMEOUT_MS);
 	// A recording may have acquired ownership while favicon restoration awaited CDP.
@@ -2739,7 +2770,18 @@ function cancelPendingRestore(tabId) {
 
 function scheduleRestore(tabId, delayMs) {
 	cancelPendingRestore(tabId);
-	const timer = setTimeout(() => releaseTab(tabId), delayMs);
+	const timer = setTimeout(async () => {
+		if (recordingLeases.has(tabId) || normalTabUsers.has(tabId)) return;
+		pendingRestoreTimers.delete(tabId);
+		if (lockedTabs.has(tabId)) {
+			// Explicit --tab tasks retain the attachment until a target switch,
+			// tab close or user detach. Do not toggle Chrome's debugger infobar
+			// (and resize the viewport) between state/fill/click commands.
+			await settleWithin(restoreFavicon(tabId), CLEANUP_TIMEOUT_MS);
+			return;
+		}
+		await releaseTab(tabId);
+	}, delayMs);
 	pendingRestoreTimers.set(tabId, timer);
 }
 
