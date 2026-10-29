@@ -36,6 +36,10 @@ jobs:
       - name: Install ffmpeg (macOS)
         if: runner.os == 'macOS'
         run: HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK=1 brew install ffmpeg
+      - uses: actions/setup-node@v4
+        if: runner.os != 'Windows'
+        with:
+          node-version: '22'
       - name: rustfmt
         run: cargo fmt --check
       - name: clippy
@@ -44,6 +48,12 @@ jobs:
       - name: test
         run: cargo test --workspace
         continue-on-error: ${{ matrix.experimental }}
+      - name: Build integration binaries
+        if: runner.os != 'Windows'
+        run: cargo build --workspace
+      - name: Browser, capture/download and recording regressions
+        if: runner.os != 'Windows'
+        run: node --test extension/*.test.mjs tests/*.test.mjs host/src/recording/*.test.mjs
       - name: build release
         run: cargo build --workspace --release
         continue-on-error: ${{ matrix.experimental }}

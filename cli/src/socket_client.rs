@@ -186,7 +186,7 @@ pub fn probe_info(id: &str) -> Result<ProfileInfo> {
     use std::io::Write;
     stream.write_all(&bytes)?;
     stream.flush()?;
-    let resp = cli_frame::read_response(&mut stream, Duration::from_secs(5))?;
+    let resp = cli_frame::read_response_owned(stream, Duration::from_secs(5))?;
     let response = match resp.get("result") {
         Some(r) => r.clone(),
         None => match resp.get("error") {
@@ -264,8 +264,8 @@ pub fn dial_with_retry(id: &str, attempts: u32, backoff: Duration) -> Result<Box
     ))
 }
 
-pub trait ReadWrite: io::Read + io::Write {}
-impl<T: io::Read + io::Write> ReadWrite for T {}
+pub trait ReadWrite: io::Read + io::Write + Send {}
+impl<T: io::Read + io::Write + Send> ReadWrite for T {}
 
 #[cfg(test)]
 mod tests {

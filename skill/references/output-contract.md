@@ -41,8 +41,8 @@
 | 1 | `USAGE_ERROR` | bad CLI arguments | fix args |
 | 2 | `EXTENSION_NOT_CONNECTED` | socket dial failed | ask user to open Chrome / reload extension |
 | 3 | `TAB_NOT_FOUND` | tab ID doesn't exist | re-list tabs, use correct ID |
-| 4 | `CDP_ERROR` / `JS_EXCEPTION` / `SELECTOR_NO_MATCH` / `DEBUGGER_ATTACH_FAILED` | page-level error | fix selector/JS, or check page state |
-| 5 | `TIMEOUT` | command exceeded timeout | retry once, or ask user if page is responsive |
+| 4 | `CDP_ERROR` / `JS_EXCEPTION` / `SELECTOR_NO_MATCH` / `STALE_REF` / `TEXT_MISMATCH` / `NOT_VISIBLE` / `NOT_INTERACTABLE` / `ELEMENT_OBSCURED` / `INVALID_SELECTOR` / `DEBUGGER_ATTACH_FAILED` | page-level error | inspect fresh state; fix target or selector |
+| 5 | `TIMEOUT` | response deadline exceeded | inspect state before retrying an interaction; it may already have executed |
 | 6 | `MULTIPLE_PROFILES` | multiple profiles online, none selected | run `profiles` + `use` |
 
 ## meta.focus interpretation

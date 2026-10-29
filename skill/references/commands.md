@@ -149,7 +149,7 @@ ap-browser --tab 42 reload
 
 ### `text`
 
-Read `innerText` of an element. Default selector: `body`.
+Read rendered text plus current form values. A selected input/textarea returns its `.value`; subtree reads append input/textarea values after the text. Password, hidden and file fields are excluded, and configured DOM filters apply before extraction. Default selector: `body`.
 
 | Flag | Description |
 | ------ | ------------- |
@@ -280,7 +280,9 @@ ap-browser state
 ap-browser state --human          # compact text tree: [N] tag name (y=...)
 ```
 
-Returns `{elements: [{ref, tag, role, name, x, y, w, h}], scroll: {y, h, vh, vw}, url}`. Refs are tagged into the DOM (`data-ap-ref`) and consumed by `click`/`fill`/`wait` with a numeric target. A page change invalidates refs (`STALE_REF`) — re-run `state`. **Scrolling does NOT change ref numbers** (they follow document order); only navigation/DOM changes invalidate them — but `y` coordinates are viewport-relative, so re-run `state` after scrolling if you need fresh coordinates.
+Returns `{elements: [{ref, tag, role, name, x, y, w, h}], scroll: {y, h, vh, vw}, url, coverage}`. Includes semantic controls, inline click handlers and pointer-style clickables in light DOM and open shadow roots. `coverage` reports open shadow roots, uninspected iframes, inaccessible closed roots and the 250-element cap (also summarized by `--human`).
+
+Refs bind to DOM node identity, label/link identity and snapshot geometry, not merely `data-ap-ref` attributes. New nodes never inherit an old ref. Refresh `state` after every mutation (especially between `fill` and `click`), navigation, scroll or viewport change; changed/consumed refs fail with `STALE_REF`. Same-node numbers may survive a fresh snapshot, but coordinates are always viewport-relative.
 
 ---
 
@@ -288,16 +290,16 @@ Returns `{elements: [{ref, tag, role, name, x, y, w, h}], scroll: {y, h, vh, vw}
 
 ### `click <target>`
 
-Click the first element matching the target. Target is either a **`state` ref** (bare integer, e.g. `12`) or a **CSS selector**. Scrolls into view first.
+Click a **fresh `state` ref** (bare integer, e.g. `12`) or the first element matching a **CSS selector**. CSS targets scroll into view; refs validate the geometry of their snapshot. Playwright `text=` and `:has-text()` selectors are unsupported (`INVALID_SELECTOR`); use CSS or a ref.
 
 ```bash
-ap-browser click 12               # state ref
-ap-browser click "#submit-button" # CSS selector
+ap-browser click 12 --expect-text "Export"  # exact normalized visible/aria label
+ap-browser click "#submit-button"           # CSS selector
 ```
 
-Clicks use **real CDP input events** (mouse move/press/release at the element center) so SPA custom controls that ignore `el.click()` work — with a `js-click` fallback when the element center is covered. Response includes the method used: `{clicked: true, method: "native-input"|"js-click"}`.
+Clicks use **real CDP input events** (mouse move/press/release), revalidating the target immediately before pressing. Ref clicks fail closed if covered (`ELEMENT_OBSCURED`); legacy CSS targets retain the `js-click` fallback for covered centers. Response: `{clicked: true, method: "native-input"|"js-click"}`.
 
-Error `SELECTOR_NO_MATCH` (exit 4) if a selector matches nothing; `STALE_REF` (exit 4) if a ref is gone (page changed — run `state` again).
+Page-level errors (exit 4): `SELECTOR_NO_MATCH`, `STALE_REF`, `TEXT_MISMATCH`, `NOT_VISIBLE`, `NOT_INTERACTABLE`, `ELEMENT_OBSCURED`, `INVALID_SELECTOR`. After an interaction `TIMEOUT` (exit 5), inspect state before retrying because the action may have executed.
 
 ### `fill <target> <value>`
 

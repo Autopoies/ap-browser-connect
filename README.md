@@ -203,7 +203,7 @@ See all 47 sites in [ap-browser-connect-adapters](https://github.com/autopoies/a
 | **Site Adapters** | `sites list`, `sites search <q>`, `sites doc <site>`, `<site> <cmd>` | Run 196+ commands across 47 sites with automatic tab isolation |
 | **Navigate & Act** | `goto`, `click`, `fill`, `select`, `upload`, `press`, `scroll`, `wait`, `tabs` | Drive pages by `[N]` ref (`click 12`) or CSS selector; multi-file `upload` |
 | **Batch & Power** | `batch`, `eval`, `cdp` | Run multi-step JSON in one round-trip; raw JS (`--raw`) or CDP calls |
-| **Capture & Download** | `text`, `html`, `download [--video]`, `pdf`, `mhtml`, `har`, `media` | Cookie-aware downloads and `yt-dlp` streams; export PDF, MHTML, or HAR |
+| **Capture & Download** | `text`, `html`, `download [--video]`, `pdf`, `mhtml`, `har`, `media` | Cookie-aware files, HLS/DASH discovery and interval downloads, `yt-dlp` streams; export PDF, MHTML, or HAR |
 | **DevTools & Setup** | `dev console/network/errors/perf`, `profiles`, `use`, `doctor`, `update` | Inspect console/network logs, switch profiles, run diagnostics, update adapters |
 
 See [CLI Commands](skill/references/commands.md), [Recording Guide](skill/references/recording.md), [Session Receiver Protocol](skill/references/session-receiver.md), [Patterns](skill/references/patterns.md), [Safety Policy](skill/references/safety.md), and [Multi-Profile Guide](skill/references/multi-profile.md).
@@ -215,7 +215,7 @@ See [CLI Commands](skill/references/commands.md), [Recording Guide](skill/refere
 ![System Architecture](docs/assets/architecture.svg)
 
 - **Do I need an API key in the extension?** No. It connects your browser to the coding agent you already run in your terminal.
-- **`download --video` vs `record`?** `download --video` grabs a site's original media stream via `yt-dlp`; `record` captures what the page renders on screen as a `GIF`/`MP4`/`MOV`.
+- **`download --video` vs `record`?** `download` saves original media via page streams/ffmpeg (Vimeo, HLS/DASH) or `yt-dlp` (other video sites); `--start 01:29:00 --duration 120` extracts an interval from a discovered stream. `record` captures what the page renders on screen as a `GIF`/`MP4`/`MOV`. See [source downloads](skill/references/capture-download.md).
 - **Will it hijack my active tab?** No. Site adapters open and close their own background tab whenever your active tab is on another site.
 - **Supported OS?** macOS and Linux (tested); Windows is **experimental**.
 

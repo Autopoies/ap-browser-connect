@@ -132,7 +132,11 @@ enum Cmd {
         range: Option<String>,
     },
     Click {
+        /// CSS selector or numeric ref from a fresh state snapshot
         target: String,
+        /// Require an exact normalized visible/accessibility label before clicking
+        #[arg(long)]
+        expect_text: Option<String>,
     },
     Fill {
         target: String,
@@ -194,6 +198,18 @@ enum Cmd {
     },
     Download {
         url: Option<String>,
+        /// Explicit signed HLS master URL; bypass site extractors (requires ffmpeg).
+        #[arg(long, conflicts_with_all = ["list", "auto_pick", "pick"])]
+        hls: Option<String>,
+        /// Start on the player timeline: seconds or HH:MM:SS[.mmm].
+        #[arg(long, alias = "ss")]
+        start: Option<String>,
+        /// Clip length in seconds (also accepts HH:MM:SS).
+        #[arg(long, conflicts_with = "end")]
+        duration: Option<String>,
+        /// End on the player timeline; alternative to --duration.
+        #[arg(long, alias = "to")]
+        end: Option<String>,
         #[arg(long)]
         out: Option<String>,
         #[arg(long)]
@@ -210,9 +226,9 @@ enum Cmd {
         cookies_from: Option<String>,
         #[arg(long)]
         silence_hint: bool,
-        #[arg(long = "list")]
+        #[arg(long = "list", conflicts_with_all = ["auto_pick", "pick", "start", "duration", "end"])]
         list: bool,
-        #[arg(long = "auto")]
+        #[arg(long = "auto", conflicts_with = "pick")]
         auto_pick: bool,
         #[arg(long)]
         pick: Option<String>,
@@ -306,13 +322,21 @@ fn fail_cli(err: anyhow::Error) -> ! {
 /// coded JSON error envelope on piped stdout plus the human copy on stderr,
 /// then exit. Exit code 7 = OFFLINE. Shared by static, dev and sites paths.
 pub(crate) fn emit_transport_error(code: &str, err: anyhow::Error) -> ! {
-    eprintln!("Error: {err}");
+    let code = if err
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|e| e.kind() == std::io::ErrorKind::TimedOut)
+    {
+        "TIMEOUT"
+    } else {
+        code
+    };
+    eprintln!("Error: {err:#}");
     if !atty_is_tty() {
         println!(
             "{}",
             serde_json::to_string(&json!({
                 "ok": false,
-                "error": {"code": code, "message": err.to_string()}
+                "error": {"code": code, "message": format!("{err:#}")}
             }))
             .unwrap_or_default()
         );
@@ -322,6 +346,7 @@ pub(crate) fn emit_transport_error(code: &str, err: anyhow::Error) -> ! {
 
 fn exit_code_for(code: &str) -> i32 {
     match code {
+        "TIMEOUT" => 5,
         "OFFLINE" => 7,
         _ => 1,
     }
@@ -612,10 +637,19 @@ fn run_static_match(cli: &Cli, human: bool) -> Result<()> {
                 })?
             }
         }
-        Cmd::Click { target } => rpc(
+        Cmd::Click {
+            target,
+            expect_text,
+        } => rpc(
             cli,
             "click",
-            target_params(target, json!({})),
+            target_params(
+                target,
+                match expect_text {
+                    Some(text) => json!({"expect_text": text}),
+                    None => json!({}),
+                },
+            ),
             human,
             |_| {},
         )?,
@@ -718,6 +752,10 @@ fn run_static_match(cli: &Cli, human: bool) -> Result<()> {
         }
         Cmd::Download {
             url,
+            hls,
+            start,
+            duration,
+            end,
             out,
             method,
             video,
@@ -733,6 +771,19 @@ fn run_static_match(cli: &Cli, human: bool) -> Result<()> {
             let mut dargs: Vec<String> = Vec::new();
             if let Some(u) = url {
                 dargs.push(u.clone());
+            }
+            for (flag, value) in [
+                ("--hls", hls),
+                ("--start", start),
+                ("--duration", duration),
+                ("--end", end),
+            ] {
+                if let Some(value) = value {
+                    dargs.extend([flag.into(), value.clone()]);
+                }
+            }
+            if let Some(profile) = &cli.profile {
+                dargs.extend(["--profile".into(), profile.clone()]);
             }
             if let Some(o) = out {
                 dargs.push("--out".into());
@@ -814,6 +865,9 @@ fn run_static_match(cli: &Cli, human: bool) -> Result<()> {
         Cmd::Media { media_type } => {
             let mt = media_type.clone().unwrap_or("all".into());
             let mut dargs: Vec<String> = vec!["--type".into(), mt];
+            if let Some(profile) = &cli.profile {
+                dargs.extend(["--profile".into(), profile.clone()]);
+            }
             if let Some(t) = cli.tab {
                 dargs.push("--tab".into());
                 dargs.push(t.to_string());
@@ -901,6 +955,8 @@ fn rpc(
         Ok(s) => s,
         Err(e) => emit_transport_error("OFFLINE", e),
     };
+    let response_timeout =
+        Duration::from_secs(p["_timeout_hint_secs"].as_u64().unwrap_or(cli.timeout));
     let request = json!({"jsonrpc":"2.0","method":method,"params":p});
     let bytes = cli_frame::encode(&request)?;
     let mut stream = match dial_with_retry(&socket, 3, Duration::from_millis(200)) {
@@ -912,18 +968,12 @@ fn rpc(
     if let Err(e) = write_res {
         emit_transport_error("OFFLINE", anyhow!("write to instance socket failed: {e}"));
     }
-    let envelope = match cli_frame::read_response(&mut stream, Duration::from_secs(cli.timeout)) {
+    let envelope = match cli_frame::read_response_owned(stream, response_timeout) {
         Ok(r) => r,
-        Err(e) => emit_transport_error("OFFLINE", anyhow!("read from instance socket failed: {e}")),
+        Err(e) => emit_transport_error("OFFLINE", e.context("read from instance socket failed")),
     };
 
-    let mut response = match envelope.get("result") {
-        Some(r) => r.clone(),
-        None => match envelope.get("error") {
-            Some(e) => json!({"ok": false, "error": e}),
-            None => envelope,
-        },
-    };
+    let mut response = cli_frame::response(envelope);
 
     if response.get("ok").and_then(|v| v.as_bool()) == Some(true) {
         post(&mut response);
@@ -1022,11 +1072,17 @@ fn render_state_tree(resp: &mut Value) {
             Some(format!("[{ref_n}] {tag:<8} {name}  (y={y})"))
         })
         .collect();
-    let tree = if lines.is_empty() {
+    let mut tree = if lines.is_empty() {
         "(no interactive elements in viewport)".to_string()
     } else {
         lines.join("\n")
     };
+    if let Some(coverage) = resp.pointer("/data/coverage") {
+        tree.push_str(&format!("\n[coverage] document + {} open shadow root(s); {} iframe(s) not inspected; closed shadow roots inaccessible{}",
+            coverage["open_shadow_roots"].as_u64().unwrap_or(0),
+            coverage["iframes"].as_array().map_or(0, Vec::len),
+            if coverage["truncated"] == true { "; 250-ref limit reached" } else { "" }));
+    }
     if let Some(data) = resp.get_mut("data") {
         *data = json!(tree);
     }
@@ -1266,16 +1322,8 @@ fn query_instance_rpc(
     let mut stream = dial_with_retry(instance_id, 3, Duration::from_millis(200))?;
     std::io::Write::write_all(&mut stream, &bytes)?;
     std::io::Write::flush(&mut stream)?;
-    let envelope = cli_frame::read_response(&mut stream, Duration::from_secs(timeout_secs))?;
-
-    let response = match envelope.get("result") {
-        Some(r) => r.clone(),
-        None => match envelope.get("error") {
-            Some(e) => json!({"ok": false, "error": e}),
-            None => envelope,
-        },
-    };
-    Ok(response)
+    let envelope = cli_frame::read_response_owned(stream, Duration::from_secs(timeout_secs))?;
+    Ok(cli_frame::response(envelope))
 }
 
 fn print_tabs_profiles_human(profiles: &[Value]) {
@@ -1711,6 +1759,12 @@ fn error_to_exit_code(resp: &Value) -> i32 {
         | "CDP_ERROR"
         | "JS_EXCEPTION"
         | "SELECTOR_NO_MATCH"
+        | "STALE_REF"
+        | "INVALID_SELECTOR"
+        | "TEXT_MISMATCH"
+        | "NOT_VISIBLE"
+        | "NOT_INTERACTABLE"
+        | "ELEMENT_OBSCURED"
         | "OPTION_NOT_FOUND"
         | "NOT_A_SELECT"
         | "FILTER_DENIED"

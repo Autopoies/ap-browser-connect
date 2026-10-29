@@ -4,6 +4,10 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::time::Duration;
 
+mod discovery;
+mod extractor;
+mod stream;
+
 const VIDEO_DOMAINS: &[&str] = &[
     "youtube.com",
     "youtu.be",
@@ -67,6 +71,15 @@ fn default_extensions() -> Vec<(String, String)> {
         (".pth".into(), "model".into()),
         (".onnx".into(), "model".into()),
         (".weights".into(), "model".into()),
+        (".mp4".into(), "video".into()),
+        (".webm".into(), "video".into()),
+        (".mov".into(), "video".into()),
+        (".m4v".into(), "video".into()),
+        (".mp3".into(), "audio".into()),
+        (".m4a".into(), "audio".into()),
+        (".wav".into(), "audio".into()),
+        (".m3u8".into(), "hls".into()),
+        (".mpd".into(), "dash".into()),
     ]
 }
 
@@ -135,24 +148,6 @@ impl DownloadConfig {
             url_patterns,
         }
     }
-
-    fn js_exts_array(&self) -> String {
-        let pairs: Vec<String> = self
-            .extensions
-            .iter()
-            .map(|(e, t)| format!("['{e}','{t}']"))
-            .collect();
-        format!("[{}]", pairs.join(","))
-    }
-
-    fn js_patterns_array(&self) -> String {
-        let pairs: Vec<String> = self
-            .url_patterns
-            .iter()
-            .map(|(p, t)| format!("['{p}','{t}']"))
-            .collect();
-        format!("[{}]", pairs.join(","))
-    }
 }
 
 pub fn dispatch(cmd: &str, args: &[String]) -> Result<()> {
@@ -195,6 +190,15 @@ fn cdp_eval(tab: Option<i64>, profile: Option<&str>, expression: &str) -> Result
         "Runtime.evaluate",
         json!({"expression": expression, "returnByValue": true, "awaitPromise": true}),
     )?;
+    if resp["ok"] == false {
+        bail!(
+            "page evaluation failed: {}",
+            resp["error"]["message"].as_str().unwrap_or("CDP error")
+        );
+    }
+    if !resp["data"]["result"]["exceptionDetails"].is_null() {
+        bail!("page evaluation raised an exception during capture");
+    }
     Ok(resp
         .get("data")
         .and_then(|d| d.get("result"))
@@ -306,7 +310,57 @@ fn yt_dlp_installed() -> bool {
         .unwrap_or(false)
 }
 
+// Skip flag values rather than mistaking --tab/--out/--hls values for a URL.
+fn download_url(args: &[String]) -> Option<String> {
+    let mut values = args.iter();
+    while let Some(arg) = values.next() {
+        if [
+            "--out",
+            "--method",
+            "--format",
+            "--cookies-from",
+            "--pick",
+            "--tab",
+            "--profile",
+            "--type",
+            "--hls",
+            "--start",
+            "--end",
+            "--duration",
+        ]
+        .contains(&arg.as_str())
+        {
+            values.next();
+        } else if !arg.starts_with("--") {
+            return Some(arg.clone());
+        }
+    }
+    None
+}
+
+fn is_vimeo_url(url: &str) -> bool {
+    let host = url
+        .split("://")
+        .nth(1)
+        .unwrap_or("")
+        .split('/')
+        .next()
+        .unwrap_or("");
+    host == "vimeo.com" || host.ends_with(".vimeo.com")
+}
+
 fn download_cmd(args: &[String]) -> Result<()> {
+    let range = stream::TimeRange::parse(args)?;
+    if let Some(hls) = flag_value(args, "--hls") {
+        return stream::download(
+            &hls,
+            &flag_value(args, "--out").unwrap_or_default(),
+            args,
+            extract_tab(args),
+            extract_profile(args).as_deref(),
+            None,
+        );
+    }
     let want_list = has_flag(args, "--list");
     let want_auto = has_flag(args, "--auto");
     let pick = flag_value(args, "--pick");
@@ -321,15 +375,30 @@ fn download_cmd(args: &[String]) -> Result<()> {
         return download_auto_cmd(args);
     }
 
-    let url = args.iter().find(|a| !a.starts_with("--")).cloned()
-        .ok_or_else(|| anyhow!("usage: ap-browser download <url> [--out] [--video] [--list] [--pick <id|type|label>] [--auto]"))?;
+    let url = download_url(args)
+        .ok_or_else(|| anyhow!("usage: ap-browser download <url> [--out FILE] [--auto|--video] [--start TIME --duration SECONDS]"))?;
     let out = flag_value(args, "--out").unwrap_or_default();
     let method = flag_value(args, "--method").unwrap_or("auto".into());
     let want_video = has_flag(args, "--video") || method == "yt-dlp";
     let silence_hint = has_flag(args, "--silence-hint");
-    let tab = resolve_active_tab(args)?;
     let profile = extract_profile(args);
-
+    if method == "ffmpeg"
+        || (method == "auto"
+            && (stream::manifest_format(&url).is_some()
+                || (range.is_some() && !is_video_domain(&url))))
+    {
+        return stream::download(
+            &url,
+            &out,
+            args,
+            extract_tab(args),
+            profile.as_deref(),
+            None,
+        );
+    }
+    if is_vimeo_url(&url) && method == "auto" {
+        return download_auto_cmd(args);
+    }
     if want_video {
         if !yt_dlp_installed() {
             bail!(
@@ -346,6 +415,10 @@ fn download_cmd(args: &[String]) -> Result<()> {
         return yt_dlp_download(&url, args, &out);
     }
 
+    if range.is_some() {
+        bail!("time ranges require --video, a direct media URL, --hls, or a page stream selected by --auto/--pick");
+    }
+    let tab = resolve_active_tab(args)?;
     if !silence_hint && is_video_domain(&url) {
         eprintln!("hint: this looks like a video page. Use --video to download via yt-dlp.");
         eprintln!("      (proceeding with {method}; this hint does not block)");
@@ -607,66 +680,31 @@ fn fetch_chunked_download(
 }
 
 fn download_list_cmd(args: &[String]) -> Result<()> {
-    let tab = resolve_active_tab(args)?;
-    let profile = extract_profile(args);
-    let _ = ensure_debugger(tab, profile.as_deref());
-    let config = DownloadConfig::load();
-    let exts_js = config.js_exts_array();
-    let patterns_js = config.js_patterns_array();
-    let expr = format!(
-        r#"(() => {{
-        const EXTS = {exts_js};
-        const PATTERNS = {patterns_js};
-        const SHARE = /share|tweet|facebook|twitter|linkedin|wechat|weibo/i;
-        const out = [];
-        let id = 0;
-        document.querySelectorAll('a[href]').forEach(a => {{
-            const href = a.href;
-            if (!href || href.startsWith('javascript:') || href.startsWith('#')) return;
-            const text = (a.textContent || '').trim();
-            if (SHARE.test(text)) return;
-            const hrefLower = href.toLowerCase().split('?')[0];
-            let source = null;
-            let type = 'unknown';
-            for (const [ext, inferredType] of EXTS) {{
-                if (hrefLower.endsWith(ext)) {{
-                    source = 'href-extension';
-                    type = inferredType;
-                    break;
-                }}
-            }}
-            if (!source && a.hasAttribute('download')) {{
-                source = 'download-attr';
-                type = 'unknown';
-            }}
-            if (!source) {{
-                for (const [pat, inferredType] of PATTERNS) {{
-                    if (hrefLower.includes(pat)) {{ source = 'url-pattern'; type = inferredType; break; }}
-                }}
-            }}
-            if (!source) return;
-            out.push({{ id: id++, label: text.slice(0, 100), url: href, type, source }});
-        }});
-        return JSON.stringify(out);
-    }})()"#,
-        exts_js = exts_js,
-        patterns_js = patterns_js,
-    );
-    let raw = cdp_eval(tab, profile.as_deref(), &expr)?;
-    let items: Vec<Value> = serde_json::from_str(raw.as_str().unwrap_or("[]")).unwrap_or_default();
-    let page_url = {
-        let url_resp = cdp_eval(tab, profile.as_deref(), "location.href")?;
-        url_resp.as_str().unwrap_or("").to_string()
-    };
+    let mut page = discovery::Page::new(args)?;
+    let data = page.discover("downloads", args)?;
+    // Include context with the cache; empty lists must replace stale results too.
+    let cached = json!({"items": data["items"], "tab": page.reusable_tab(), "profile": extract_profile(args), "instance": page.profile});
+    let tmp = std::env::temp_dir().join("ap-browser-download-list.json");
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(serde_json::to_string(&cached)?.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    std::fs::write(&tmp, serde_json::to_string(&cached)?)?;
     print_result(
-        json!({"ok": true, "data": {"items": items, "page_url": page_url}}),
+        json!({"ok": true, "data": {"items": data["items"], "page_url": data["page_url"]}}),
         args,
     );
-
-    if !items.is_empty() {
-        let tmp = std::env::temp_dir().join("ap-browser-download-list.json");
-        std::fs::write(&tmp, serde_json::to_string(&items)?)?;
-    }
     Ok(())
 }
 
@@ -675,9 +713,17 @@ fn download_pick_cmd(selector: &str, args: &[String]) -> Result<()> {
     let items_raw = std::fs::read_to_string(&tmp).with_context(|| {
         "no --list results to pick from; run `ap-browser download --list` first"
     })?;
-    let items: Vec<Value> = serde_json::from_str(&items_raw)?;
-    let out = flag_value(args, "--out").unwrap_or_default();
-    let method = flag_value(args, "--method").unwrap_or("auto".into());
+    let cache: Value = serde_json::from_str(&items_raw)?;
+    let items = cache["items"]
+        .as_array()
+        .ok_or_else(|| anyhow!("old download cache; run --list again"))?;
+    let profile = extract_profile(args);
+    let instance = crate::socket_client::resolve_socket(profile.as_deref())?;
+    if cache["instance"] != json!(instance)
+        || (extract_tab(args).is_some() && cache["tab"] != json!(extract_tab(args)))
+    {
+        bail!("download list belongs to another tab/profile; run --list again for this target");
+    }
 
     let picked = if let Ok(idx) = selector.parse::<usize>() {
         items.get(idx).cloned()
@@ -719,160 +765,76 @@ fn download_pick_cmd(selector: &str, args: &[String]) -> Result<()> {
     let item = picked.ok_or_else(|| {
         anyhow!("no item matching '{selector}' found. Run --list to see available items.")
     })?;
-    let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("");
-    let item_type = item
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    let label = item.get("label").and_then(|v| v.as_str()).unwrap_or("");
-    let final_out = if out.is_empty() {
-        let ext = if item_type != "unknown" {
-            format!(".{item_type}")
-        } else {
-            String::new()
-        };
-        let base = if label.is_empty() {
-            "download".to_string()
-        } else {
-            label
-                .chars()
-                .take(50)
-                .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-                .collect()
-        };
-        format!("{base}{ext}")
-    } else {
-        out
-    };
-    let tab = resolve_active_tab(args)?;
-    let profile = extract_profile(args);
-    eprintln!(
-        "[picking: id={} label={:?} url={}]",
-        item.get("id").unwrap_or(&json!(0)),
-        label,
-        url
-    );
-    route_download(url, &final_out, &method, tab, profile.as_deref())?;
-    Ok(())
+    let tab = extract_tab(args).or_else(|| cache["tab"].as_i64());
+    download_item(&item, args, tab, Some(&instance))
 }
 
 fn download_auto_cmd(args: &[String]) -> Result<()> {
-    let tab = resolve_active_tab(args)?;
-    let profile = extract_profile(args);
-    let _ = ensure_debugger(tab, profile.as_deref());
-    let config = DownloadConfig::load();
-    let exts_js = config.js_exts_array();
-    let patterns_js = config.js_patterns_array();
-    let expr = format!(
-        r#"(() => {{
-        const EXTS = {exts_js};
-        const PATTERNS = {patterns_js};
-        const out = [];
-        document.querySelectorAll('a[href]').forEach(a => {{
-            const href = a.href;
-            if (!href || href.startsWith('javascript:') || href.startsWith('#')) return;
-            const hrefLower = href.toLowerCase().split('?')[0];
-            let source = null, type = 'unknown', priority = 99;
-            for (const [ext, inferredType] of EXTS) {{
-                if (hrefLower.endsWith(ext)) {{
-                    source = 'href-extension';
-                    type = inferredType;
-                    priority = ext === '.pdf' ? 1 : 3;
-                    break;
-                }}
-            }}
-            if (!source && a.hasAttribute('download')) {{ source = 'download-attr'; priority = 2; }}
-            if (!source) for (const [pat, inferredType] of PATTERNS) {{ if (hrefLower.includes(pat)) {{ source = 'url-pattern'; type = inferredType; priority = inferredType === "pdf" ? 1 : 4; break; }} }}
-            if (source) out.push({{ label: (a.textContent||'').trim().slice(0,100), url: href, type, source, priority }});
-        }});
-        return JSON.stringify(out);
-    }})()"#,
-        exts_js = exts_js,
-        patterns_js = patterns_js,
-    );
-    let raw = cdp_eval(tab, profile.as_deref(), &expr)?;
-    let items: Vec<Value> = serde_json::from_str(raw.as_str().unwrap_or("[]")).unwrap_or_default();
-    if items.is_empty() {
-        bail!("no downloadable items found on this page");
+    let mut page = discovery::Page::new(args)?;
+    let data = page.discover("downloads", args)?;
+    let items = data["items"]
+        .as_array()
+        .ok_or_else(|| anyhow!("missing discovery results"))?;
+    let video_only = has_flag(args, "--video")
+        || download_url(args).is_some_and(|u| is_vimeo_url(&u))
+        || stream::TimeRange::parse(args)?.is_some();
+    let item = discovery::choose_auto(items, video_only)?;
+    download_item(item, args, page.tab, page.profile.as_deref())
+}
+
+fn download_item(
+    item: &Value,
+    args: &[String],
+    tab: Option<i64>,
+    profile: Option<&str>,
+) -> Result<()> {
+    let url = item["url"]
+        .as_str()
+        .ok_or_else(|| anyhow!("download item has no URL"))?;
+    let method = flag_value(args, "--method").unwrap_or("auto".into());
+    let range = stream::TimeRange::parse(args)?;
+    if range.is_some() && !matches!(method.as_str(), "auto" | "ffmpeg") {
+        bail!("time ranges require --method auto or ffmpeg");
     }
-    let min_prio = items
-        .iter()
-        .filter_map(|i| i.get("priority").and_then(|v| v.as_u64()))
-        .min()
-        .unwrap_or(99);
-    let top: Vec<&Value> = items
-        .iter()
-        .filter(|i| i.get("priority").and_then(|v| v.as_u64()) == Some(min_prio))
-        .collect();
-    if top.len() > 1 {
-        eprintln!("ambiguous: {} candidates found at top priority:", top.len());
-        for (i, item) in top.iter().enumerate() {
-            eprintln!(
-                "  [{}] {} → {}",
-                i,
-                item.get("label").and_then(|v| v.as_str()).unwrap_or(""),
-                item.get("url").and_then(|v| v.as_str()).unwrap_or("")
-            );
-        }
-        bail!("use --list + --pick <id> to select");
-    }
-    let item = top[0];
-    let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("");
-    let item_type = item
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
+    let stream = method == "ffmpeg"
+        || (method == "auto"
+            && (matches!(item["type"].as_str(), Some("hls" | "dash"))
+                || stream::manifest_format(url).is_some()
+                || range.is_some()));
     let out = flag_value(args, "--out").unwrap_or_else(|| {
-        if item_type != "unknown" {
-            format!("download.{item_type}")
+        if stream {
+            if has_flag(args, "--audio-only") {
+                "download.m4a".into()
+            } else {
+                "download.mp4".into()
+            }
         } else {
-            "download".into()
+            let kind = item["type"].as_str().unwrap_or("unknown");
+            let file = url
+                .split(['?', '#'])
+                .next()
+                .unwrap_or("")
+                .rsplit('/')
+                .next()
+                .unwrap_or("");
+            if matches!(kind, "video" | "audio") && file.contains('.') {
+                file.to_string()
+            } else if kind == "unknown" {
+                "download".into()
+            } else {
+                format!("download.{kind}")
+            }
         }
     });
-    let method = flag_value(args, "--method").unwrap_or("auto".into());
-    eprintln!("[auto-picked: {}]", url);
-    route_download(url, &out, &method, tab, profile.as_deref())?;
-    Ok(())
+    if stream {
+        stream::download(url, &out, args, tab, profile, Some(item))
+    } else {
+        route_download(url, &out, &method, tab, profile)
+    }
 }
 
 fn yt_dlp_download(url: &str, args: &[String], out: &str) -> Result<()> {
-    let mut cmd = std::process::Command::new("yt-dlp");
-    cmd.arg("--cookies-from-browser").arg("chrome");
-
-    let cookies_from = flag_value(args, "--cookies-from").unwrap_or("chrome".into());
-    if cookies_from != "chrome" {
-        cmd.arg("--cookies-from-browser").arg(&cookies_from);
-    }
-
-    let out_template = if out.is_empty() {
-        "%(title)s.%(ext)s".to_string()
-    } else {
-        out.to_string()
-    };
-    cmd.arg("--output").arg(&out_template);
-
-    let format = flag_value(args, "--format")
-        .unwrap_or("bestvideo[height<=1080]+bestaudio/best[height<=1080]".into());
-    cmd.arg("--format").arg(&format);
-
-    if has_flag(args, "--audio-only") {
-        cmd.arg("--extract-audio").arg("--audio-format").arg("mp3");
-    }
-    if has_flag(args, "--subtitles") {
-        cmd.arg("--write-subs").arg("--write-auto-subs");
-    }
-
-    cmd.arg(url);
-
-    let status = cmd.status().context("failed to run yt-dlp")?;
-    if !status.success() {
-        bail!("yt-dlp exited with code {:?}", status.code());
-    }
-    print_result(
-        json!({"ok": true, "data": {"method": "yt-dlp", "url": url, "output": out_template}}),
-        args,
-    );
-    Ok(())
+    extractor::download(url, args, out)
 }
 
 fn head_content_length(url: &str, tab: Option<i64>, profile: Option<&str>) -> Option<u64> {
@@ -1212,48 +1174,9 @@ fn days_to_ymd(days: i64) -> (i64, i64, i64) {
 // ── Media extraction ───────────────────────────────────────────────────────
 
 fn media_cmd(args: &[String]) -> Result<()> {
-    let tab = resolve_active_tab(args)?;
-    let profile = extract_profile(args);
-    let media_type = flag_value(args, "--type").unwrap_or("all".into());
-    let _ = ensure_debugger(tab, profile.as_deref());
-    let expr = format!(
-        r#"(() => {{
-        const out = [];
-        const last = (url) => url ? url.split('/').pop().split('?')[0] : null;
-        if ({want_img}) document.querySelectorAll('img').forEach(el => {{
-            if (el.src) out.push({{type: 'image', url: el.src, filename: last(el.src), source: 'img'}});
-        }});
-        if ({want_img}) document.querySelectorAll('[style*="background-image"]').forEach(el => {{
-            const m = el.style.backgroundImage.match(/url\(["']?(.+?)["']?\)/);
-            if (m) out.push({{type: 'image', url: m[1], filename: last(m[1]), source: 'css'}});
-        }});
-        if ({want_img}) document.querySelectorAll('source[srcset]').forEach(el => {{
-            el.srcset.split(',').forEach(s => {{
-                const u = s.trim().split(' ')[0];
-                if (u) out.push({{type: 'image', url: u, filename: last(u), source: 'srcset'}});
-            }});
-        }});
-        if ({want_vid}) document.querySelectorAll('video').forEach(el => {{
-            if (el.src) out.push({{type: 'video', url: el.src, filename: last(el.src), source: 'video'}});
-            el.querySelectorAll('source').forEach(s => {{
-                if (s.src) out.push({{type: 'video', url: s.src, filename: last(s.src), source: 'video-source'}});
-            }});
-        }});
-        if ({want_aud}) document.querySelectorAll('audio').forEach(el => {{
-            if (el.src) out.push({{type: 'audio', url: el.src, filename: last(el.src), source: 'audio'}});
-            el.querySelectorAll('source').forEach(s => {{
-                if (s.src) out.push({{type: 'audio', url: s.src, filename: last(s.src), source: 'audio-source'}});
-            }});
-        }});
-        return JSON.stringify(out);
-    }})()"#,
-        want_img = media_type == "all" || media_type == "image",
-        want_vid = media_type == "all" || media_type == "video",
-        want_aud = media_type == "all" || media_type == "audio",
-    );
-    let raw = cdp_eval(tab, profile.as_deref(), &expr)?;
-    let items: Vec<Value> = serde_json::from_str(raw.as_str().unwrap_or("[]")).unwrap_or_default();
-    print_result(json!({"ok": true, "data": {"media": items}}), args);
+    let mut page = discovery::Page::new(args)?;
+    let data = page.discover("media", args)?;
+    print_result(json!({"ok": true, "data": {"media": data["media"]}}), args);
     Ok(())
 }
 
