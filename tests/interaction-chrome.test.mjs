@@ -18,7 +18,7 @@ test("interaction expressions work in an isolated real browser", { skip: !availa
 	const profile = await mkdtemp(join(tmpdir(), "ap-interaction-chrome-"));
 	const child = spawn(binary, ["--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
 	const exited = new Promise(resolve => child.once("exit", resolve));
-	t.after(async () => { child.kill(); await exited; await rm(profile, { recursive: true, force: true }); });
+	t.after(async () => { child.kill(); await exited; await rm(profile, { recursive: true, force: true, maxRetries: 3 }); });
 	const endpoint = await new Promise((resolve, reject) => {
 		let output = "";
 		child.stderr.on("data", chunk => { output += chunk; const found = output.match(/DevTools listening on (ws:\/\/[^\s]+)/); if (found) resolve(found[1]); });
