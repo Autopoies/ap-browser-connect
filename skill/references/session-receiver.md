@@ -76,9 +76,10 @@ Before accepting any mail:
 ```
 
 `status` is `accepted`, `rejected`, or `expired`. For rejected/expired mail, include a
-human-readable reason and echo the message's target session/epoch so the sender
-can correlate the rejection. Do not report acceptance for a stale target. Send a
-negative receipt when dead-lettering; moving/removing a mail file is not a receipt.
+human-readable reason and set the receipt's top-level `session_id` and
+`receiver_epoch` to the message's intended target values; the sending host uses
+those fields to correlate the outcome. Do not report acceptance for a stale target.
+Send a negative receipt when dead-lettering; moving/removing a mail file is not a receipt.
 
 The host monitors receipts for about 60 seconds. A matching receipt advances
 `queued` to its reported status; without one it reports `unconfirmed` (outcome

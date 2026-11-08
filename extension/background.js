@@ -484,6 +484,47 @@ async function replyTarget(params) {
 	return (await chrome.tabs.query({ active: true, windowId: b.window_id }))[0]?.id ?? null;
 }
 
+let proposalSequence = 0;
+
+function proposalError(message) {
+	return Object.assign(new Error(message), { code: "INVALID_PARAMS" });
+}
+
+function normalizeProposalOptions(input, status) {
+	if (input == null) return null;
+	if (status !== "confirm") throw proposalError("Proposal options require confirm status");
+	if (!Array.isArray(input) || input.length < 1 || input.length > 6)
+		throw proposalError("Proposal options must contain 1–6 entries");
+	const ids = new Set();
+	const options = input.map((raw) => {
+		if (!raw || typeof raw !== "object" || Array.isArray(raw))
+			throw proposalError("Each proposal option must be an object");
+		const id = typeof raw.id === "string" ? raw.id.trim() : "";
+		const label = typeof raw.label === "string" ? raw.label.trim() : "";
+		if (!/^[A-Za-z0-9._-]{1,64}$/.test(id) || ids.has(id))
+			throw proposalError("Proposal option IDs must be unique, safe and non-empty");
+		if (!label || label.length > 160)
+			throw proposalError("Proposal option labels must contain 1–160 characters");
+		if (raw.description != null && (typeof raw.description !== "string" || raw.description.length > 2000))
+			throw proposalError("Proposal descriptions must be strings of at most 2000 characters");
+		ids.add(id);
+		return {
+			id,
+			label,
+			...(raw.description != null ? { description: raw.description } : {}),
+			...(Object.hasOwn(raw, "payload") ? { payload: raw.payload } : {}),
+		};
+	});
+	let size;
+	try {
+		size = new TextEncoder().encode(JSON.stringify(options)).length;
+	} catch {
+		throw proposalError("Proposal payloads must be JSON-serializable");
+	}
+	if (size > 12000) throw proposalError("Proposal options exceed the 12000-byte budget");
+	return options;
+}
+
 async function forwardRelayEvent(params, status) {
 	await routesReady;
 	const event = eventRoutes.get(params.event_id);
@@ -508,6 +549,12 @@ async function forwardRelayEvent(params, status) {
 	if (tabId == null)
 		throw Object.assign(new Error("No annotation reply target"), { code: "TAB_NOT_FOUND" });
 	const route = eventRoutes.get(params.event_id) || threadRoutes.get(params.thread_id);
+	const options = normalizeProposalOptions(params.options, nextStatus);
+	const proposalId = options
+		? typeof params.proposal_id === "string" && params.proposal_id
+			? params.proposal_id
+			: `proposal-${Date.now().toString(36)}-${(++proposalSequence).toString(36)}`
+		: null;
 	await chrome.tabs.sendMessage(tabId, {
 		method: "annotate.relay_event",
 		event_id: params.event_id,
@@ -517,10 +564,14 @@ async function forwardRelayEvent(params, status) {
 		thread_id: params.thread_id || eventRoutes.get(params.event_id)?.thread_id || params.event_id,
 		status: nextStatus,
 		message: params.message,
+		...(options ? { options, proposal_id: proposalId } : {}),
 		...(params.from_label ? { from_label: params.from_label } : {}),
 		ts: Date.now(),
 	});
-	return { ok: true, data: { delivered: true, tab_id: tabId } };
+	return {
+		ok: true,
+		data: { delivered: true, tab_id: tabId, ...(proposalId ? { proposal_id: proposalId } : {}) },
+	};
 }
 
 async function sendAnnotationRelay(msg, sender) {
@@ -574,6 +625,7 @@ async function sendAnnotationRelay(msg, sender) {
 			title: msg.title || tab.title,
 			element: msg.element,
 			thread_id: msg.thread_id,
+			proposal_response: msg.proposal_response,
 		});
 	} catch (error) {
 		await refreshBindingHealth();

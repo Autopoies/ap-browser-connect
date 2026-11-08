@@ -1211,6 +1211,42 @@ test("annotation UI in real Chromium", {
 		assert.match(await evaluate(`${ui}.querySelectorAll('.reply')[1].textContent`), /Cancelled/);
 	});
 
+	await t.test("generic proposal options approve once with their exact agent payload", async () => {
+		await setup(true);
+		await evaluate(
+			`var f=${ui}.querySelector('.follow');f.input.value='Choose';f.requestSubmit();`,
+		);
+		const sent = await evaluate("__sent.find(m=>m.method==='relay.send')");
+		const options = [
+			{ id: "a", label: "Apply A", description: "Recommended choice", payload: { text: "A" } },
+			{ id: "b", label: "Apply B", description: "Alternative choice", payload: { text: "B" } },
+		];
+		await message({
+			method: "annotate.relay_event",
+			thread_id: sent.thread_id,
+			status: "confirm",
+			message: "Choose an action",
+			proposal_id: "proposal-a",
+			options,
+		});
+		assert.equal(await evaluate(`${ui}.querySelectorAll('.proposal-option').length`), 2);
+		assert.match(await evaluate(`${ui}.querySelector('.proposal-description').textContent`), /Recommended/);
+		await click(action("Apply A"));
+		const approval = await evaluate("__sent.filter(m=>m.method==='relay.send').at(-1)");
+		assert.equal(approval.action, "approve");
+		assert.equal(approval.thread_id, sent.thread_id);
+		assert.deepEqual(approval.proposal_response, {
+			proposal_id: "proposal-a",
+			option_id: "a",
+			option: options[0],
+		});
+		assert.equal(await evaluate(`${ui}.querySelectorAll('.proposal-option').length`), 0);
+		const count = await evaluate("__sent.filter(m=>m.method==='relay.send').length");
+		await evaluate("document.querySelector('#ap-annotate-root').shadowRoot.querySelector('.proposal-decision')?.click()");
+		assert.equal(await evaluate("__sent.filter(m=>m.method==='relay.send').length"), count);
+		assert.match(await evaluate(`${ui}.querySelector('.proposal-decision').textContent`), /Approved: Apply A/);
+	});
+
 	await t.test(
 		"session switcher preserves thread affinity, input nodes, and surviving targets",
 		async () => {

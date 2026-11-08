@@ -20,6 +20,8 @@ Drive the user's **already-logged-in** Chrome — real cookies, real sessions, r
 
 **Route first:** existing local video + watermark → [offline recording branch](references/recording.md#existing-video-offline), with no browser connection, `ping`, adapter lookup or launch. Browser recording → the same reference for capture/storage/validation; use adapter-first for any site navigation or interaction needed during the task. The quick start below is for online site work only.
 
+**Session binding request?** Skip the site workflow and read [Live Bound Interactive mode](#live-bound-interactive-mode) first. Resolve the target from `ap-browser profiles`; if the requested label is not online, ask for the current profile label instead of searching Chrome files or logs. After `bind`, check `bindings`: `ready / RECEIVER_LEASE` means interactive delivery is available; `unknown / RECEIVER_UNVERIFIED` means the receiving mailbox must publish and honor the [receiver protocol](references/session-receiver.md). Pin-Only mode remains available without a receiver.
+
 ## Adapter-first rule
 
 **Every online site task starts the same way: identify the current/target site, then check for a matching adapter — before any generic `tabs`/`goto`/`text` command.** 159 adapters across 43 sites are preinstalled; they encode selectors, pagination, SPA waits, and ad filtering in one command. Generic tab primitives are the **fallback**, never the default.
@@ -383,10 +385,13 @@ ap-browser --window 7 bind --inbox /absolute/mail/inbox/session-id --label "Web 
 ap-browser bindings
 ap-browser reply --event-id mail-0123456789abcdef0123456789abcdef --status running --message "Reviewing the selection"
 ap-browser reply --event-id mail-0123456789abcdef0123456789abcdef --status done --message "Finished"
+ap-browser reply --event-id mail-0123456789abcdef0123456789abcdef --status confirm --message "Choose an action" --options '[{"id":"a","label":"Apply edit","payload":{"text":"Revised"}}]'
 ap-browser --window 7 unbind
 ```
 
 Use `--tab <ID>` instead of `--window` for a tab-only binding; tab scope takes precedence over window scope. Always pass a meaningful, human-readable session title or task description to `--label` (explaining what the session is doing, e.g. `"论文阅读与总结"` or `"Checkout Flow QA"`, never a generic tool name like `"pi"`). `bind` can infer session ID from the inbox directory name and PID/label from `../../peers/<session_id>.json`; pass `--session-id`, `--label`, and `--pid` when needed (especially when your CLI's parent is not the long-lived session process). Saved bindings are not proof of readiness. Interactive actions require a fresh receiver lease; unknown health pauses sending, while confirmed offline restores Pin Mode without losing drafts or pins. Popup/options distinguish ready and saved bindings. Read `references/session-receiver.md` when implementing receiver health and acknowledgements or diagnosing an unverified binding.
+
+Agents can offer multiple concrete actions as real browser choices. Each generic option has an ID, human-visible label/description and optional agent-owned JSON payload; approval returns the selected option on the same thread for the agent to execute. See [generic action proposals](references/action-proposals.md) for the schema, approval semantics and lifecycle.
 
 Any local session relay/mailbox system can consume atomic **v: 1 JSON file drops** in `--inbox <DIR>`; no particular agent vendor or relay installation is required. Files are `mail-<32hex>.json`, with a readable `body` plus structured `ap_browser` page/element metadata. Writing a message means queued, not delivered. A matching explicit receiver receipt means accepted; removing/moving the file proves nothing. Only an execution update means running. Missing receipts become unconfirmed and are never automatically retried. `ap-browser reply` sends inline progress (`running`, `done`, `confirm`, `error`) back to its originating tab; a compatible peer inbox reply with `replyTo` / `threadId` also works. See `references/commands.md` for the exact file-drop and peer contracts. Command requests require a safety audit and explicit confirmation for destructive/privileged actions; queueing or acceptance does not mean execution or approval.
 

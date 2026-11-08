@@ -582,6 +582,11 @@
 		pre { position: relative; margin: 4px 0 2px; padding: 8px 58px 8px 10px; background: rgba(0, 0, 0, .35); border: 1px solid rgba(255,255,255,.07); border-radius: 7px; overflow: auto; white-space: pre-wrap; word-break: break-all; font: 11px/1.5 "SF Mono", ui-monospace, Menlo, monospace; color: #D1D5DB; }
 		.reply pre button { position: absolute; top: 5px; right: 5px; font-size: 10px; padding: 2px 6px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); }
 		.confirm-bar { display: flex; gap: 6px; margin-top: 6px; }
+		.confirm-bar.options { flex-direction: column; align-items: stretch; }
+		.proposal-option { border: 1px solid rgba(255,255,255,.08); border-radius: 8px; padding: 6px; background: rgba(255,255,255,.025); }
+		.proposal-option button { width: 100%; justify-content: flex-start; text-align: left; }
+		.proposal-description { margin-top: 4px; color: #AEB6C1; font-size: 11px; line-height: 1.45; white-space: pre-wrap; }
+		.proposal-decision { padding: 6px 8px; border-radius: 7px; background: rgba(90,167,136,.1); color: #9CE0C2; font-size: 11px; }
 		.confirm-bar button:first-child { background: rgba(90, 167, 136, 0.2); border-color: rgba(90, 167, 136, 0.4); color: #9CE0C2; }
 		.reply-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 5px 10px; background: rgba(90, 167, 136, 0.1); border-top: 1px solid rgba(90, 167, 136, 0.2); font-size: 11px; color: #88C0A6; flex-shrink: 0; }
 		.reply-bar-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1852,6 +1857,23 @@
 			}
 		});
 	}
+	function decideProposal(card, action, option = null) {
+		if (card.proposalDecision) return;
+		card.proposalDecision = { action, label: option?.label || "Proposal" };
+		renderCard(card);
+		const proposalResponse = {
+			proposal_id: card.proposalId,
+			...(option ? { option_id: option.id, option } : {}),
+		};
+		void sendRelay(
+			action,
+			null,
+			action === "approve" ? `Approve: ${option.label}` : "Cancel proposal",
+			card.threadId,
+			card.session_id,
+			proposalResponse,
+		);
+	}
 	function renderCard(card) {
 		emptyStage.hidden = true;
 		if (!card.el) {
@@ -1935,7 +1957,43 @@
 		card.progressEl.classList.toggle("busy", card.status === "running");
 		if (card.message != null) renderReply(card.replyEl, card.message);
 		card.confirmEl.replaceChildren();
-		if (card.status === "confirm") {
+		card.confirmEl.classList.toggle("options", Boolean(card.options?.length));
+		if (card.proposalDecision) {
+			card.confirmEl.append(
+				node(
+					"div",
+					"proposal-decision",
+					card.proposalDecision.action === "approve"
+						? `Approved: ${card.proposalDecision.label}`
+						: "Cancelled",
+				),
+			);
+		} else if (card.status === "confirm" && card.options?.length) {
+			for (const option of card.options) {
+				const item = node("div", "proposal-option");
+				const choice = relayButton(
+					option.label,
+					() => decideProposal(card, "approve", option),
+					"",
+					"check",
+					card.session_id,
+					card.receiver_epoch,
+				);
+				item.append(choice);
+				if (option.description) item.append(node("div", "proposal-description", option.description));
+				card.confirmEl.append(item);
+			}
+			card.confirmEl.append(
+				relayButton(
+					"Cancel",
+					() => decideProposal(card, "cancel"),
+					"",
+					"close",
+					card.session_id,
+					card.receiver_epoch,
+				),
+			);
+		} else if (card.status === "confirm") {
 			for (const [action, text] of [
 				["approve", "Approve"],
 				["cancel", "Cancel"],
@@ -1969,6 +2027,7 @@
 		userNote = "",
 		threadId = null,
 		targetSessionId = null,
+		proposalResponse = null,
 	) {
 		minimized = false;
 		const owner = cards.findLast((card) => threadId && card.threadId === threadId);
@@ -2012,6 +2071,7 @@
 				title: document.title,
 				element: context?.element,
 				thread_id: card.threadId,
+				proposal_response: proposalResponse,
 				session_id: sessionId,
 				receiver_epoch: binding.receiver_epoch,
 			});
@@ -2078,6 +2138,11 @@
 				cards.push(card);
 			}
 			if (msg.event_id) card.eventId = msg.event_id;
+			if (msg.status === "confirm") {
+				card.options = msg.options || null;
+				card.proposalId = msg.proposal_id || null;
+				card.proposalDecision = null;
+			}
 			if (msg.thread_id) {
 				card.threadId = msg.thread_id;
 				if (card.session_id === currentBinding?.session_id) currentThreadId = msg.thread_id;
