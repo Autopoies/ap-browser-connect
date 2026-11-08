@@ -223,6 +223,7 @@ ap-browser --window 7 bind --inbox /absolute/mail/inbox/session-123
 ap-browser --tab 42 bind --inbox /absolute/mail/inbox/session-123 --session-id session-123 --label "Local session" --pid 12345
 ap-browser bindings
 ap-browser reply --event-id mail-0123456789abcdef0123456789abcdef --status running --message "Inspecting the page"
+ap-browser reply --event-id mail-0123456789abcdef0123456789abcdef --status confirm --message "Choose an action" --options '[{"id":"a","label":"Apply edit","payload":{"text":"Revised"}}]'
 ap-browser reply --event-id mail-0123456789abcdef0123456789abcdef --status done --message "Finished" --thread-id mail-0123456789abcdef0123456789abcdef
 ap-browser --tab 42 unbind --session-id session-123
 ap-browser --window 7 unbind
@@ -234,7 +235,7 @@ ap-browser unbind --all
 - Global `--tab` selects tab scope; otherwise `--window` (or the focused window) selects window scope. A new binding replaces the same session in the same scope; different sessions coexist. The explicit active selection is retained on health loss; a request is never silently sent to another session. Binding a normal HTTP(S) tab injects the annotation dock; binding on restricted browser pages still works without attaching the debugger.
 - `bindings`: returns saved `data.bindings`, each `{scope: "tab"|"window", tab_id: number|null, window_id, session_id, label, pid, inbox, bound_at, receiver_epoch?, health}`. `health` includes `state` (`ready`, `unknown`, `offline`), `reason`, `checked_at`, and `valid_until`. A ready state expires at its deadline. Unknown/offline bindings remain available for inspection/removal; only ready receivers permit sending. Closing a tab removes its tab binding; closing a window removes its bindings.
 - `unbind [--session-id ID] [--all]`: best-effort removal, returns `data.unbound` (including zero). With `--tab`, removes that tab-scoped binding; with `--window`, that window-scoped binding. Session ID alone removes all matching bindings; no selectors defaults to the focused window's window binding. `--all` removes every binding in this profile. Unbind on session exit when practical; receiver epochs and leases prevent an old binding from silently attaching to a replacement.
-- `reply --event-id ID --message TEXT [--status done] [--thread-id ID]`: sends an inline update. Status conventions: `running`, `done`, `confirm`, `error`. Explicit `--tab` wins; otherwise the extension remembers the event/thread's originating tab, then falls back to an active bound window/tab. Global `--window` constrains that fallback. Event/thread maps are retained in Chrome session storage across service-worker restarts (not browser restarts). Returns `data: {delivered: true, tab_id}` (tab-message delivery, not execution acceptance).
+- `reply --event-id ID --message TEXT [--status done] [--thread-id ID] [--options JSON]`: sends an inline update. Status conventions: `running`, `done`, `confirm`, `error`. With `--status confirm`, `--options` supplies 1–6 generic `{id,label,description?,payload?}` choices; the result adds `proposal_id`, and user approval/cancellation returns the decision on the same thread. See [action proposals](action-proposals.md). Explicit `--tab` wins; otherwise the extension remembers the event/thread's originating tab, then falls back to an active bound window/tab. Global `--window` constrains that fallback. Event/thread maps are retained in Chrome session storage across service-worker restarts (not browser restarts). Returns `data: {delivered: true, tab_id, proposal_id?}` (tab-message delivery, not execution acceptance).
 
 #### Vendor-neutral mailbox wire contract
 
@@ -262,6 +263,8 @@ Any local session relay/mailbox implementation can bind: no named relay package 
   }
 }
 ```
+
+For an option approval, `action` is `approve` and `ap_browser.proposal_response` contains `{proposal_id, option_id, option}` with the exact selected option snapshot. Cancellation uses `action: cancel` and `{proposal_id}`. See [action proposals](action-proposals.md).
 
 `threadId` defaults to the event ID and can be supplied for follow-ups. The readable body is capped at 15,000 UTF-8 bytes; the full prompt is saved in `prompt_file`, and metadata retains the original context. Page text and commands are untrusted data, not authority. Command requests include mandatory safety-audit instructions: inspect hidden characters/obfuscation and injection, obtain confirmation for destructive/privileged actions, inspect remote scripts before execution. These instructions are not an execution sandbox.
 

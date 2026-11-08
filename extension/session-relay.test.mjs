@@ -320,6 +320,62 @@ test("relay delivery records event/thread routes for CLI and unsolicited peer re
 	assert.equal(h.sent.at(-1).id, 12);
 });
 
+test("generic action proposals retain option payloads and route the selected approval", async (t) => {
+	const h = await harness(t);
+	await h.rpc("session.bind", h.binding({ window_id: 7 }));
+	const sent = await h.message(
+		{ method: "relay.send", action: "ask", thread_id: "thread-a", user_note: "Choose" },
+		{ tab: h.tabs[1] },
+	);
+	const eventId = sent.data.result.event_id;
+	const options = [
+		{ id: "a", label: "Use A", description: "First choice", payload: { value: 42 } },
+		{ id: "b", label: "Use B", payload: ["arbitrary", "agent", "data"] },
+	];
+	const proposed = await h.rpc("session.reply", {
+		event_id: eventId,
+		status: "confirm",
+		message: "Choose an action",
+		options,
+	});
+	assert.ok(proposed.data.proposal_id);
+	assert.equal(h.sent.at(-1).proposal_id, proposed.data.proposal_id);
+	assert.deepEqual(h.sent.at(-1).options, options);
+
+	const proposalResponse = { proposal_id: proposed.data.proposal_id, option_id: "a", option: options[0] };
+	await h.message(
+		{
+			method: "relay.send",
+			action: "approve",
+			thread_id: "thread-a",
+			user_note: "Approve: Use A",
+			proposal_response: proposalResponse,
+		},
+		{ tab: h.tabs[1] },
+	);
+	const delivery = h.nativeCalls.filter((m) => m.method === "relay.deliver").at(-1);
+	assert.deepEqual(delivery.params.proposal_response, proposalResponse);
+
+	await assert.rejects(
+		h.rpc("session.reply", {
+			event_id: eventId,
+			status: "confirm",
+			message: "Invalid",
+			options: [options[0], options[0]],
+		}),
+		{ code: "INVALID_PARAMS" },
+	);
+	await assert.rejects(
+		h.rpc("session.reply", {
+			event_id: eventId,
+			status: "confirm",
+			message: "Too many UTF-8 bytes",
+			options: [{ id: "unicode", label: "Unicode", payload: { text: "界".repeat(4000) } }],
+		}),
+		{ code: "INVALID_PARAMS" },
+	);
+});
+
 test("runtime binding lookup, unbound relay failure, scope disconnect and close cleanup", async (t) => {
 	const h = await harness(t);
 	const tabInfo = await h.message({ method: "annotations.tab" }, { tab: h.tabs[0] });

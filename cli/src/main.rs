@@ -77,7 +77,7 @@ enum Cmd {
     },
     /// List saved session bindings with receiver readiness and evidence expiry.
     Bindings,
-    /// Send progress or a reply to the originating annotation tab.
+    /// Send progress, a reply, or actionable proposal options to the annotation tab.
     Reply {
         #[arg(long)]
         event_id: String,
@@ -85,6 +85,9 @@ enum Cmd {
         status: String,
         #[arg(long)]
         message: String,
+        /// JSON array of generic options: id, label, optional description and payload.
+        #[arg(long)]
+        options: Option<String>,
         #[arg(long)]
         thread_id: Option<String>,
     },
@@ -531,17 +534,28 @@ fn run_static_match(cli: &Cli, human: bool) -> Result<()> {
             event_id,
             status,
             message,
+            options,
             thread_id,
-        } => rpc(
-            cli,
-            "session.reply",
-            json!({
-                "event_id": event_id, "thread_id": thread_id, "status": status, "message": message,
-                "tab_id": cli.tab, "window_id": cli.window
-            }),
-            human,
-            |_| {},
-        )?,
+        } => {
+            let options = options
+                .as_deref()
+                .map(serde_json::from_str::<Value>)
+                .transpose()
+                .with_context(|| "--options must be valid JSON")?;
+            if options.is_some() && status != "confirm" {
+                bail!("--options requires --status confirm");
+            }
+            rpc(
+                cli,
+                "session.reply",
+                json!({
+                    "event_id": event_id, "thread_id": thread_id, "status": status, "message": message,
+                    "options": options, "tab_id": cli.tab, "window_id": cli.window
+                }),
+                human,
+                |_| {},
+            )?;
+        }
         Cmd::Ping => rpc(cli, "ping", json!({}), human, |_| {})?,
         Cmd::Info => rpc(cli, "info", json!({}), human, |_| {})?,
         Cmd::Status => run_status(cli, human)?,
@@ -2311,6 +2325,24 @@ mod session_binding_tests {
         {
             Cmd::Reply { status, .. } => assert_eq!(status, "done"),
             _ => panic!("expected reply"),
+        }
+        match Cli::try_parse_from([
+            "ap-browser",
+            "reply",
+            "--event-id",
+            "mail-test",
+            "--status",
+            "confirm",
+            "--message",
+            "Choose",
+            "--options",
+            r#"[{"id":"a","label":"Apply A","payload":{"value":42}}]"#,
+        ])
+        .unwrap()
+        .command
+        {
+            Cmd::Reply { options, .. } => assert!(options.is_some()),
+            _ => panic!("expected proposal reply"),
         }
     }
 }
