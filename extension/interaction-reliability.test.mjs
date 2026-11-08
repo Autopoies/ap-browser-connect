@@ -164,6 +164,23 @@ test("hover-triggered rerenders are caught before mousePressed", async () => {
 	assert.equal(h.calls.some(call => call.params?.type === "mousePressed"), false);
 });
 
+test("press Meta+Enter emits a real modified Enter key", async () => {
+	const h = await harness();
+	await h.rpc("press", { keys: "Meta+Enter" });
+	const events = h.calls.filter(call => call.method === "Input.dispatchKeyEvent");
+	assert.equal(events.length, 2);
+	for (const [index, call] of events.entries()) {
+		assert.deepEqual({ ...call.params }, {
+			type: index === 0 ? "keyDown" : "keyUp",
+			code: "Enter",
+			key: "Enter",
+			windowsVirtualKeyCode: 13,
+			modifiers: 4,
+			...(index === 0 ? { text: "\r" } : {}),
+		});
+	}
+});
+
 test("fill invalidates other refs before a subsequent SPA click", async () => {
 	const h = await harness();
 	h.elements.push(new Element("input", ""), new Element("button", "Export"));

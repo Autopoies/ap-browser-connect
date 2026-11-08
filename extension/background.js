@@ -1553,30 +1553,31 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 					const parts = keyInput.split("+").map((s) => s.trim());
 					const mainKey = parts[parts.length - 1];
 					const modifiers = parts.slice(0, -1);
-					const mainVK =
-						mainKey.length === 1 ? mainKey.toUpperCase().charCodeAt(0) : MODIFIER_VK[mainKey] || 0;
+					const special = SPECIAL_KEYS[mainKey];
+					const mainVK = special?.vk ??
+						(mainKey.length === 1 ? mainKey.toUpperCase().charCodeAt(0) : MODIFIER_VK[mainKey] || 0);
+					const keyCode = special?.code ?? "Key" + mainKey.toUpperCase()[0];
+					const key = special?.key ?? mainKey;
 
-					const modParams = {};
-					for (const m of modifiers) {
-						if (m === "Control") modParams.controlKey = true;
-						else if (m === "Shift") modParams.shiftKey = true;
-						else if (m === "Alt") modParams.altKey = true;
-						else if (m === "Meta") modParams.metaKey = true;
-					}
+					// CDP represents modifiers as a bit field, not DOM-style
+					// controlKey/shiftKey/altKey/metaKey properties.
+					const MODIFIER_BITS = { Alt: 1, Control: 2, Meta: 4, Shift: 8 };
+					const modifierBits = modifiers.reduce((bits, m) => bits | (MODIFIER_BITS[m] || 0), 0);
 
 					await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
 						type: "keyDown",
-						code: "Key" + mainKey.toUpperCase()[0],
-						key: mainKey,
+						code: keyCode,
+						key,
 						windowsVirtualKeyCode: mainVK,
-						...modParams,
+						modifiers: modifierBits,
+						text: special?.text || undefined,
 					});
 					await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
 						type: "keyUp",
-						code: "Key" + mainKey.toUpperCase()[0],
-						key: mainKey,
+						code: keyCode,
+						key,
 						windowsVirtualKeyCode: mainVK,
-						...modParams,
+						modifiers: modifierBits,
 					});
 				} else if (keyInput.length === 1) {
 					await chrome.debugger.sendCommand({ tabId: tab.id }, "Input.dispatchKeyEvent", {
