@@ -7,7 +7,10 @@ interaction protocol, not a proofread-specific or site-specific feature.
 Before completing an ASK, the agent must decide whether the result supports concrete
 actions the user could approve. If so, publish a `confirm` proposal with real options;
 do not leave those actions only as prose alternatives or mark the request done before
-the user decides. If no meaningful action exists, complete normally without inventing
+the user decides. Corrections and alternative versions are actionable by default:
+offer options to use, copy, apply, or comment with them even when no page edit is
+needed, and do not suppress options because a corrected version already exists
+elsewhere. If no meaningful action exists, complete normally without inventing
 buttons for a purely informational answer.
 
 ## Publish a proposal
@@ -67,6 +70,8 @@ proposal response. This is direct user approval for the disclosed selected actio
 Execute only that action; do not switch options, substitute hidden behavior, or
 broaden its scope. If the visible label/description did not disclose the effect,
 ask for clarification instead of treating the click as approval for something else.
+If execution could cause an undisclosed side effect, stop before acting and ask.
+Approval to edit is not approval to publish, submit, or post.
 Keep progress and result messages human-readable: do not echo proposal IDs, option IDs,
 or raw payload JSON unless the user explicitly asks for technical details.
 
