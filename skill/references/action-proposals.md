@@ -4,6 +4,12 @@ Use an action proposal when an agent can offer one or more concrete next actions
 wants the user to choose and approve one in the bound browser tab. This is a generic
 interaction protocol, not a proofread-specific or site-specific feature.
 
+Before completing an ASK, the agent must decide whether the result supports concrete
+actions the user could approve. If so, publish a `confirm` proposal with real options;
+do not leave those actions only as prose alternatives or mark the request done before
+the user decides. If no meaningful action exists, complete normally without inventing
+buttons for a purely informational answer.
+
 ## Publish a proposal
 
 Send a normal inline `confirm` update with an `options` JSON array:
