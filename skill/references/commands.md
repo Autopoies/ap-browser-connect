@@ -344,8 +344,10 @@ Wait for a selector, element disappearance, JavaScript condition, URL navigation
 
 | Flag | Description |
 | ------ | ------------- |
-| `--timeout-ms <ms>` | Max wait (default 5000); the RPC timeout is extended automatically |
-| `--interval-ms <ms>` | Polling interval for condition checks (default 1000) |
+| `--timeout-ms <ms>` | Max wait in ms (precedence: `--timeout-ms` > global `--timeout <s> * 1000` > `5000`); the RPC timeout is extended automatically |
+| `--interval-ms <ms>` | Polling interval for condition checks (default `1000`) |
+| `--initial-delay-ms <ms>` | Delay before first condition check (default `0` ms for direct `wait`; `500` ms only when `require_started: true` in batch steps) |
+| `--fail-on-timeout` | Exit with code `5` (`TIMEOUT`) if the condition is still not met when the deadline expires |
 | `--until-eval <JS>` | Wait until JavaScript expression returns truthy (e.g. `!document.querySelector('.loading')`) |
 | `--gone <CSS>` | Wait until the matching element is removed from the DOM (e.g. spinner/stop-button disappearance) |
 | `--url-change-from <URL>` | Wait until the tab leaves this URL, across page execution contexts |
@@ -353,7 +355,9 @@ Wait for a selector, element disappearance, JavaScript condition, URL navigation
 
 ```bash
 ap-browser wait ".results"
-ap-browser wait ".loaded" --timeout-ms 10000
+ap-browser wait ".loaded" --timeout 15                 # honors global --timeout (15000ms)
+ap-browser wait ".loaded" --timeout-ms 10000           # explicit ms overrides --timeout
+ap-browser wait ".loaded" --timeout-ms 5000 --fail-on-timeout
 ap-browser wait --gone "button[data-testid='stop-button']" --timeout-ms 300000
 ap-browser wait --until-eval "document.title.includes('Done')" --timeout-ms 60000
 ap-browser wait --url-change-from "https://example.com/lesson/1" --timeout-ms 180000
@@ -361,11 +365,11 @@ ap-browser wait --media-ended --timeout-ms 180000
 ap-browser wait "audio.preview" --media-ended --timeout-ms 60000
 ```
 
-Returns `{matched: bool, completed: bool, reason, waited_ms, current_status?}`.
+Returns `{matched: bool, completed: bool, reason, timeout_ms, waited_ms, current_status?}`.
 
 When the target condition is met within the time budget, it returns `completed: true` with `reason: "condition_met" | "element_gone" | "selector_matched" | "url_changed" | "media_ended" | "xhr_completed"`.
 
-When the wait deadline is reached while an operation is still in-flight, it returns `completed: false, reason: "deadline_reached"` along with the intermediate state in `current_status` and `meta.hint` — allowing the Agent to decide next steps (continue waiting, read partial progress, or check back later) without raising errors.
+When the wait deadline is reached while an operation is still in-flight, it returns `completed: false, reason: "deadline_reached"` (and exits `0` by default) along with `timeout_ms` and the intermediate state in `current_status` and `meta.hint` — allowing the Agent to decide next steps (continue waiting, read partial progress, or check back later) without raising errors. Pass `--fail-on-timeout` to turn `completed: false` into a hard failure with exit code `5` (`TIMEOUT`).
 
 #### Adapter wait-until-done
 

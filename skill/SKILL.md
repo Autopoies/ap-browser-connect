@@ -24,7 +24,7 @@ Drive the user's **already-logged-in** Chrome — real cookies, real sessions, r
 
 ## Adapter-first rule
 
-**Every online site task starts the same way: identify the current/target site, then check for a matching adapter — before any generic `tabs`/`goto`/`text` command.** 159 adapters across 43 sites are preinstalled; they encode selectors, pagination, SPA waits, and ad filtering in one command. Generic tab primitives are the **fallback**, never the default.
+**Every online site task starts the same way: identify the current/target site, then check for a matching adapter — before any generic `tabs`/`goto`/`text` command.** 49+ sites and 250+ preinstalled adapters encode selectors, pagination, SPA waits, and ad filtering in one command. Generic tab primitives are the **fallback**, never the default.
 
 **Step 0 — what site is this task about?**
 
@@ -45,13 +45,13 @@ ap-browser tabs new "<url>" --silent && ap-browser text
 
 **Discover once, reuse forever.** Steps 1-4 are for the FIRST time you touch a site. Once you've run `sites search`/`--help` for a site, later tasks on the same site go straight to step 5 — no re-searching, no re-reading docs. If the adapter matches but lacks the exact command, read its doc (`sites doc <site>`) — the doc lists every command that adapter ships. Only then fall back to the generic flow.
 
-**`sites list` output shape (default):**
+**`sites list` output shape (default, counts vary with installed adapters):**
 
 ```json
-{"data": {"total_sites": 42, "total_adapters": 150, "recent": [{"site": "github", "commands": 31}, ...], "sites": [...]}}
+{"ok": true, "data": {"total_sites": 49, "total_adapters": 260, "recent": [{"site": "github", "commands": 31}, ...], "sites": [...]}, "meta": {}}
 ```
 
-Use `sites list --full` only when you need the full flat adapter dump (150 entries).
+Use `sites list --full` only when you need the full flat adapter dump.
 
 **Decision tree (run mentally on every online site task):**
 
@@ -132,9 +132,10 @@ measured, not estimated.
    sleep-then-poll (`sleep N && status` loops burned ~90s in the session audit
    behind these rules). Waits return a graceful deadline result carrying
    `current_status`, never an opaque kill.
-4. **Bounded waits beat open-ended ones.** Pass a `--timeout` you can afford;
-   the returned status fields tell you whether to re-wait, `read` partial
-   output, or move on.
+4. **Bounded waits beat open-ended ones.** Pass a `--timeout` (or `--timeout-ms` on `wait`) you can afford;
+   `wait` returns `{matched, completed, reason, timeout_ms, waited_ms, current_status?}` on deadline
+   unless you pass `--fail-on-timeout` (which exits with code `5` / `TIMEOUT` when `completed == false`),
+   letting you decide whether to re-wait, `read` partial output, or move on.
 5. **Fail on evidence, not silence.** Long-running adapters verify their own
    side effects (e.g. `chatgpt send` reports success only when generation
    actually started). An empty/quiet page is NOT success — read the returned
@@ -171,7 +172,7 @@ rules vs **59 calls / 229s** with the anti-patterns above.
 | | `select <target> <option>` | pick a `<select>` option by value or label |
 | | `upload <selector> <file> [file...]` | set file(s) on an `<input type="file">` (CSV import etc.; same engine as `dev upload`) |
 | | `press <key>` | keyboard (Enter, Tab, Control+a) |
-| | `wait <CSS>` / `wait --until-eval JS` / `wait --gone CSS` / `wait --url-change-from URL` / `wait --media-ended` | wait for element, removal, JS condition, URL or media |
+| | `wait <CSS>` / `wait --until-eval JS` / `wait --gone CSS` / `wait --url-change-from URL` / `wait --media-ended` | wait for element, removal, JS condition, URL or media (`--timeout-ms`, `--initial-delay-ms`, `--fail-on-timeout`) |
 | | `scroll [--count N] [--selector CSS]` | scroll page or element into view; `--detect` classifies the list (see patterns.md #16) |
 | **Power** | `eval "<js>"` | scripted extraction / page-state reads / escape hatch when semantic commands fail |
 | | `cdp <method>` | raw DevTools Protocol call |
@@ -181,7 +182,7 @@ rules vs **59 calls / 229s** with the anti-patterns above.
 
 **Global flags:** `--profile`, `--tab <ID>`, `--window <ID>`, `--human`, `--timeout <s>`, `--raw`, `--wait-online <s>`
 
-**`--timeout <s>`** works on **every** command (generic, adapter, dev) and beats the default 30s — and beats an adapter's own `timeout` field. Use it when you know the operation will take longer (or shorter) than the default.
+**`--timeout <s>`** works on **every** command (generic, adapter, dev) and beats the default 30s — and beats an adapter's own `timeout` field. On `wait`, `--timeout <s>` also sets the wait budget (`s * 1000` ms) whenever `--timeout-ms` is omitted (precedence: `--timeout-ms` > `--timeout * 1000` > `5000` ms), while the outer RPC transport timeout extends automatically. Use it when you know the operation will take longer (or shorter) than the default.
 
 **Tab resolution:** without `--tab`, commands target the **active tab of the focused window**.
 
@@ -273,11 +274,13 @@ ap-browser tabs close $T   # close once, after all adapters done
 
 ## Output at a glance
 
-Every command returns JSON on stdout — **including failures** (offline, transport, usage errors print `{"ok":false,"error":{"code":...}}`), so `json.load`/`jq` never see empty or invalid output:
+Browser/extension RPC commands and site/tab queries return the `{ok, data, meta}` JSON envelope on stdout — **including failures** (offline, transport, usage errors print `{"ok":false,"error":{"code":...}}`), so `json.load`/`jq` never see empty or invalid output:
 
 ```json
 {"ok": true, "data": {...}, "meta": {"focus": {"matched_operated_target": true}}}
 ```
+
+See [output-contract.md](references/output-contract.md) for the full contract and documented exceptions (`profiles`, `status`, `current`, `use`, `doctor --json`, and single-profile `data.tabs` vs multi-profile `data.profiles[].tabs` on `tabs list`).
 
 **`--raw`** (global flag): on success with a `data.result` (eval/cdp), print only that value — strings verbatim, everything else compact JSON. Failures still print the full envelope. This replaces wrapper scripts like `python3 -c 'json.load(...)['data']['result']'`:
 

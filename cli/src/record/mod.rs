@@ -125,9 +125,10 @@ fn bounded<T: Send + 'static>(
 }
 fn resolve(cli: &crate::Cli) -> Result<String> {
     let profile = cli.profile.clone();
-    let wait = cli.wait_online.min(600);
+    let wait_policy = cli.wait_online;
+    let wait = cli.wait_online_secs().min(600);
     bounded(Duration::from_secs(wait + 10), move || {
-        crate::socket_client::resolve_socket_wait(profile.as_deref(), wait)
+        crate::socket_client::resolve_socket_with_policy(profile.as_deref(), wait_policy)
     })
 }
 fn rpc(instance: &str, method: &str, params: Value, timeout: Duration) -> Result<Value> {
@@ -194,7 +195,7 @@ fn negotiate(instance: &str, timeout: Duration) -> Result<()> {
     validate_capabilities(value)
 }
 fn rpc_timeout(cli: &crate::Cli) -> Duration {
-    Duration::from_secs(cli.timeout.clamp(1, 10))
+    Duration::from_secs(cli.timeout_secs().clamp(1, 10))
 }
 fn status(h: &Handle, t: Duration) -> Result<Status> {
     let s: Status = serde_json::from_value(rpc(&h.instance, method::STATUS, h.params(), t)?)?;

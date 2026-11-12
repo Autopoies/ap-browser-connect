@@ -281,7 +281,12 @@ export async function waitForCondition(
 	let baseline = null;
 	let lastValue;
 
-	const initialDelay = params.initial_delay_ms === undefined ? 500 : params.initial_delay_ms;
+	const initialDelay =
+		params.initial_delay_ms === undefined
+			? requireStarted
+				? 500
+				: 0
+			: params.initial_delay_ms;
 	if (initialDelay > 0) {
 		await sleep(initialDelay);
 	}

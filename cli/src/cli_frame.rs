@@ -48,7 +48,13 @@ pub fn read_response_owned<R: Read + Send + 'static>(
 }
 
 /// Normalize both JSON-RPC and direct-host failures. Never emit bare ok:false.
+/// Also surfaces CLI/host version mismatches in `meta` whenever the host
+/// stamps `_host_version` on the wire envelope.
 pub fn response(envelope: Value) -> Value {
+    let host_version = envelope
+        .get("_host_version")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let mut response = if let Some(result) = envelope.get("result") {
         result.clone()
     } else if let Some(error) = envelope.get("error") {
@@ -79,7 +85,34 @@ pub fn response(envelope: Value) -> Value {
         }
         response["error"] = error;
     }
+    attach_version_mismatch(&mut response, host_version.as_deref());
     response
+}
+
+fn attach_version_mismatch(response: &mut Value, host_version: Option<&str>) {
+    let Some(hv) = host_version.filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let cli_version = env!("CARGO_PKG_VERSION");
+    if hv == cli_version {
+        return;
+    }
+    let Some(obj) = response.as_object_mut() else {
+        return;
+    };
+    if !obj.get("meta").is_some_and(Value::is_object) {
+        obj.insert("meta".into(), serde_json::json!({}));
+    }
+    if let Some(meta) = obj.get_mut("meta").and_then(Value::as_object_mut) {
+        meta.insert("host_version".into(), serde_json::json!(hv));
+        meta.insert("cli_version".into(), serde_json::json!(cli_version));
+        meta.insert(
+            "version_warning".into(),
+            serde_json::json!(format!(
+                "CLI v{cli_version} != host v{hv}; rebuild/update and restart ap-browser-host"
+            )),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -120,5 +153,25 @@ mod tests {
                 ["error"]["code"],
             "STALE_REF"
         );
+    }
+
+    #[test]
+    fn attaches_meta_warning_only_on_host_version_mismatch() {
+        let matched = response(serde_json::json!({
+            "_host_version": env!("CARGO_PKG_VERSION"),
+            "result": {"ok": true, "data": {"pong": true}, "meta": {}}
+        }));
+        assert!(matched["meta"].get("version_warning").is_none());
+
+        let mismatched = response(serde_json::json!({
+            "_host_version": "0.0.1-stale",
+            "result": {"ok": true, "data": {"pong": true}, "meta": {}}
+        }));
+        assert_eq!(mismatched["meta"]["host_version"], "0.0.1-stale");
+        assert_eq!(mismatched["meta"]["cli_version"], env!("CARGO_PKG_VERSION"));
+        assert!(mismatched["meta"]["version_warning"]
+            .as_str()
+            .unwrap()
+            .contains("0.0.1-stale"));
     }
 }

@@ -503,6 +503,42 @@ test("require_started deadline returns started_not_observed, not deadline_reache
 	assert.equal(result.reason, "started_not_observed");
 });
 
+test("waitForCondition checks immediately without initial delay when require_started is unset", async () => {
+	const sleeps = [];
+	const result = await waitForCondition(
+		{ id: 7, url: "https://example.com/" },
+		{ until_eval: "true", interval_ms: 1000 },
+		5000,
+		async () => true,
+		async () => ({ url: "https://example.com/" }),
+		async (ms) => {
+			sleeps.push(ms);
+		},
+	);
+	assert.equal(result.completed, true);
+	assert.deepEqual(sleeps, []);
+});
+
+test("waitForCondition keeps 500ms default initial delay when require_started is true", async () => {
+	const sleeps = [];
+	let count = 0;
+	const result = await waitForCondition(
+		{ id: 7, url: "https://chatgpt.com/" },
+		{ eval: "status.js", when: { isGenerating: false }, require_started: true, interval_ms: 1000 },
+		5000,
+		async () => {
+			count += 1;
+			return { isGenerating: count === 1 };
+		},
+		async () => ({ url: "https://chatgpt.com/" }),
+		async (ms) => {
+			sleeps.push(ms);
+		},
+	);
+	assert.equal(result.completed, true);
+	assert.equal(sleeps[0], 500);
+});
+
 test("classifyListBehavior detects virtualized infinite lists", () => {
 	// X-like (real measured shape): mount phase grows, then recycling sheds
 	// more than remounting adds — grow-then-shed oscillation.

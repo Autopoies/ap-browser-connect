@@ -155,9 +155,7 @@ After installing once, `ap-browser update adapters` maintains this directory
 ( SHA-marker sync with automatic filters backup) — the manual block above is
 only for first install or offline machines.
 
-After this, `ap-browser sites list` should print ~43 sites (arxiv, bilibili,
-github, hackernews, ...), and `~/.ap-browser/filters/` should contain the
-official site-specific content filters.
+After this, `ap-browser sites list` should print the installed sites (49+ in the standard library: arxiv, bilibili, github, hackernews, ...), and `~/.ap-browser/filters/` should contain the official site-specific content filters.
 
 ### Verify
 

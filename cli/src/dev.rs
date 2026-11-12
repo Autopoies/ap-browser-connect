@@ -87,9 +87,9 @@ fn rpc(method: &str, params: Value, args: &[String]) -> Result<Value> {
             o.insert("_timeout_hint_secs".into(), json!(h));
         }
     }
-    let socket = match crate::socket_client::resolve_socket_wait(
+    let socket = match crate::socket_client::resolve_socket_with_policy(
         extract_profile(args).as_deref(),
-        crate::socket_client::wait_online_from_env(),
+        crate::socket_client::wait_online_policy_from_env(),
     ) {
         Ok(s) => s,
         Err(e) => crate::emit_transport_error("OFFLINE", e),
@@ -114,13 +114,7 @@ fn rpc(method: &str, params: Value, args: &[String]) -> Result<Value> {
             crate::emit_transport_error("OFFLINE", anyhow!("read from instance socket failed: {e}"))
         }
     };
-    let resp = match envelope.get("result") {
-        Some(r) => r.clone(),
-        None => match envelope.get("error") {
-            Some(e) => json!({"ok": false, "error": e}),
-            None => envelope,
-        },
-    };
+    let resp = crate::cli_frame::response(envelope);
     Ok(resp)
 }
 
@@ -131,9 +125,9 @@ fn cdp(tab: Option<i64>, profile: Option<&str>, cdp_method: &str, params: Value)
             o.insert("tab_id".into(), json!(t));
         }
     }
-    let socket = match crate::socket_client::resolve_socket_wait(
+    let socket = match crate::socket_client::resolve_socket_with_policy(
         profile,
-        crate::socket_client::wait_online_from_env(),
+        crate::socket_client::wait_online_policy_from_env(),
     ) {
         Ok(s) => s,
         Err(e) => crate::emit_transport_error("OFFLINE", e),
@@ -155,13 +149,7 @@ fn cdp(tab: Option<i64>, profile: Option<&str>, cdp_method: &str, params: Value)
             crate::emit_transport_error("OFFLINE", anyhow!("read from instance socket failed: {e}"))
         }
     };
-    let resp = match envelope.get("result") {
-        Some(r) => r.clone(),
-        None => match envelope.get("error") {
-            Some(e) => json!({"ok": false, "error": e}),
-            None => envelope,
-        },
-    };
+    let resp = crate::cli_frame::response(envelope);
     Ok(resp)
 }
 

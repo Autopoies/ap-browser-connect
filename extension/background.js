@@ -1407,6 +1407,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 			const props = { active: params.active !== false };
 			if (params.url) props.url = params.url;
 			const tab = await chrome.tabs.create(props);
+			cliCreatedTabs.add(tab.id);
 			const { label } = await ensureInstanceId();
 			return {
 				ok: true,
@@ -1424,7 +1425,13 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 		}
 
 		case "tabs.close":
-			await chrome.tabs.remove(params.tab_id);
+			cliClosedTabs.add(params.tab_id);
+			try {
+				await chrome.tabs.remove(params.tab_id);
+			} catch (e) {
+				cliClosedTabs.delete(params.tab_id);
+				throw e;
+			}
 			return {
 				ok: true,
 				data: { closed: params.tab_id },
@@ -1607,7 +1614,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 
 		case "wait": {
 			const tab = await resolveTab(params);
-			const timeout = params.timeout_ms || 5000;
+			const timeout = params.timeout_ms ?? 5000;
 			let data;
 			if (params.url_change_from != null) {
 				data = await waitForUrlChange(tab.id, params.url_change_from, timeout, chrome.tabs);
@@ -1693,6 +1700,9 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 						target: query,
 					};
 				}
+			}
+			if (data && typeof data === "object" && data.timeout_ms === undefined) {
+				data = { ...data, timeout_ms: timeout };
 			}
 			return {
 				ok: true,
@@ -1846,6 +1856,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 						url: `https://${params._auto_tab.domain}`,
 						active: false,
 					});
+					cliCreatedTabs.add(created.id);
 					autoCreatedTabId = created.id;
 					// Wait for the fresh tab to finish loading before executing
 					// batch steps — otherwise adapters scrape about:blank/bootstrapping DOM.
@@ -1939,6 +1950,7 @@ async function dispatchUnfiltered(method, params, operatedTab) {
 				return attachFilterMetadata({ ok: true, data: { results }, meta }, batchFilterMetadata);
 			} finally {
 				if (autoCreatedTabId != null && !shouldKeepTab) {
+					cliClosedTabs.add(autoCreatedTabId);
 					await cleanupAutoCreatedTab(autoCreatedTabId, releaseTab, (id) => chrome.tabs.remove(id));
 				}
 			}
@@ -2567,6 +2579,8 @@ const attachingTabs = new Map();
 const recordingOnlyTabs = new Set();
 const lockedTabs = new Set();
 const pendingRestoreTimers = new Map();
+const cliCreatedTabs = new Set();
+const cliClosedTabs = new Set();
 const CLEANUP_TIMEOUT_MS = 500;
 
 // ─── Dev mode: per-tab ring buffers for console + network events ──────────
@@ -2724,10 +2738,24 @@ chrome.debugger.onDetach.addListener((source) => {
 	}
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => {
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
 	recordingController?.interrupt("tab_closed", tabId);
 	clearTabState(tabId);
 	removeClosedBindings(tabId, null).catch(() => {});
+	const closedByCli = cliClosedTabs.delete(tabId);
+	if (cliCreatedTabs.delete(tabId) && nativePort) {
+		postToNative(nativePort, {
+			jsonrpc: "2.0",
+			method: "log",
+			params: {
+				event: "tab.removed",
+				tab_id: tabId,
+				window_id: removeInfo?.windowId ?? null,
+				is_window_closing: removeInfo?.isWindowClosing ?? false,
+				closed_by_cli: closedByCli,
+			},
+		});
+	}
 });
 chrome.windows.onRemoved.addListener((windowId) =>
 	removeClosedBindings(null, windowId).catch(() => {}),
