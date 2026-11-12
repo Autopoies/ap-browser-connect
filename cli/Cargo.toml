@@ -18,6 +18,8 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde_yaml = "0.9"
+# Adapter args keep their YAML declaration order: it defines positional order.
+indexmap = { version = "2", features = ["serde"] }
 dirs.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 base64 = "0.22"

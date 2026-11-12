@@ -59,6 +59,12 @@ pub fn lint_adapter(a: &Adapter, site_folder: &str, _meta: Option<&SiteMeta>) ->
                 name, def.arg_type
             ));
         }
+        if crate::sites::RESERVED_ARG_NAMES.contains(&name.as_str()) {
+            warnings.push(format!(
+                "arg '{}' shadows the global --{} flag and can never receive a value; rename it",
+                name, name
+            ));
+        }
     }
     // steps non-empty
     if a.steps.is_empty() {
@@ -132,7 +138,10 @@ pub fn lint_adapter(a: &Adapter, site_folder: &str, _meta: Option<&SiteMeta>) ->
     LintResult { errors, warnings }
 }
 
-fn check_templates(val: &Value, args: &HashMap<String, crate::sites::ArgDef>) -> Vec<String> {
+fn check_templates(
+    val: &Value,
+    args: &indexmap::IndexMap<String, crate::sites::ArgDef>,
+) -> Vec<String> {
     let mut errs = Vec::new();
     let s = match val {
         Value::String(s) => s.clone(),

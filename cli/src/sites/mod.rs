@@ -4,6 +4,7 @@
 pub mod lint;
 
 use anyhow::{anyhow, bail, Context, Result};
+use indexmap::IndexMap;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -11,6 +12,23 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 // ── Reserved names that can never be site folders ─────────────────────────
+/// Global flags `parse_args` consumes before adapter args are matched. An
+/// adapter arg with one of these names can never receive a value.
+pub const RESERVED_ARG_NAMES: &[&str] = &[
+    "format",
+    "tab",
+    "profile",
+    "map",
+    "timeout",
+    "wait",
+    "wait-online",
+    "raw",
+    "human",
+    "read-stdin",
+    "keep-tab",
+    "no-keep-tab",
+];
+
 pub const RESERVED: &[&str] = &[
     "record",
     "bind",
@@ -58,7 +76,10 @@ pub struct Adapter {
     pub site: String,
     pub description: Option<String>,
     #[serde(default)]
-    pub args: HashMap<String, ArgDef>,
+    /// Declaration order is significant: positionals map onto required args
+    /// in the order the adapter YAML lists them. A HashMap here made that
+    /// order random per process (`replace <find> <with>` could swap).
+    pub args: IndexMap<String, ArgDef>,
     pub input: Option<InputDef>,
     pub output: Option<OutputDef>,
     pub steps: Vec<HashMap<String, Value>>,
@@ -1068,8 +1089,16 @@ fn parse_args(adapter: &Adapter, raw: &[String]) -> Result<HashMap<String, Value
         }
         if arg.starts_with("--") {
             let key = arg.trim_start_matches("--").to_string();
-            if let Some(val) = raw.get(i + 1) {
-                if let Some(def) = adapter.args.get(&key) {
+            if let Some(def) = adapter.args.get(&key) {
+                let next = raw.get(i + 1);
+                // A bool flag may stand alone (`--all`): only an explicit
+                // true/false after it is its value. Without this, a bare flag
+                // swallowed the next argument or was dropped at the end.
+                let bare_bool = def.arg_type == "bool"
+                    && !matches!(next.map(|v| v.as_str()), Some("true") | Some("false"));
+                if bare_bool {
+                    out.insert(key, Value::Bool(true));
+                } else if let Some(val) = next {
                     out.insert(key, coerce_value(&def.arg_type, val)?);
                     skip = true;
                 }
@@ -1078,7 +1107,7 @@ fn parse_args(adapter: &Adapter, raw: &[String]) -> Result<HashMap<String, Value
             positional.push(arg);
         }
     }
-    // Assign positionals to required args in order
+    // Assign positionals to required args in YAML declaration order
     let required_order: Vec<&String> = adapter
         .args
         .iter()
@@ -1520,7 +1549,7 @@ mod tests {
         Adapter {
             site: "t".into(),
             description: None,
-            args: HashMap::from([
+            args: IndexMap::from([
                 (
                     "query".into(),
                     ArgDef {
@@ -1574,5 +1603,70 @@ mod tests {
         let parsed = parse_args(&test_adapter(), &raw).unwrap();
         assert_eq!(parsed["query"], json!("graph neural networks"));
         assert_eq!(parsed["limit"], json!(3));
+    }
+
+    fn adapter_from_yaml(yaml: &str) -> Adapter {
+        serde_yaml::from_str(yaml).unwrap()
+    }
+
+    #[test]
+    fn positionals_follow_yaml_declaration_order() {
+        // Regression: args lived in a HashMap, so with two or more required
+        // args the positional mapping changed between processes
+        // (`replace <find> <with>` sometimes ran as `<with> <find>`). Names are
+        // chosen so neither alphabetical nor reverse order passes by accident.
+        let yaml = r#"
+site: t
+steps: [{eval: "1"}]
+args:
+  zeta: {type: string, required: true}
+  flag: {type: bool, default: false}
+  alpha: {type: string, required: true}
+  mid: {type: int, required: true}
+  opt: {type: string, default: ""}
+  beta: {type: string, required: true}
+"#;
+        let raw: Vec<String> = ["z", "a", "7", "b"].iter().map(|s| s.to_string()).collect();
+        // HashMap seeds differ per map instance, so repeated loads would have
+        // exposed the old behaviour within one process.
+        for _ in 0..64 {
+            let adapter = adapter_from_yaml(yaml);
+            let parsed = parse_args(&adapter, &raw).unwrap();
+            assert_eq!(parsed["zeta"], json!("z"));
+            assert_eq!(parsed["alpha"], json!("a"));
+            assert_eq!(parsed["mid"], json!(7));
+            assert_eq!(parsed["beta"], json!("b"));
+            assert_eq!(
+                usage_placeholder(&adapter),
+                "<zeta> <alpha> <mid> <beta> --flag <bool> --opt <string>"
+            );
+        }
+    }
+
+    #[test]
+    fn bare_bool_flags_do_not_swallow_the_next_argument() {
+        let yaml = r#"
+site: t
+steps: [{eval: "1"}]
+args:
+  find: {type: string, required: true}
+  all: {type: bool, default: false}
+  mode: {type: string, default: suggest}
+"#;
+        let adapter = adapter_from_yaml(yaml);
+        let parse = |raw: &[&str]| {
+            let raw: Vec<String> = raw.iter().map(|s| s.to_string()).collect();
+            parse_args(&adapter, &raw).unwrap()
+        };
+        let bare = parse(&["--all", "--mode", "edit", "needle"]);
+        assert_eq!(bare["all"], json!(true));
+        assert_eq!(bare["mode"], json!("edit"));
+        assert_eq!(bare["find"], json!("needle"));
+        assert_eq!(parse(&["needle", "--all"])["all"], json!(true));
+        assert_eq!(parse(&["needle", "--all", "true"])["all"], json!(true));
+        assert_eq!(parse(&["needle", "--all", "false"])["all"], json!(false));
+        assert_eq!(parse(&["needle"])["all"], json!(false));
+        // A positional after a bare flag stays positional.
+        assert_eq!(parse(&["--all", "needle"])["find"], json!("needle"));
     }
 }
