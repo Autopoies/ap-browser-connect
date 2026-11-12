@@ -1,7 +1,7 @@
 //! A fake service worker drives the actual host IPC/native-message routing.
 use super::tests::{wire, Fixture, NEXT};
 use super::*;
-use crate::{handle_cli_connection, handle_sw_message, Host};
+use crate::{handle_cli_connection, handle_sw_message, Host, PendingEntry};
 use ap_browser_core::{encode, read_frame, transport};
 use interprocess::local_socket::prelude::*;
 use serde_json::json;
@@ -331,7 +331,14 @@ fn source_numeric_ids_cannot_collide_with_generic_pending_and_wrong_direction_is
     let (tx, rx) = mpsc::channel();
     *h.stdout_tx.lock().unwrap() = Some(tx);
     let (pending_tx, pending_rx) = mpsc::channel();
-    h.pending.lock().unwrap().insert(7, pending_tx);
+    h.pending.lock().unwrap().insert(
+        7,
+        PendingEntry {
+            tx: pending_tx,
+            method: "test".into(),
+            started_at: std::time::Instant::now(),
+        },
+    );
     handle_sw_message(&h, json!({"id":7,"method":method::FRAME,"params":{}})).unwrap();
     assert_eq!(native(&rx)["ok"], false);
     assert!(pending_rx.try_recv().is_err());
@@ -345,9 +352,11 @@ fn isolated_host(f: &Fixture) -> (Arc<Host>, mpsc::Receiver<Vec<u8>>) {
     (
         Arc::new(Host {
             instance_id: Mutex::new(None),
+            label: Mutex::new(None),
             relay: crate::relay::RelayManager::default(),
             recording: Some(f.m.clone()),
             pending: Arc::new(Mutex::new(HashMap::new())),
+            timed_out: Mutex::new(HashMap::new()),
             next_id: std::sync::atomic::AtomicU64::new(1),
             stdout_tx: Mutex::new(Some(tx)),
         }),

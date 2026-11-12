@@ -51,12 +51,33 @@ pub fn lint_adapter(a: &Adapter, site_folder: &str, _meta: Option<&SiteMeta>) ->
         ));
     }
     // name field would match filename — but we don't have filename here. Skip (checked at load).
-    // args types valid
+    // args types valid & global CLI flag collision check
+    const RESERVED_GLOBAL_FLAGS: &[&str] = &[
+        "tab",
+        "profile",
+        "timeout",
+        "window",
+        "human",
+        "raw",
+        "wait-online",
+        "format",
+        "map",
+        "keep-tab",
+        "no-keep-tab",
+        "wait",
+        "read-stdin",
+    ];
     for (name, def) in &a.args {
         if !["string", "int", "bool"].contains(&def.arg_type.as_str()) {
             errors.push(format!(
                 "arg '{}' has invalid type '{}'; allowed: string, int, bool",
                 name, def.arg_type
+            ));
+        }
+        if RESERVED_GLOBAL_FLAGS.contains(&name.as_str()) {
+            warnings.push(format!(
+                "arg '{}' collides with global CLI flag '--{}' (use positional form or rename the arg)",
+                name, name
             ));
         }
     }
@@ -306,5 +327,36 @@ fn scan_similar_selectors(failed: &str) -> Vec<String> {
             })
             .unwrap_or_default(),
         Err(_) => vec![],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lint_warns_when_adapter_arg_collides_with_global_flag() {
+        let yaml = r#"
+site: v2ex
+name: tab
+description: Fetch V2EX tab topics
+args:
+  tab:
+    type: string
+    default: hot
+steps:
+  - goto: https://www.v2ex.com/?tab=${args.tab}
+  - eval: document.title
+"#;
+        let adapter: Adapter = serde_yaml::from_str(yaml).unwrap();
+        let res = lint_adapter(&adapter, "v2ex", None);
+        assert!(res.is_ok());
+        assert!(
+            res.warnings
+                .iter()
+                .any(|w| w.contains("arg 'tab' collides with global CLI flag '--tab'")),
+            "expected collision warning, got: {:?}",
+            res.warnings
+        );
     }
 }

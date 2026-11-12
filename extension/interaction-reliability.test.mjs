@@ -74,7 +74,7 @@ async function harness() {
 	const chrome = {
 		storage: { local: storage, session: storage, onChanged: event() },
 		runtime: { connectNative: () => port, getManifest: () => ({ version: "test" }), onInstalled: event(), onStartup: event(), onMessage: event() },
-		tabs: { onRemoved: event(), onUpdated: event(), async get() { return tab; }, async query() { return [tab]; }, async sendMessage() {} },
+		tabs: { onRemoved: event(), onUpdated: event(), async get() { return tab; }, async query() { return [tab]; }, async create(props) { return { id: 99, windowId: 1, active: props.active !== false, url: props.url || "", title: "" }; }, async remove(id) { for (const fn of chrome.tabs.onRemoved.listeners) fn(id, { windowId: 1, isWindowClosing: false }); }, async sendMessage() {} },
 		tabGroups: { async query() { return []; } },
 		windows: { onRemoved: event(), async getLastFocused() { return { id: 1 }; } },
 		debugger: {
@@ -103,7 +103,7 @@ async function harness() {
 	vm.runInContext(source, context, { filename: "background.js" });
 	await flush();
 	const rpc = (method, params = {}) => context.dispatchUnfiltered(method, { tab_id: 7, ...params }, null);
-	return { elements, calls, responses, control, context, port, timers, rpc };
+	return { elements, calls, responses, control, context, port, timers, chrome, rpc };
 }
 
 test("snapshot refs are never recycled for a different node", async () => {
@@ -218,4 +218,22 @@ test("explicit-tab tasks retain debugger attachment between commands", async () 
 	assert.equal(h.calls.filter(call => call.method === "detach").length, 0);
 	await h.context.handleNativeMessage({ jsonrpc: "2.0", id: 101, method: "state.snapshot", params: { tab_id: 7 } }, h.port);
 	assert.equal(h.calls.filter(call => call.method === "attach").length, 1);
+});
+
+test("wait returns effective timeout_ms in data", async () => {
+	const h = await harness();
+	const res = await h.rpc("wait", { until_eval: "true", timeout_ms: 8000, interval_ms: 1000 });
+	assert.equal(res.ok, true);
+	assert.equal(res.data.completed, true);
+	assert.equal(res.data.timeout_ms, 8000);
+});
+
+test("tabs.new tracks created tabs and logs onRemoved with closed_by_cli attribution", async () => {
+	const h = await harness();
+	await h.rpc("tabs.new", { url: "https://example.test/", silent: true });
+	for (const fn of h.chrome.tabs.onRemoved.listeners) fn(99, { windowId: 1, isWindowClosing: false });
+	const logMsg = h.responses.find(m => m.method === "log" && m.params?.event === "tab.removed");
+	assert.ok(logMsg);
+	assert.equal(logMsg.params.tab_id, 99);
+	assert.equal(logMsg.params.closed_by_cli, false);
 });

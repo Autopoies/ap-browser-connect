@@ -33,6 +33,22 @@
 }
 ```
 
+When the CLI and native host versions differ, `meta` automatically includes `cli_version`, `host_version`, and `version_warning`.
+
+## Non-standard JSON exceptions
+
+All browser/extension RPC commands, `tabs list`, `sites list`, and `sites search` return the `{ok, data, meta}` envelope above. A small set of local inspection and multi-profile commands have distinct JSON shapes:
+
+| Command | Top-level JSON shape | Notes |
+|---------|----------------------|-------|
+| `profiles` | `[ { "instance_id", "label", ... } ]` | Bare array of online profiles |
+| `status` | `{ "online": N, "profiles": [...], "partial"?: true, "errors"?: [...] }` | Includes `partial` + `errors` if any profile probe failed |
+| `current` | `{ "profile": "<id\|null>" }` | Active default profile selection |
+| `use <id\|label>` | `{ "ok": true, "selected": "<id>" }` | Switches sticky default profile |
+| `doctor --json` | `{ "ok": bool, "summary": {...}, "checks": [...] }` | Health report |
+| `tabs list` (1 profile or `--profile`) | `{ "ok": true, "data": { "tabs": [...] }, "meta": {...} }` | Extension response for that single profile |
+| `tabs list` (multiple online profiles, no `--profile`) | `{ "ok": true, "data": { "profiles": [ { "instance_id", "label", "tabs": [...] } ], "partial"?: true, "errors"?: [...] }, "meta": {} }` | Concurrent cross-profile aggregation |
+
 ## Exit codes
 
 | Code | Error code | Meaning | Agent action |

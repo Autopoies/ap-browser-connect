@@ -385,9 +385,11 @@ pub fn dispatch_site(
         .and_then(|s| s.parse::<u64>().ok())
         .filter(|&t| t > 0);
     // --wait-online beats the env var; both cap at 600s inside resolve.
+    // Leaving both unset preserves None so transient probe errors still trigger
+    // the short recovery retry without blocking on genuine offline states.
     let wait_online = extract_flag(raw_args, "--wait-online")
         .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or_else(crate::socket_client::wait_online_from_env);
+        .or_else(crate::socket_client::wait_online_policy_from_env);
     let filter_registry = crate::filters::Registry::load();
     // Adapter auto-tab: when the adapter declares a canonical site domain and
     // no explicit --tab was given, the extension opens a silent tab on that
@@ -582,7 +584,7 @@ struct AdapterBatchRequest<'a> {
     auto_tab_domain: Option<&'a str>,
     keep_tab: Option<bool>,
     want_wait: bool,
-    wait_online: u64,
+    wait_online: Option<u64>,
 }
 
 fn send_adapter_batch(req: AdapterBatchRequest<'_>) -> Result<Value> {
@@ -624,10 +626,11 @@ fn send_adapter_batch(req: AdapterBatchRequest<'_>) -> Result<Value> {
         params["_auto_tab"] = auto_tab;
     }
     req.filter_registry.attach_to(&mut params);
-    let socket = match crate::socket_client::resolve_socket_wait(req.profile, req.wait_online) {
-        Ok(s) => s,
-        Err(e) => crate::emit_transport_error("OFFLINE", e),
-    };
+    let socket =
+        match crate::socket_client::resolve_socket_with_policy(req.profile, req.wait_online) {
+            Ok(s) => s,
+            Err(e) => crate::emit_transport_error("OFFLINE", e),
+        };
     let request = json!({"jsonrpc":"2.0","method":"batch","params":params});
     let bytes = crate::cli_frame::encode(&request)?;
     let mut stream = match crate::socket_client::dial_with_retry(
@@ -648,13 +651,7 @@ fn send_adapter_batch(req: AdapterBatchRequest<'_>) -> Result<Value> {
             crate::emit_transport_error("OFFLINE", anyhow!("read from instance socket failed: {e}"))
         }
     };
-    let resp = match envelope.get("result") {
-        Some(r) => r.clone(),
-        None => match envelope.get("error") {
-            Some(e) => json!({"ok": false, "error": e}),
-            None => envelope,
-        },
-    };
+    let resp = crate::cli_frame::response(envelope);
     Ok(extract_adapter_output(resp))
 }
 
@@ -1293,9 +1290,9 @@ pub fn send_single_step(step: &Value) -> Result<Value> {
         "_timeout_hint_secs": timeout.as_secs()
     });
     crate::filters::Registry::load().attach_to(&mut params);
-    let socket = match crate::socket_client::resolve_socket_wait(
+    let socket = match crate::socket_client::resolve_socket_with_policy(
         None,
-        crate::socket_client::wait_online_from_env(),
+        crate::socket_client::wait_online_policy_from_env(),
     ) {
         Ok(s) => s,
         Err(e) => crate::emit_transport_error("OFFLINE", e),
@@ -1320,13 +1317,7 @@ pub fn send_single_step(step: &Value) -> Result<Value> {
             crate::emit_transport_error("OFFLINE", anyhow!("read from instance socket failed: {e}"))
         }
     };
-    let resp = match envelope.get("result") {
-        Some(r) => r.clone(),
-        None => match envelope.get("error") {
-            Some(e) => json!({"ok": false, "error": e}),
-            None => envelope,
-        },
-    };
+    let resp = crate::cli_frame::response(envelope);
     if let Some(results) = resp
         .get("data")
         .and_then(|d| d.get("results"))

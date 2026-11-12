@@ -12,9 +12,11 @@ use anyhow::{Context, Result};
 use interprocess::local_socket::prelude::*;
 use std::collections::HashMap;
 use std::io::Write;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 use tracing::{debug, error, info, warn};
 
 mod recording;
@@ -22,16 +24,28 @@ mod relay;
 
 const KEEPALIVE_METHOD: &str = "keepalive";
 const HELLO_METHOD: &str = "hello";
+const LOG_METHOD: &str = "log";
+const HOST_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RESPONSE_TIMEOUT_SECS: u64 = 30;
 const MAX_RESPONSE_TIMEOUT_SECS: u64 = 3_600;
+const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_TIMED_OUT_TRACKED: usize = 256;
 
-type Pending = Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>;
+struct PendingEntry {
+    tx: mpsc::Sender<Vec<u8>>,
+    method: String,
+    started_at: Instant,
+}
+
+type Pending = Arc<Mutex<HashMap<u64, PendingEntry>>>;
 
 struct Host {
     instance_id: Mutex<Option<String>>,
+    label: Mutex<Option<String>>,
     relay: relay::RelayManager,
     recording: Option<Arc<recording::Manager>>,
     pending: Pending,
+    timed_out: Mutex<HashMap<u64, (String, Instant)>>,
     next_id: AtomicU64,
     stdout_tx: Mutex<Option<mpsc::Sender<Vec<u8>>>>,
 }
@@ -40,11 +54,13 @@ impl Host {
     fn new() -> Self {
         Self {
             instance_id: Mutex::new(None),
+            label: Mutex::new(None),
             relay: relay::RelayManager::default(),
             recording: recording::Manager::new()
                 .map_err(|e| warn!("recording unavailable: {e}"))
                 .ok(),
             pending: Arc::new(Mutex::new(HashMap::new())),
+            timed_out: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             stdout_tx: Mutex::new(None),
         }
@@ -54,6 +70,55 @@ impl Host {
         let id = self.instance_id.lock().ok()?.clone()?;
         Some(transport::instance_name(&id))
     }
+
+    fn instance_tag(&self) -> String {
+        self.instance_id
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|id| id.chars().take(8).collect()))
+            .unwrap_or_else(|| "unknown".into())
+    }
+
+    fn label_tag(&self) -> String {
+        self.label
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "-".into())
+    }
+
+    fn record_timed_out(&self, id: u64, method: String, started_at: Instant) {
+        if let Ok(mut map) = self.timed_out.lock() {
+            if map.len() >= MAX_TIMED_OUT_TRACKED {
+                if let Some(&oldest_id) = map.iter().min_by_key(|(_, (_, ts))| *ts).map(|(k, _)| k)
+                {
+                    map.remove(&oldest_id);
+                }
+            }
+            map.insert(id, (method, started_at));
+        }
+    }
+}
+
+fn rotate_log_if_needed(log_path: &Path) {
+    rotate_log_if_over(log_path, MAX_LOG_BYTES);
+}
+
+fn rotate_log_if_over(log_path: &Path, max_bytes: u64) {
+    let Ok(meta) = std::fs::metadata(log_path) else {
+        return;
+    };
+    if meta.len() < max_bytes {
+        return;
+    }
+    let bak1 = log_path.with_extension("log.1");
+    let bak2 = log_path.with_extension("log.2");
+    let _ = std::fs::remove_file(&bak2);
+    if bak1.exists() {
+        let _ = std::fs::rename(&bak1, &bak2);
+    }
+    let _ = std::fs::rename(log_path, &bak1);
 }
 
 fn unregister_host_instance(host: &Host) {
@@ -68,6 +133,7 @@ fn init_logging() {
         if let Some(parent) = p.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
+        rotate_log_if_needed(&p);
         std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -79,7 +145,7 @@ fn init_logging() {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| "info,debug".into()),
+                    .unwrap_or_else(|_| "info".into()),
             )
             .with_writer(file)
             .with_ansi(false)
@@ -276,11 +342,31 @@ fn handle_sw_message(host: &Arc<Host>, msg: serde_json::Value) -> Result<()> {
                 params.instance_id, params.label, params.active_tab
             );
             *host.instance_id.lock().unwrap() = Some(params.instance_id);
+            *host.label.lock().unwrap() = Some(params.label);
             Ok(())
         }
 
         (KEEPALIVE_METHOD, _) => {
             debug!("keepalive");
+            Ok(())
+        }
+
+        (LOG_METHOD, _) => {
+            let params = msg
+                .get("params")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            let event = params
+                .get("event")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            info!(
+                "sw event={} instance={} label={} details={}",
+                event,
+                host.instance_tag(),
+                host.label_tag(),
+                params
+            );
             Ok(())
         }
 
@@ -352,13 +438,43 @@ fn handle_sw_message(host: &Arc<Host>, msg: serde_json::Value) -> Result<()> {
         }
 
         (_, Some(id)) => {
+            let mut msg = msg;
+            if let Some(obj) = msg.as_object_mut() {
+                obj.insert("_host_version".into(), serde_json::json!(HOST_VERSION));
+            }
             let encoded = encode(&msg)?;
-            let tx = host.pending.lock().unwrap().remove(&id);
-            match tx {
-                Some(tx) => {
-                    let _ = tx.send(encoded);
+            let entry = host.pending.lock().unwrap().remove(&id);
+            match entry {
+                Some(entry) => {
+                    debug!(
+                        "rpc completed: id={} method={} instance={} label={} duration_ms={}",
+                        id,
+                        entry.method,
+                        host.instance_tag(),
+                        host.label_tag(),
+                        entry.started_at.elapsed().as_millis()
+                    );
+                    let _ = entry.tx.send(encoded);
                 }
-                None => warn!("received response for unknown id={id}, dropping"),
+                None => {
+                    let timed_out = host.timed_out.lock().ok().and_then(|mut m| m.remove(&id));
+                    match timed_out {
+                        Some((req_method, started_at)) => warn!(
+                            "received late response for timed-out id={} method={} instance={} label={} elapsed_ms={}, dropping",
+                            id,
+                            req_method,
+                            host.instance_tag(),
+                            host.label_tag(),
+                            started_at.elapsed().as_millis()
+                        ),
+                        None => warn!(
+                            "received response for unknown id={} instance={} label={}, dropping",
+                            id,
+                            host.instance_tag(),
+                            host.label_tag()
+                        ),
+                    }
+                }
             }
             Ok(())
         }
@@ -380,16 +496,36 @@ fn response_timeout_secs(request: &serde_json::Value) -> u64 {
 }
 
 fn write_error_to_cli(stream: &mut transport::Stream, code: &str, message: &str) -> Result<()> {
-    let err = serde_json::json!({ "ok": false, "error": { "code": code, "message": message } });
+    let err = serde_json::json!({
+        "_host_version": HOST_VERSION,
+        "ok": false,
+        "error": { "code": code, "message": message }
+    });
     stream.write_all(&encode(&err)?)?;
     let _ = stream.flush();
     Ok(())
 }
 
 fn handle_cli_connection(host: Arc<Host>, mut stream: transport::Stream) -> Result<()> {
-    let req_value = read_frame(&mut stream).context("read cli frame")?;
+    let req_value = match read_frame(&mut stream) {
+        Ok(v) => v,
+        Err(FrameError::Io(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            debug!(
+                "cli connection closed before sending request (instance={})",
+                host.instance_tag()
+            );
+            return Ok(());
+        }
+        Err(e) => return Err(anyhow::Error::new(e).context("read cli frame")),
+    };
     let req: Request = serde_json::from_value(req_value.clone()).context("parse cli request")?;
-    debug!("cli request method={}", req.method);
+    let started = Instant::now();
+    let instance = host.instance_tag();
+    let label = host.label_tag();
+    debug!(
+        "cli request method={} instance={} label={}",
+        req.method, instance, label
+    );
 
     let id = host.next_id.fetch_add(1, Ordering::SeqCst);
     if req.method.starts_with("record.") {
@@ -402,7 +538,14 @@ fn handle_cli_connection(host: Arc<Host>, mut stream: transport::Stream) -> Resu
         );
     }
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    host.pending.lock().unwrap().insert(id, tx);
+    host.pending.lock().unwrap().insert(
+        id,
+        PendingEntry {
+            tx,
+            method: req.method.clone(),
+            started_at: started,
+        },
+    );
 
     let timeout_secs = response_timeout_secs(&req_value);
 
@@ -419,6 +562,13 @@ fn handle_cli_connection(host: Arc<Host>, mut stream: transport::Stream) -> Resu
         Some(tx) => tx,
         None => {
             host.pending.lock().unwrap().remove(&id);
+            warn!(
+                "cli rpc method={} instance={} label={} status=disconnected duration_ms={}",
+                req.method,
+                instance,
+                label,
+                started.elapsed().as_millis()
+            );
             return write_error_to_cli(
                 &mut stream,
                 "EXTENSION_DISCONNECTED",
@@ -431,6 +581,13 @@ fn handle_cli_connection(host: Arc<Host>, mut stream: transport::Stream) -> Resu
         // so no response will ever come back. Tell the CLI instead of
         // silently dropping the connection (which would hang its read).
         host.pending.lock().unwrap().remove(&id);
+        warn!(
+            "cli rpc method={} instance={} label={} status=disconnected duration_ms={}",
+            req.method,
+            instance,
+            label,
+            started.elapsed().as_millis()
+        );
         return write_error_to_cli(
             &mut stream,
             "EXTENSION_DISCONNECTED",
@@ -440,10 +597,34 @@ fn handle_cli_connection(host: Arc<Host>, mut stream: transport::Stream) -> Resu
 
     match rx.recv_timeout(std::time::Duration::from_secs(timeout_secs)) {
         Ok(buf) => {
-            stream.write_all(&buf).context("write response to cli")?;
-            let _ = stream.flush();
+            let duration_ms = started.elapsed().as_millis();
+            match stream.write_all(&buf) {
+                Ok(()) => {
+                    let _ = stream.flush();
+                    info!(
+                        "cli rpc method={} instance={} label={} status=ok duration_ms={}",
+                        req.method, instance, label, duration_ms
+                    );
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
+                    warn!(
+                        "cli rpc method={} instance={} label={} status=client_gone duration_ms={}: {e}",
+                        req.method, instance, label, duration_ms
+                    );
+                }
+                Err(e) => return Err(anyhow::Error::new(e).context("write response to cli")),
+            }
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
+            host.record_timed_out(id, req.method.clone(), started);
+            warn!(
+                "cli rpc method={} instance={} label={} status=timeout timeout_secs={} duration_ms={}",
+                req.method,
+                instance,
+                label,
+                timeout_secs,
+                started.elapsed().as_millis()
+            );
             write_error_to_cli(
                 &mut stream,
                 "TIMEOUT",
@@ -451,6 +632,13 @@ fn handle_cli_connection(host: Arc<Host>, mut stream: transport::Stream) -> Resu
             )?;
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
+            warn!(
+                "cli rpc method={} instance={} label={} status=sw_disconnected duration_ms={}",
+                req.method,
+                instance,
+                label,
+                started.elapsed().as_millis()
+            );
             write_error_to_cli(
                 &mut stream,
                 "EXTENSION_DISCONNECTED",
@@ -470,7 +658,14 @@ fn forward_record_control(
     params: &serde_json::Value,
 ) -> std::result::Result<serde_json::Value, recording::Error> {
     let (tx, rx) = mpsc::channel();
-    host.pending.lock().unwrap().insert(id, tx);
+    host.pending.lock().unwrap().insert(
+        id,
+        PendingEntry {
+            tx,
+            method: method.to_string(),
+            started_at: Instant::now(),
+        },
+    );
     let forwarded = serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
     let sent = host.stdout_tx.lock().unwrap().as_ref().is_some_and(|tx| {
         encode(&forwarded)
@@ -588,8 +783,12 @@ fn handle_record_cli(
         }
     })();
     let response = match result {
-        Ok(v) => serde_json::json!({"jsonrpc":"2.0","id":id,"result":{"ok":true,"data":v}}),
-        Err(e) => serde_json::json!({"jsonrpc":"2.0","id":id,"error":{"code":e.0,"message":e.1}}),
+        Ok(v) => {
+            serde_json::json!({"jsonrpc":"2.0","_host_version":HOST_VERSION,"id":id,"result":{"ok":true,"data":v}})
+        }
+        Err(e) => {
+            serde_json::json!({"jsonrpc":"2.0","_host_version":HOST_VERSION,"id":id,"error":{"code":e.0,"message":e.1}})
+        }
     };
     stream.write_all(&encode(&response)?)?;
     let _ = stream.flush();
@@ -665,5 +864,54 @@ mod tests {
         unregister_host_instance(&host);
 
         assert!(!std::path::Path::new(&socket).exists());
+    }
+
+    #[test]
+    fn sw_response_carries_host_version_and_accepts_log_notifications() -> Result<()> {
+        let host = Arc::new(Host::new());
+        handle_sw_message(
+            &host,
+            serde_json::json!({
+                "method": "log",
+                "params": {"event": "tab.removed", "tab_id": 42, "closed_by_cli": false}
+            }),
+        )?;
+
+        let (tx, rx) = mpsc::channel();
+        host.pending.lock().unwrap().insert(
+            77,
+            PendingEntry {
+                tx,
+                method: "ping".into(),
+                started_at: Instant::now(),
+            },
+        );
+        handle_sw_message(
+            &host,
+            serde_json::json!({"id": 77, "result": {"ok": true, "data": {"pong": true}}}),
+        )?;
+        let frame = rx.recv_timeout(std::time::Duration::from_secs(1))?;
+        let resp = read_frame(&mut frame.as_slice())?;
+        assert_eq!(resp["_host_version"], HOST_VERSION);
+        assert_eq!(resp["result"]["data"]["pong"], true);
+        Ok(())
+    }
+
+    #[test]
+    fn rotates_log_when_size_exceeds_threshold() -> Result<()> {
+        let dir = std::env::temp_dir().join(format!("ap-host-log-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let log = dir.join("host.log");
+        std::fs::write(&log, vec![b'x'; 200])?;
+        rotate_log_if_over(&log, 100);
+        assert!(!log.exists());
+        assert_eq!(std::fs::read(dir.join("host.log.1"))?.len(), 200);
+
+        std::fs::write(&log, vec![b'y'; 150])?;
+        rotate_log_if_over(&log, 100);
+        assert_eq!(std::fs::read(dir.join("host.log.1"))?.len(), 150);
+        assert_eq!(std::fs::read(dir.join("host.log.2"))?.len(), 200);
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
     }
 }

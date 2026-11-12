@@ -1,12 +1,11 @@
 //! `ap-browser doctor` — health check for dependencies, config, extension, adapters.
 
 use anyhow::Result;
-use ap_browser_core::transport;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::socket_client;
+use crate::socket_client::{self, ProbeOutcome};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -87,13 +86,26 @@ impl Check {
 }
 
 pub fn run(fix: bool, json_out: bool) -> Result<()> {
+    // Probe each registered instance at most once (concurrently) and share
+    // the outcomes across checks so doctor never issues zero-byte dial probes.
+    let (instance_list, probes) = match socket_client::list_instance_ids() {
+        Ok(ids) => {
+            let outcomes = if ids.is_empty() {
+                Vec::new()
+            } else {
+                socket_client::probe_all_concurrent(&ids)
+            };
+            (Ok(ids), outcomes)
+        }
+        Err(e) => (Err(e.to_string()), Vec::new()),
+    };
     let checks = vec![
         // 🔴 Critical
-        check_extension_online(1),
+        check_extension_online(1, &instance_list, &probes),
         check_native_messaging_config(2),
         check_host_binary_executable(3),
         check_host_version_match(4),
-        check_host_process_running(5),
+        check_host_process_running(5, &instance_list, &probes),
         // 🟡 Warnings
         check_dep(
             6,
@@ -132,7 +144,7 @@ pub fn run(fix: bool, json_out: bool) -> Result<()> {
         ),
         check_sites_registry(11),
         check_sites_lint(12),
-        check_orphan_sockets(13),
+        check_orphan_sockets(13, &instance_list, &probes),
         // 🟢 Hygiene
         check_config_dir(14, fix),
         check_history_writable(15, fix),
@@ -196,8 +208,12 @@ fn check_recording(id: usize) -> Check {
 
 // ── Critical checks ────────────────────────────────────────────────────────
 
-fn check_extension_online(id: usize) -> Check {
-    match socket_client::list_instance_ids() {
+fn check_extension_online(
+    id: usize,
+    instance_list: &std::result::Result<Vec<String>, String>,
+    probes: &[ProbeOutcome],
+) -> Check {
+    match instance_list {
         Ok(ids) if ids.is_empty() => Check::fail(
             id,
             "extension online",
@@ -205,30 +221,17 @@ fn check_extension_online(id: usize) -> Check {
             "no ap-browser instances found".to_string(),
             Some("open Chrome with the ap-browser-connect extension loaded".into()),
         ),
-        Ok(ids) => {
-            // A listening native host does not prove that the service worker
-            // responds. Probe the full info RPC for every profile, concurrently
-            // so several stalled instances share a single bounded wait.
-            let probes: Vec<_> = ids
-                .into_iter()
-                .map(|instance| {
-                    std::thread::spawn(move || {
-                        let result = socket_client::probe_info(&instance);
-                        (instance, result)
-                    })
-                })
-                .collect();
+        Ok(_) => {
             let mut labels = Vec::new();
             let mut failures = Vec::new();
-            for probe in probes {
-                match probe.join() {
-                    Ok((_, Ok(info))) => labels.push(format!(
+            for outcome in probes {
+                match &outcome.result {
+                    Ok(info) => labels.push(format!(
                         "{} ({})",
-                        info.label.unwrap_or_default(),
+                        info.label.clone().unwrap_or_default(),
                         info.instance_id
                     )),
-                    Ok((instance, Err(error))) => failures.push(format!("{instance}: {error}")),
-                    Err(_) => failures.push("instance health probe failed".into()),
+                    Err(error) => failures.push(format!("{}: {error}", outcome.id)),
                 }
             }
             if !failures.is_empty() {
@@ -381,7 +384,7 @@ fn check_host_binary_executable(id: usize) -> Check {
             "host binary executable",
             Severity::Critical,
             format!("{} does not exist", host_path),
-            Some("cargo build --release -p ap-browser-host".to_string()),
+            Some(rebuild_host_hint(host_path, false)),
         );
     }
     // Executable-bit check is Unix-only. Windows decides executability by .exe extension.
@@ -473,9 +476,7 @@ fn check_host_version_match(id: usize) -> Check {
                 "cli=v{} but host=v{} (mismatch breaks timeout hint protocol)",
                 cli_version, host_version
             ),
-            Some(
-                "cargo build --release -p ap-browser-host && pkill -f ap-browser-host".to_string(),
-            ),
+            Some(rebuild_host_hint(&host_path, true)),
         );
     }
     Check::pass(
@@ -486,9 +487,16 @@ fn check_host_version_match(id: usize) -> Check {
     )
 }
 
-fn check_host_process_running(id: usize) -> Check {
-    let ids = socket_client::list_instance_ids().unwrap_or_default();
-    let live = ids.iter().filter(|id| probe_alive(id)).count();
+fn check_host_process_running(
+    id: usize,
+    instance_list: &std::result::Result<Vec<String>, String>,
+    probes: &[ProbeOutcome],
+) -> Check {
+    let ids = match instance_list {
+        Ok(ids) => ids.as_slice(),
+        Err(_) => &[],
+    };
+    let live = probes.iter().filter(|o| outcome_host_alive(o)).count();
     if live > 0 {
         return Check::pass(
             id,
@@ -604,8 +612,22 @@ fn check_sites_lint(id: usize) -> Check {
     }
 }
 
-fn check_orphan_sockets(id: usize) -> Check {
-    let ids = socket_client::list_instance_ids().unwrap_or_default();
+fn check_orphan_sockets(
+    id: usize,
+    instance_list: &std::result::Result<Vec<String>, String>,
+    probes: &[ProbeOutcome],
+) -> Check {
+    let ids = match instance_list {
+        Ok(ids) => ids,
+        Err(_) => {
+            return Check::pass(
+                id,
+                "orphan instances",
+                Severity::Warning,
+                "none".to_string(),
+            )
+        }
+    };
     if ids.is_empty() {
         return Check::pass(
             id,
@@ -614,7 +636,11 @@ fn check_orphan_sockets(id: usize) -> Check {
             "none".to_string(),
         );
     }
-    let orphans: Vec<String> = ids.into_iter().filter(|s| !probe_alive(s)).collect();
+    let orphans: Vec<String> = probes
+        .iter()
+        .filter(|o| !outcome_host_alive(o))
+        .map(|o| o.id.clone())
+        .collect();
     if orphans.is_empty() {
         Check::pass(
             id,
@@ -836,22 +862,19 @@ fn check_skill_sync(id: usize) -> Check {
             )
         }
     };
-    // host_path is <repo>/target/release/ap-browser-host[-.exe] → repo = 4 levels up
-    let repo_root = Path::new(&host_path)
-        .ancestors()
-        .nth(3)
-        .map(Path::to_path_buf);
-    let repo_root = match repo_root {
-        Some(r) if r.join("skill").is_dir() => r,
-        _ => {
-            return Check::warn(
-                id,
-                "skill docs sync",
-                Severity::Hygiene,
-                "inferred repo root doesn't contain skill/ — skipping".to_string(),
-                None,
-            )
-        }
+    check_skill_sync_for_host_path(id, &host_path)
+}
+
+fn check_skill_sync_for_host_path(id: usize, host_path: &str) -> Check {
+    // Only source checkouts (<repo>/target/<profile>/ap-browser-host) carry
+    // `Cargo.toml` + `skill/`; packaged / npm / release installs do not.
+    let Some(repo_root) = source_repo_root(host_path) else {
+        return Check::pass(
+            id,
+            "skill docs sync",
+            Severity::Hygiene,
+            "packaged install (no source repo checkout — skipped)".to_string(),
+        );
     };
     let src = repo_root.join("skill").join("SKILL.md");
     if !src.exists() {
@@ -944,9 +967,42 @@ fn check_download_config(id: usize) -> Check {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-fn probe_alive(id: &str) -> bool {
-    transport::connect(&transport::instance_name(id)).is_ok()
-        || socket_client::probe_info(id).is_ok()
+fn outcome_host_alive(outcome: &ProbeOutcome) -> bool {
+    match &outcome.result {
+        Ok(_) => true,
+        // `probe_info` dials the socket first and returns `"dial <name>: ..."` when
+        // no host process is listening. Any error after dialing proves a host
+        // accepted the connection even if the service worker did not answer.
+        Err(e) => !e.to_string().starts_with("dial "),
+    }
+}
+
+fn source_repo_root(host_path: &str) -> Option<PathBuf> {
+    // <repo>/target/release/ap-browser-host[-.exe] -> <repo> is 3 ancestors up.
+    let root = Path::new(host_path).ancestors().nth(3)?.to_path_buf();
+    if root.join("Cargo.toml").is_file() && root.join("skill").is_dir() {
+        Some(root)
+    } else {
+        None
+    }
+}
+
+fn rebuild_host_hint(host_path: &str, also_restart: bool) -> String {
+    let base = if let Some(root) = source_repo_root(host_path) {
+        format!("cd {} && make install", root.display())
+    } else if host_path.contains("node_modules") {
+        "npm update -g ap-browser-connect && ap-browser install (or rerun install/install.sh)"
+            .to_string()
+    } else {
+        "update ap-browser-connect (release tarball or `make install` from repo root)".to_string()
+    };
+    if also_restart {
+        format!(
+            "{base} — then reload the extension in chrome://extensions or restart the native host"
+        )
+    } else {
+        base
+    }
 }
 
 fn native_messaging_manifest_path() -> PathBuf {
@@ -1099,4 +1155,84 @@ fn print_json(checks: &[Check]) -> Result<()> {
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ProfileInfo;
+
+    fn sample_profile(id: &str, label: &str) -> ProfileInfo {
+        ProfileInfo {
+            instance_id: id.to_string(),
+            label: Some(label.to_string()),
+            active_tab_url: None,
+            active_tab_title: None,
+        }
+    }
+
+    #[test]
+    fn outcome_host_alive_distinguishes_dial_failure_from_rpc_timeout() {
+        let ok = ProbeOutcome {
+            id: "a".into(),
+            result: Ok(sample_profile("a", "Main")),
+        };
+        let timed_out = ProbeOutcome {
+            id: "b".into(),
+            result: Err(anyhow::anyhow!("read response frame: timed out")),
+        };
+        let dead = ProbeOutcome {
+            id: "c".into(),
+            result: Err(anyhow::anyhow!("dial ap-browser-c: connection refused")),
+        };
+        assert!(outcome_host_alive(&ok));
+        assert!(outcome_host_alive(&timed_out));
+        assert!(!outcome_host_alive(&dead));
+    }
+
+    #[test]
+    fn shared_probe_outcomes_drive_host_and_orphan_checks() {
+        let ids = Ok(vec!["a".into(), "b".into(), "c".into()]);
+        let probes = vec![
+            ProbeOutcome {
+                id: "a".into(),
+                result: Ok(sample_profile("a", "Main")),
+            },
+            ProbeOutcome {
+                id: "b".into(),
+                result: Err(anyhow::anyhow!("info error: TIMEOUT: SW busy")),
+            },
+            ProbeOutcome {
+                id: "c".into(),
+                result: Err(anyhow::anyhow!("dial ap-browser-c: connection refused")),
+            },
+        ];
+        let ext = check_extension_online(1, &ids, &probes);
+        assert_eq!(ext.status, Status::Fail);
+        assert!(ext
+            .message
+            .contains("1 responsive instance(s); 2 unresponsive"));
+
+        let host = check_host_process_running(5, &ids, &probes);
+        assert_eq!(host.status, Status::Pass);
+        assert!(host.message.contains("2 responding instance(s)"));
+
+        let orphan = check_orphan_sockets(13, &ids, &probes);
+        assert_eq!(orphan.status, Status::Warn);
+        assert!(orphan.message.contains("1 dead instance(s): c"));
+    }
+
+    #[test]
+    fn packaged_install_skips_skill_sync_and_gives_package_fix_hint() {
+        let packaged =
+            "/usr/local/lib/node_modules/ap-browser-connect/bin/linux-x64/ap-browser-host";
+        assert!(source_repo_root(packaged).is_none());
+        let check = check_skill_sync_for_host_path(17, packaged);
+        assert_eq!(check.status, Status::Pass);
+        assert!(check.message.contains("packaged install"));
+
+        let hint = rebuild_host_hint(packaged, true);
+        assert!(hint.contains("npm update -g ap-browser-connect"));
+        assert!(!hint.contains("cargo build"));
+    }
 }

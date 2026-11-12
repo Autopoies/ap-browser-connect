@@ -65,6 +65,8 @@ jobs:
                 "41898282+github-actions[bot]@users.noreply.github.com"
               sed -i "s/^version = \"[^\"]*\"/version = \"${TAG_BODY}\"/" \
                 Cargo.toml
+              sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${TAG_BODY}\"/" \
+                npm/package.json
               git commit -am "chore(release): ${TAG} [skip ci]"
               # Pushes made with GITHUB_TOKEN never retrigger workflows;
               # [skip ci] is the belt-and-braces. If branch protection blocks

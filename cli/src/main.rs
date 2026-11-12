@@ -19,7 +19,7 @@ use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::socket_client::{dial_with_retry, resolve_socket_wait};
+use crate::socket_client::{dial_with_retry, resolve_socket_with_policy};
 
 #[derive(Parser, Debug)]
 #[command(name = "ap-browser", version, about = "Drive Chrome from any agent")]
@@ -32,8 +32,9 @@ struct Cli {
     window: Option<i64>,
     #[arg(long, global = true)]
     human: bool,
-    #[arg(long, global = true, default_value = "30")]
-    timeout: u64,
+    /// RPC timeout in seconds; also sets `wait` deadline unless `--timeout-ms` is passed [default: 30]
+    #[arg(long, global = true, value_name = "SECS")]
+    timeout: Option<u64>,
     /// Machine-friendly output: print only `data.result` (eval/cdp) instead of
     /// the full {"ok":..,"data":..,"meta":..} envelope. Failures still print
     /// the full envelope so stdout is always parseable JSON.
@@ -41,15 +42,20 @@ struct Cli {
     raw: bool,
     /// Seconds to wait for the extension instance to come online before
     /// failing (backoff retry; also AP_BROWSER_WAIT_ONLINE, capped at 600).
-    #[arg(
-        long,
-        global = true,
-        env = "AP_BROWSER_WAIT_ONLINE",
-        default_value_t = 0
-    )]
-    wait_online: u64,
+    #[arg(long, global = true, env = "AP_BROWSER_WAIT_ONLINE")]
+    wait_online: Option<u64>,
     #[command(subcommand)]
     command: Cmd,
+}
+
+impl Cli {
+    pub(crate) fn timeout_secs(&self) -> u64 {
+        self.timeout.unwrap_or(30)
+    }
+
+    pub(crate) fn wait_online_secs(&self) -> u64 {
+        self.wait_online.unwrap_or(0)
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -182,10 +188,18 @@ enum Cmd {
         until_eval: Option<String>,
         #[arg(long)]
         gone: Option<String>,
+        /// Polling interval in milliseconds for --until-eval / --gone
         #[arg(long, default_value = "1000")]
         interval_ms: u64,
-        #[arg(long, default_value = "5000")]
-        timeout_ms: u64,
+        /// Wait deadline in milliseconds (defaults to --timeout * 1000 if --timeout is passed, else 5000)
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+        /// Initial delay in milliseconds before the first --until-eval / --gone poll (default: 0, or 500 with require_started)
+        #[arg(long)]
+        initial_delay_ms: Option<u64>,
+        /// Exit non-zero (code 5) if the wait reaches its deadline without completing
+        #[arg(long)]
+        fail_on_timeout: bool,
     },
     Eval {
         expression: String,
@@ -718,7 +732,10 @@ fn run_static_match(cli: &Cli, human: bool) -> Result<()> {
             gone,
             interval_ms,
             timeout_ms,
+            initial_delay_ms,
+            fail_on_timeout,
         } => {
+            let effective_timeout_ms = effective_wait_timeout_ms(*timeout_ms, cli.timeout);
             let params = wait_params(WaitOptions {
                 selector: selector.as_deref(),
                 url: url_change_from.as_deref(),
@@ -727,9 +744,13 @@ fn run_static_match(cli: &Cli, human: bool) -> Result<()> {
                 until_eval: until_eval.as_deref(),
                 gone: gone.as_deref(),
                 interval_ms: *interval_ms,
-                timeout_ms: *timeout_ms,
+                timeout_ms: effective_timeout_ms,
+                initial_delay_ms: *initial_delay_ms,
             })?;
-            rpc(cli, "wait", params, human, |_| {})?
+            let fail_on_timeout = *fail_on_timeout;
+            rpc(cli, "wait", params, human, |resp| {
+                finalize_wait_response(resp, effective_timeout_ms, fail_on_timeout);
+            })?
         }
         Cmd::Eval { expression } => rpc(
             cli,
@@ -962,15 +983,19 @@ fn rpc(
         p.as_object_mut()
             .map(|o| o.insert("window_id".into(), json!(w)));
     }
-    apply_timeout_hint(&mut p, cli.timeout)?;
+    apply_timeout_hint(&mut p, cli.timeout_secs())?;
     filters::Registry::load().attach_to(&mut p);
 
-    let socket = match resolve_socket_wait(cli.profile.as_deref(), cli.wait_online) {
+    let socket = match resolve_socket_with_policy(cli.profile.as_deref(), cli.wait_online) {
         Ok(s) => s,
         Err(e) => emit_transport_error("OFFLINE", e),
     };
-    let response_timeout =
-        Duration::from_secs(p["_timeout_hint_secs"].as_u64().unwrap_or(cli.timeout));
+    let response_timeout = Duration::from_secs(
+        p["_timeout_hint_secs"]
+            .as_u64()
+            .unwrap_or(cli.timeout_secs())
+            .max(1),
+    );
     let request = json!({"jsonrpc":"2.0","method":method,"params":p});
     let bytes = cli_frame::encode(&request)?;
     let mut stream = match dial_with_retry(&socket, 3, Duration::from_millis(200)) {
@@ -1102,6 +1127,31 @@ fn render_state_tree(resp: &mut Value) {
     }
 }
 
+const DEFAULT_WAIT_TIMEOUT_MS: u64 = 5_000;
+
+fn effective_wait_timeout_ms(timeout_ms: Option<u64>, cli_timeout_secs: Option<u64>) -> u64 {
+    timeout_ms.unwrap_or_else(|| {
+        cli_timeout_secs
+            .map(|s| s.saturating_mul(1_000))
+            .unwrap_or(DEFAULT_WAIT_TIMEOUT_MS)
+    })
+}
+
+fn finalize_wait_response(resp: &mut Value, effective_timeout_ms: u64, fail_on_timeout: bool) {
+    if let Some(data) = resp.get_mut("data").and_then(Value::as_object_mut) {
+        if !data.contains_key("timeout_ms") {
+            data.insert("timeout_ms".into(), json!(effective_timeout_ms));
+        }
+    }
+    if fail_on_timeout && resp.pointer("/data/completed").and_then(Value::as_bool) == Some(false) {
+        resp["ok"] = json!(false);
+        resp["error"] = json!({
+            "code": "TIMEOUT",
+            "message": format!("wait reached deadline ({effective_timeout_ms}ms) without completing")
+        });
+    }
+}
+
 struct WaitOptions<'a> {
     selector: Option<&'a str>,
     url: Option<&'a str>,
@@ -1111,9 +1161,13 @@ struct WaitOptions<'a> {
     gone: Option<&'a str>,
     interval_ms: u64,
     timeout_ms: u64,
+    initial_delay_ms: Option<u64>,
 }
 
 fn wait_params(opts: WaitOptions<'_>) -> Result<Value> {
+    if opts.timeout_ms == 0 {
+        bail!("wait timeout must be greater than 0");
+    }
     let mode_count = [
         opts.url.is_some(),
         opts.xhr.is_some(),
@@ -1143,14 +1197,19 @@ fn wait_params(opts: WaitOptions<'_>) -> Result<Value> {
         );
     }
     if let Some(expr) = opts.until_eval {
-        return Ok(
-            json!({"until_eval": expr, "interval_ms": opts.interval_ms, "timeout_ms": opts.timeout_ms}),
-        );
+        let mut p = json!({"until_eval": expr, "interval_ms": opts.interval_ms, "timeout_ms": opts.timeout_ms});
+        if let Some(delay) = opts.initial_delay_ms {
+            p["initial_delay_ms"] = json!(delay);
+        }
+        return Ok(p);
     }
     if let Some(g) = opts.gone {
-        return Ok(
-            json!({"gone": g, "interval_ms": opts.interval_ms, "timeout_ms": opts.timeout_ms}),
-        );
+        let mut p =
+            json!({"gone": g, "interval_ms": opts.interval_ms, "timeout_ms": opts.timeout_ms});
+        if let Some(delay) = opts.initial_delay_ms {
+            p["initial_delay_ms"] = json!(delay);
+        }
+        return Ok(p);
     }
     let selector = opts.selector.ok_or_else(|| {
         anyhow!("wait requires a selector, --url-change-from, --xhr, --media-ended, --until-eval, or --gone")
@@ -1206,7 +1265,7 @@ fn save_screenshot(resp: &mut Value, out: &str, annotate: bool, full: bool) {
 }
 
 fn run_status(cli: &Cli, human: bool) -> Result<()> {
-    let profiles = discover_profiles_wait(cli.wait_online)?;
+    let (profiles, probe_errors) = discover_profiles_wait_with_errors(cli.wait_online_secs())?;
     let current = read_current_profile().ok().flatten();
     if human {
         println!(
@@ -1226,17 +1285,22 @@ fn run_status(cli: &Cli, human: bool) -> Result<()> {
                 p.active_tab_url.as_deref().unwrap_or("(no tab)")
             );
         }
+        for err in &probe_errors {
+            eprintln!("[warn] probe {}: {}", err.instance_id, err.error);
+        }
     } else {
-        println!(
-            "{}",
-            serde_json::to_string(&json!({"online": decorate_current(profiles, current)}))?
-        );
+        let mut out = json!({"online": decorate_current(profiles, current)});
+        if !probe_errors.is_empty() {
+            out["partial"] = json!(true);
+            out["errors"] = json!(probe_errors);
+        }
+        println!("{}", serde_json::to_string(&out)?);
     }
     Ok(())
 }
 
 fn run_profiles(_cli: &Cli, human: bool) -> Result<()> {
-    let profiles = discover_profiles()?;
+    let (profiles, probe_errors) = discover_profiles_with_errors()?;
     let current = read_current_profile().ok().flatten();
     if human {
         if profiles.is_empty() {
@@ -1255,6 +1319,9 @@ fn run_profiles(_cli: &Cli, human: bool) -> Result<()> {
                 p.active_tab_url.as_deref().unwrap_or("(none)")
             );
         }
+        for err in &probe_errors {
+            eprintln!("[warn] probe {}: {}", err.instance_id, err.error);
+        }
     } else {
         println!(
             "{}",
@@ -1269,35 +1336,73 @@ fn run_tabs_list(cli: &Cli, params: Value, human: bool) -> Result<()> {
         return rpc(cli, "tabs.list", params, human, |_| {});
     }
 
-    let profiles = discover_profiles()?;
-    if profiles.is_empty() {
+    let (profiles, mut errors) = discover_profiles_with_errors()?;
+    if profiles.is_empty() && errors.is_empty() {
         bail!(
             "no extension instance online. Is Chrome running with the ap-browser-connect extension loaded?"
         );
     }
+    if profiles.is_empty() {
+        let summary = errors
+            .iter()
+            .map(|e| format!("{}: {}", truncate_id(&e.instance_id), e.error))
+            .collect::<Vec<_>>()
+            .join("; ");
+        bail!("all online profile probes failed ({summary})");
+    }
 
     let current_id = read_current_profile().ok().flatten();
-    let mut profiles_data = Vec::new();
+    let timeout_secs = cli.timeout_secs();
+    let tab_results: Vec<(&ProfileInfo, Result<Value>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = profiles
+            .iter()
+            .map(|prof| {
+                let id = prof.instance_id.as_str();
+                let p = params.clone();
+                (
+                    prof,
+                    s.spawn(move || query_instance_rpc(id, "tabs.list", p, timeout_secs)),
+                )
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|(prof, h)| {
+                let res = match h.join() {
+                    Ok(r) => r,
+                    Err(_) => Err(anyhow!("tabs.list worker thread panicked")),
+                };
+                (prof, res)
+            })
+            .collect()
+    });
 
-    for prof in &profiles {
+    let mut profiles_data = Vec::new();
+    for (prof, res) in tab_results {
         let is_current = current_id.as_deref() == Some(&prof.instance_id)
             || (current_id.is_none() && profiles.len() == 1);
 
-        let tabs_val =
-            match query_instance_rpc(&prof.instance_id, "tabs.list", params.clone(), cli.timeout) {
-                Ok(resp) => resp
-                    .get("data")
-                    .and_then(|d| d.get("tabs"))
-                    .cloned()
-                    .unwrap_or_else(|| json!([])),
-                Err(e) => {
+        let tabs_val = match res {
+            Ok(resp) => resp
+                .get("data")
+                .and_then(|d| d.get("tabs"))
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+            Err(e) => {
+                if human {
                     eprintln!(
                         "[warn] tabs.list failed for profile {}: {e}",
                         prof.instance_id
                     );
-                    json!([])
                 }
-            };
+                errors.push(ProbeFailure {
+                    instance_id: prof.instance_id.clone(),
+                    stage: "tabs.list",
+                    error: format!("{e:#}"),
+                });
+                json!([])
+            }
+        };
 
         profiles_data.push(json!({
             "instance_id": prof.instance_id,
@@ -1307,11 +1412,25 @@ fn run_tabs_list(cli: &Cli, params: Value, human: bool) -> Result<()> {
         }));
     }
 
+    let mut data = json!({
+        "profiles": profiles_data,
+    });
+    if !errors.is_empty() {
+        if human {
+            for err in &errors {
+                if err.stage == "probe" {
+                    eprintln!("[warn] probe {}: {}", err.instance_id, err.error);
+                }
+            }
+        }
+        data["partial"] = json!(true);
+        data["errors"] = json!(errors);
+    }
+
     let response = json!({
         "ok": true,
-        "data": {
-            "profiles": profiles_data
-        }
+        "data": data,
+        "meta": { "profile_count": profiles_data.len() }
     });
 
     if human {
@@ -1443,13 +1562,34 @@ struct ProfileInfo {
     active_tab_title: Option<String>,
 }
 
-fn discover_profiles() -> Result<Vec<ProfileInfo>> {
+#[derive(Debug, serde::Serialize, Clone)]
+struct ProbeFailure {
+    instance_id: String,
+    stage: &'static str,
+    error: String,
+}
+
+fn discover_profiles_with_errors() -> Result<(Vec<ProfileInfo>, Vec<ProbeFailure>)> {
+    let ids = transport::list_instance_ids().context("list instances")?;
     let mut out = Vec::new();
-    for id in transport::list_instance_ids().context("list instances")? {
-        match socket_client::probe_info(&id) {
+    let mut errors = Vec::new();
+    for outcome in socket_client::probe_all_concurrent(&ids) {
+        match outcome.result {
             Ok(info) => out.push(info),
-            Err(e) => eprintln!("[warn] probe {}: {e}", id),
+            Err(e) => errors.push(ProbeFailure {
+                instance_id: outcome.id,
+                stage: "probe",
+                error: format!("{e:#}"),
+            }),
         }
+    }
+    Ok((out, errors))
+}
+
+fn discover_profiles() -> Result<Vec<ProfileInfo>> {
+    let (out, errors) = discover_profiles_with_errors()?;
+    for err in errors {
+        eprintln!("[warn] probe {}: {}", err.instance_id, err.error);
     }
     Ok(out)
 }
@@ -1458,19 +1598,21 @@ fn discover_profiles() -> Result<Vec<ProfileInfo>> {
 /// This is the scripting replacement for the old "poll `ap-browser status`
 /// in a loop until Chrome comes back" workaround: `ap-browser status
 /// --wait-online 60` blocks once instead.
-fn discover_profiles_wait(wait_secs: u64) -> Result<Vec<ProfileInfo>> {
+fn discover_profiles_wait_with_errors(
+    wait_secs: u64,
+) -> Result<(Vec<ProfileInfo>, Vec<ProbeFailure>)> {
     let wait_secs = wait_secs.min(600);
     if wait_secs == 0 {
-        return discover_profiles();
+        return discover_profiles_with_errors();
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(wait_secs);
     let mut delay = Duration::from_millis(250);
     let mut announced = false;
     loop {
-        let profiles = discover_profiles()?;
+        let (profiles, errors) = discover_profiles_with_errors()?;
         let now = std::time::Instant::now();
         if !profiles.is_empty() || now >= deadline {
-            return Ok(profiles);
+            return Ok((profiles, errors));
         }
         if !announced {
             announced = true;
@@ -1603,7 +1745,13 @@ fn reorder_leading_flags_against(
         i += 1;
         if matches!(
             a.as_str(),
-            "--tab" | "--profile" | "--timeout" | "--format" | "--map" | "--wait-online"
+            "--tab"
+                | "--profile"
+                | "--window"
+                | "--timeout"
+                | "--format"
+                | "--map"
+                | "--wait-online"
         ) && i < raw.len()
         {
             leading.push(raw[i].clone());
@@ -1855,7 +2003,7 @@ fn run_sites_command(args: &[String]) -> Result<()> {
                         }));
                     }
                 }
-                let resp = json!({"ok": true, "data": {"adapters": adapters}});
+                let resp = json!({"ok": true, "data": {"adapters": adapters}, "meta": {}});
                 if human {
                     for a in adapters {
                         println!("{}.{}  {}", a["site"], a["name"], a["description"]);
@@ -1888,6 +2036,7 @@ fn run_sites_command(args: &[String]) -> Result<()> {
                     "recent": recent,
                     "sites": sites_brief,
                 },
+                "meta": {},
                 "hints": {
                     "search": "ap-browser sites search <query>",
                     "full":  "ap-browser sites list --full",
@@ -1945,7 +2094,8 @@ fn run_sites_command(args: &[String]) -> Result<()> {
                     "query": query,
                     "matches": site_out.len(),
                     "sites": site_out,
-                }
+                },
+                "meta": {}
             });
             if human {
                 if site_out.is_empty() {
@@ -2017,23 +2167,24 @@ fn run_sites_command(args: &[String]) -> Result<()> {
             let site = args
                 .get(1)
                 .ok_or_else(|| anyhow!("usage: sites doc <site>"))?;
-            let doc_path = format!("skill/references/sites/{}.md", site);
-            match std::fs::read_to_string(&doc_path) {
-                Ok(contents) => {
-                    println!(
-                        "doc: {}",
-                        std::fs::canonicalize(&doc_path)
-                            .unwrap_or_else(|_| PathBuf::from(&doc_path))
-                            .display()
-                    );
-                    println!("\n{}", contents);
-                    Ok(())
-                }
-                Err(_) => {
-                    println!("no knowledge doc for '{}' yet. See skill/references/create-site.md to create one.", site);
-                    Ok(())
-                }
+            let cwd = std::env::current_dir().ok();
+            let home = dirs::home_dir();
+            if let Some(doc_path) = resolve_site_doc_path(site, cwd.as_deref(), home.as_deref()) {
+                let contents = std::fs::read_to_string(&doc_path)?;
+                println!(
+                    "doc: {}",
+                    std::fs::canonicalize(&doc_path)
+                        .unwrap_or_else(|_| doc_path.clone())
+                        .display()
+                );
+                println!("\n{}", contents);
+            } else {
+                println!(
+                    "no knowledge doc for '{}' yet. See skill/references/create-site.md to create one.",
+                    site
+                );
             }
+            Ok(())
         }
         _ => {
             eprintln!("Usage: ap-browser sites <list [--full]|search <q>|lint|verify|doc> [...]");
@@ -2042,9 +2193,56 @@ fn run_sites_command(args: &[String]) -> Result<()> {
     }
 }
 
+fn resolve_site_doc_path(
+    site: &str,
+    cwd: Option<&std::path::Path>,
+    home: Option<&std::path::Path>,
+) -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Some(dir) = cwd {
+        candidates.push(dir.join(format!("skill/references/sites/{site}.md")));
+    }
+    if let Some(h) = home {
+        candidates.push(h.join(format!(".ap-browser/sites/{site}/README.md")));
+        for skill_root in [
+            ".claude/skills/ap-browser-connect",
+            ".codex/skills/ap-browser-connect",
+            ".gemini/skills/ap-browser-connect",
+        ] {
+            candidates.push(h.join(format!("{skill_root}/references/sites/{site}.md")));
+        }
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_site_doc_falls_back_to_adapter_readme_and_installed_skills() {
+        let tmp = std::env::temp_dir().join(format!("apb_doc_test_{}", std::process::id()));
+        let cwd = tmp.join("cwd");
+        let home = tmp.join("home");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(home.join(".ap-browser/sites/google-docs")).unwrap();
+        let readme = home.join(".ap-browser/sites/google-docs/README.md");
+        std::fs::write(&readme, "# Google Docs\n").unwrap();
+
+        assert_eq!(
+            resolve_site_doc_path("google-docs", Some(&cwd), Some(&home)),
+            Some(readme)
+        );
+
+        std::fs::create_dir_all(cwd.join("skill/references/sites")).unwrap();
+        let skill_doc = cwd.join("skill/references/sites/google-docs.md");
+        std::fs::write(&skill_doc, "# Skill doc\n").unwrap();
+        assert_eq!(
+            resolve_site_doc_path("google-docs", Some(&cwd), Some(&home)),
+            Some(skill_doc)
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn raw_payload_extracts_eval_string_result() {
@@ -2147,6 +2345,7 @@ mod tests {
                 until_eval: None,
                 gone: None,
                 interval_ms: 1000,
+                initial_delay_ms: None,
                 timeout_ms: 5_000,
             })
             .unwrap(),
@@ -2163,6 +2362,7 @@ mod tests {
                 until_eval: None,
                 gone: None,
                 interval_ms: 1000,
+                initial_delay_ms: None,
                 timeout_ms: 180_000,
             })
             .unwrap(),
@@ -2179,6 +2379,7 @@ mod tests {
                 until_eval: None,
                 gone: None,
                 interval_ms: 1000,
+                initial_delay_ms: None,
                 timeout_ms: 60_000,
             })
             .unwrap(),
@@ -2195,11 +2396,15 @@ mod tests {
                 until_eval: Some("!isGenerating"),
                 gone: None,
                 interval_ms: 500,
+                initial_delay_ms: Some(250),
                 timeout_ms: 60_000,
             })
             .unwrap(),
             json!({
-                "until_eval": "!isGenerating", "interval_ms": 500, "timeout_ms": 60_000
+                "until_eval": "!isGenerating",
+                "interval_ms": 500,
+                "initial_delay_ms": 250,
+                "timeout_ms": 60_000
             })
         );
         assert_eq!(
@@ -2211,6 +2416,7 @@ mod tests {
                 until_eval: None,
                 gone: Some(".spinner"),
                 interval_ms: 500,
+                initial_delay_ms: None,
                 timeout_ms: 60_000,
             })
             .unwrap(),
@@ -2226,9 +2432,33 @@ mod tests {
             until_eval: None,
             gone: None,
             interval_ms: 1000,
+            initial_delay_ms: None,
             timeout_ms: 5_000,
         })
         .is_err());
+    }
+
+    #[test]
+    fn effective_wait_timeout_precedence_and_finalize_response() {
+        assert_eq!(effective_wait_timeout_ms(Some(12_000), Some(30)), 12_000);
+        assert_eq!(effective_wait_timeout_ms(None, Some(30)), 30_000);
+        assert_eq!(effective_wait_timeout_ms(None, None), 5_000);
+
+        let mut completed = json!({"ok": true, "data": {"completed": true}});
+        finalize_wait_response(&mut completed, 12_000, true);
+        assert_eq!(completed["ok"], json!(true));
+        assert_eq!(completed["data"]["timeout_ms"], json!(12_000));
+
+        let mut non_fatal = json!({"ok": true, "data": {"completed": false}});
+        finalize_wait_response(&mut non_fatal, 8_000, false);
+        assert_eq!(non_fatal["ok"], json!(true));
+        assert_eq!(non_fatal["data"]["timeout_ms"], json!(8_000));
+
+        let mut fatal = json!({"ok": true, "data": {"completed": false}});
+        finalize_wait_response(&mut fatal, 8_000, true);
+        assert_eq!(fatal["ok"], json!(false));
+        assert_eq!(fatal["error"]["code"], json!("TIMEOUT"));
+        assert_eq!(fatal["data"]["timeout_ms"], json!(8_000));
     }
 
     #[test]
