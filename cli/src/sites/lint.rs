@@ -52,21 +52,6 @@ pub fn lint_adapter(a: &Adapter, site_folder: &str, _meta: Option<&SiteMeta>) ->
     }
     // name field would match filename — but we don't have filename here. Skip (checked at load).
     // args types valid & global CLI flag collision check
-    const RESERVED_GLOBAL_FLAGS: &[&str] = &[
-        "tab",
-        "profile",
-        "timeout",
-        "window",
-        "human",
-        "raw",
-        "wait-online",
-        "format",
-        "map",
-        "keep-tab",
-        "no-keep-tab",
-        "wait",
-        "read-stdin",
-    ];
     for (name, def) in &a.args {
         if !["string", "int", "bool"].contains(&def.arg_type.as_str()) {
             errors.push(format!(
@@ -74,7 +59,7 @@ pub fn lint_adapter(a: &Adapter, site_folder: &str, _meta: Option<&SiteMeta>) ->
                 name, def.arg_type
             ));
         }
-        if RESERVED_GLOBAL_FLAGS.contains(&name.as_str()) {
+        if crate::sites::RESERVED_ARG_NAMES.contains(&name.as_str()) {
             warnings.push(format!(
                 "arg '{}' collides with global CLI flag '--{}' (use positional form or rename the arg)",
                 name, name
@@ -153,7 +138,10 @@ pub fn lint_adapter(a: &Adapter, site_folder: &str, _meta: Option<&SiteMeta>) ->
     LintResult { errors, warnings }
 }
 
-fn check_templates(val: &Value, args: &HashMap<String, crate::sites::ArgDef>) -> Vec<String> {
+fn check_templates(
+    val: &Value,
+    args: &indexmap::IndexMap<String, crate::sites::ArgDef>,
+) -> Vec<String> {
     let mut errs = Vec::new();
     let s = match val {
         Value::String(s) => s.clone(),
